@@ -74,6 +74,119 @@
   "footer": {
     "poweredBy": "Powered by YILS（博客地址：https://yils.blog）"
   },
+  "workflow": {
+    "script": {
+      "title": "文稿",
+      "apiConfig": "API 配置",
+      "request": "视频诉求",
+      "ratio": "画面比例",
+      "duration": "目标时长",
+      "seconds": "秒",
+      "style": "视觉风格",
+      "reference": "核心参考图",
+      "referenceOptional": "可选；不上传则不保证主体跨镜头一致性",
+      "addReference": "上传",
+      "replaceReference": "替换",
+      "removeReference": "移除核心参考图",
+      "generate": "生成文稿",
+      "editable": "文稿（可编辑）",
+      "approve": "确认文稿",
+      "approved": "文稿已确认",
+      "changed": "文稿已修改，请重新确认后开始新任务",
+      "estimate": "预计约 {{seconds}} 秒 · {{segments}} 个视频段",
+      "actual": "当前任务 {{seconds}} 秒 · {{segments}} 个视频段"
+    },
+    "api": {
+      "title": "韭菜盒子 API",
+      "address": "API 地址",
+      "savedPlaceholder": "已安全保存，留空则不修改",
+      "sessionPlaceholder": "本次运行已配置，留空则不修改",
+      "emptyPlaceholder": "请输入 API Key",
+      "getKey": "前往获取",
+      "saved": "API Key 已安全保存",
+      "sessionOnly": "系统安全存储不可用，API Key 仅在本次运行中使用",
+      "missing": "尚未配置 API Key",
+      "test": "测试连接",
+      "savedToast": "API 配置已保存",
+      "connected": "连接成功",
+      "connectedSession": "连接成功；API Key 仅在本次运行中使用",
+      "keyRequired": "请输入 API Key"
+    },
+    "library": {
+      "title": "媒体库",
+      "empty": "每一步生成的音频、分镜图、视频和成片都会出现在这里",
+      "all": "全部",
+      "reference": "参考图",
+      "storyboards": "分镜图",
+      "videos": "视频",
+      "storyboardNumber": "分镜图 {{index}}",
+      "videoNumber": "视频 {{index}}",
+      "voice": "统一配音",
+      "seconds": "{{value}} 秒",
+      "segment": "第 {{index}} 段 · {{duration}} 秒",
+      "videoDone": "视频完成",
+      "storyboardDone": "分镜完成",
+      "waiting": "等待中",
+      "ready": "已完成",
+      "running": "生成中",
+      "failed": "失败",
+      "cancelled": "已停止",
+      "storyboardAlt": "单镜头分镜图",
+      "retryStoryboard": "重试分镜图",
+      "retryVideo": "重试视频",
+      "regenerateStoryboard": "重新生成分镜图",
+      "regenerateVideo": "重新生成视频",
+      "storyboardPrompt": "分镜图提示词",
+      "videoPrompt": "视频提示词",
+      "final": "最终成片",
+      "show": "打开位置",
+      "export": "导出成片",
+      "exported": "已导出到 {{path}}"
+    },
+    "voice": {
+      "title": "声音方案",
+      "ready": "已生成",
+      "waiting": "待生成",
+      "empty": "确认文稿后，在下方生成声音方案。系统会自动确定人设、音色、风格、情感和节奏。"
+    },
+    "actions": {
+      "voicePlan": "生成声音方案",
+      "voice": "生成配音",
+      "storyboards": "生成分镜图",
+      "videos": "生成视频",
+      "compose": "合成视频",
+      "stop": "停止当前阶段"
+    },
+    "progress": {
+      "apiReady": "API 已配置",
+      "apiMissing": "API 未配置",
+      "count": "{{done}} / {{total}} 阶段",
+      "tasks": "{{done}} / {{total}} 个媒体任务"
+    },
+    "hints": {
+      "busy": "当前阶段处理中，请稍候",
+      "api": "请先配置 API Key",
+      "approve": "先在左侧确认文稿",
+      "voicePlan": "下一步：生成声音方案",
+      "voice": "下一步：生成配音",
+      "storyboards": "下一步：生成分镜图",
+      "videos": "下一步：生成视频",
+      "compose": "下一步：合成视频",
+      "done": "成片已完成"
+    },
+    "messages": {
+      "voicePlanFirst": "请先生成声音方案",
+      "voiceFirst": "请先生成配音",
+      "imagePartial": "部分分镜图生成失败，请在素材库中重试",
+      "videoPartial": "部分视频生成失败，请在素材库中重试",
+      "assetsIncomplete": "配音或视频片段不完整",
+      "composed": "成片合成完成",
+      "imageFailed": "分镜图生成失败",
+      "videoFailed": "视频生成失败",
+      "cancelled": "已停止本地轮询和后续步骤；云端任务可能仍会继续并产生费用",
+      "visualAnchor": "全局一致性"
+    }
+  },
   "features": {
     "llm": {
       "config": {

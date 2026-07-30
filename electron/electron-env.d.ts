@@ -44,21 +44,36 @@ interface Window {
     setWindowPosition: (x: number, y: number) => void
     setZoomFactor: (factor: number) => void
     openExternal: (params: import('./types').OpenExternalParams) => void
-    selectFolder: (params: import('./types').SelectFolderParams) => Promise<string>
-    listFilesFromFolder: (
-      params: import('./types').ListFilesFromFolderParams,
-    ) => Promise<import('./types').ListFilesFromFolderRecord[]>
-    edgeTtsGetVoiceList: () => Promise<import('./lib/edge-tts').EdgeTTSVoice[]>
-    edgeTtsSynthesizeToBase64: (
-      params: import('./tts/types').EdgeTtsSynthesizeCommonParams,
-    ) => Promise<string>
-    edgeTtsSynthesizeToFile: (
-      params: import('./tts/types').EdgeTtsSynthesizeToFileParams,
-    ) => Promise<import('./tts/types').EdgeTtsSynthesizeToFileResult>
-    renderVideo: (
-      params: import('./ffmpeg/types').RenderVideoParams,
-    ) => Promise<import('./ffmpeg/types').ExecuteFFmpegResult>
     statTrack: (params: import('./types').StatEventParams) => Promise<void>
+    cloud: {
+      hasApiKey: () => Promise<boolean>
+      saveApiKey: (apiKey: string) => Promise<boolean>
+      testApiKey: () => Promise<boolean>
+      generateScript: (brief: import('./types').MediaScriptBrief) => Promise<string>
+      runSkill: (skillName: string, input: string, runId?: string) => Promise<any>
+      generateVoice: (
+        runId: string,
+        text: string,
+        voicePrompt: string,
+      ) => Promise<{ path: string; duration: number }>
+      generateStoryboard: (
+        params: import('./types').GenerateStoryboardImageParams,
+      ) => Promise<string>
+      generateVideo: (params: import('./types').GenerateSegmentVideoParams) => Promise<string>
+      composeVideo: (
+        params: import('./ffmpeg/types').ComposeGeneratedVideoParams,
+      ) => Promise<string>
+      resumePending: (runId: string) => Promise<import('./types').ResumedCloudTask[]>
+      selectCoreReference: (
+        runId: string,
+      ) => Promise<import('./types').CoreReferenceAsset | null>
+      loadLatestState: () => Promise<string | null>
+      saveState: (runId: string, value: string) => Promise<void>
+      cancelRun: (runId: string) => Promise<number>
+      exportMedia: (runId: string, sourcePath: string) => Promise<string | null>
+      showMedia: (runId: string, sourcePath: string) => Promise<void>
+      resolveMedia: (runId: string, sourcePaths: string[]) => Promise<string[]>
+    }
   }
   sqlite: {
     query: (param: import('./sqlite/types').QueryParams) => Promise<any>

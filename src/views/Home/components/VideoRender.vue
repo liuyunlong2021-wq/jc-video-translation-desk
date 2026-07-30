@@ -1,316 +1,152 @@
 <template>
-  <div class="w-full">
-    <v-sheet
-      class="h-[200px] p-4 grid grid-cols-[120px_minmax(0,1fr)] grid-rows-[1fr_auto] gap-x-4 gap-y-3"
-      border
-      rounded
-    >
-      <div class="col-start-1 row-start-1 h-full flex items-center justify-center">
-        <v-progress-circular
-          color="indigo"
-          v-model="renderProgress"
-          :indeterminate="taskInProgress && appStore.renderStatus !== RenderStatus.Rendering"
-          :size="96"
-          :width="8"
-        >
-          <div class="flex flex-col items-center leading-tight select-none">
-            <span class="text-xl font-bold text-slate-700">{{ progressCenterPrimary }}</span>
-            <span v-if="progressCenterSecondary" class="text-xs text-medium-emphasis mt-1">
-              {{ progressCenterSecondary }}
-            </span>
-          </div>
-        </v-progress-circular>
-      </div>
-      <span
-        class="col-start-1 row-start-2 text-xs text-medium-emphasis text-center leading-4 self-center select-none"
+  <v-sheet class="p-3" border rounded>
+    <div class="flex items-center justify-between gap-2 mb-2">
+      <v-chip
+        size="small"
+        variant="tonal"
+        :color="mediaStore.apiConfigured ? 'success' : 'warning'"
       >
-        {{ renderStatusShortText }}
+        {{
+          mediaStore.apiConfigured
+            ? t('workflow.progress.apiReady')
+            : t('workflow.progress.apiMissing')
+        }}
+      </v-chip>
+      <span class="text-caption text-medium-emphasis">
+        {{ t('workflow.progress.count', { done: completedStages, total: 5 }) }}
       </span>
-
-      <div class="col-start-2 row-start-1 h-full flex items-center justify-center">
-        <v-btn
-          v-if="!taskInProgress"
-          class="!h-24 !px-8 w-full"
-          size="x-large"
-          color="deep-purple-accent-3"
-          @click="emit('renderVideo')"
-        >
-          <div class="inline-flex items-center gap-4">
-            <v-icon size="28">mdi-rocket-launch</v-icon>
-            <span class="text-xl">{{ t('features.render.config.startLabel') }}</span>
-          </div>
-        </v-btn>
-        <v-btn
-          v-else
-          class="!h-24 !px-8 w-full"
-          size="x-large"
-          color="red"
-          prepend-icon="mdi-stop"
-          @click="emit('cancelRender')"
-        >
-          <span class="text-xl">{{ t('features.render.config.stopLabel') }}</span>
-        </v-btn>
-      </div>
-
-      <div class="col-start-2 row-start-2 w-full flex items-center justify-between gap-2">
-        <v-chip
-          class="batch-chip"
-          :class="{ 'batch-chip--locked': taskInProgress }"
-          :color="appStore.autoBatch ? 'indigo' : 'grey'"
-          variant="tonal"
-          @click="handleToggleAutoBatch"
-        >
-          <v-icon start size="small">
-            {{ appStore.autoBatch ? 'mdi-autorenew' : 'mdi-autorenew-off' }}
-          </v-icon>
-          <span class="batch-chip-text">{{ batchSummaryText }}</span>
-        </v-chip>
-
-        <v-btn class="!h-10 !px-6" :disabled="taskInProgress" @click="configDialogShow = true">
-          <v-icon class="mt-1" start size="small">mdi-cog</v-icon>
-          {{ t('common.buttons.config') }}
-        </v-btn>
-      </div>
-    </v-sheet>
-
-    <v-dialog v-model="configDialogShow" max-width="600" persistent>
-      <v-card prepend-icon="mdi-text-box-edit-outline" :title="t('dialogs.renderConfig')">
-        <v-card-text>
-          <div class="w-full flex gap-2 mb-4 items-center">
-            <v-text-field
-              :label="t('features.render.config.output.width')"
-              v-model="config.outputSize.width"
-              hide-details
-            ></v-text-field>
-            <v-text-field
-              v-model="config.outputSize.height"
-              :label="t('features.render.config.output.height')"
-              hide-details
-              required
-            ></v-text-field>
-          </div>
-          <div class="w-full flex gap-2 mb-4 items-center">
-            <v-text-field
-              :label="t('features.render.config.output.fileName')"
-              v-model="config.outputFileName"
-              hide-details
-              required
-              clearable
-            ></v-text-field>
-            <v-text-field
-              class="w-[120px] flex-none"
-              v-model="config.outputFileExt"
-              :label="t('features.render.config.output.format')"
-              hide-details
-              readonly
-              required
-            ></v-text-field>
-          </div>
-          <div class="w-full flex gap-2 mb-4 items-center">
-            <v-text-field
-              :label="t('features.render.config.output.folder')"
-              v-model="config.outputPath"
-              hide-details
-              readonly
-              required
-            ></v-text-field>
-            <v-btn
-              class="!h-[46px]"
-              prepend-icon="mdi-folder-open"
-              @click="handleSelectOutputFolder"
-            >
-              {{ t('common.buttons.select') }}
-            </v-btn>
-          </div>
-          <div class="w-full flex gap-2 mb-2 items-center">
-            <v-text-field
-              :label="t('features.render.config.bgmFolderLabel')"
-              v-model="config.bgmPath"
-              hide-details
-              readonly
-              required
-              clearable
-            ></v-text-field>
-            <v-btn class="!h-[46px]" prepend-icon="mdi-folder-open" @click="handleSelectBgmFolder">
-              {{ t('common.buttons.select') }}
-            </v-btn>
-          </div>
-        </v-card-text>
-        <v-divider></v-divider>
-        <v-card-actions>
-          <v-spacer></v-spacer>
-          <v-btn
-            :text="t('common.buttons.close')"
-            variant="plain"
-            @click="handleCloseDialog"
-          ></v-btn>
-          <v-btn
-            color="primary"
-            :text="t('common.buttons.save')"
-            variant="tonal"
-            @click="handleSaveConfig"
-          ></v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
-  </div>
+    </div>
+    <div
+      v-if="mediaStore.segments.length"
+      class="text-caption text-medium-emphasis text-right mb-2"
+    >
+      {{ t('workflow.progress.tasks', { done: completedTasks, total: totalTasks }) }}
+    </div>
+    <div v-if="mediaStore.error" class="text-caption text-error mb-2">{{ mediaStore.error }}</div>
+    <div class="grid grid-cols-2 gap-2">
+      <v-btn
+        variant="tonal"
+        prepend-icon="mdi-account-voice"
+        :loading="mediaStore.busyAction === 'voice-plan'"
+        :disabled="!canVoicePlan"
+        @click="$emit('generateVoicePlan')"
+        >{{ t('workflow.actions.voicePlan') }}</v-btn
+      >
+      <v-btn
+        variant="tonal"
+        prepend-icon="mdi-waveform"
+        :loading="mediaStore.busyAction === 'voice'"
+        :disabled="!canVoice"
+        @click="$emit('generateVoice')"
+        >{{ t('workflow.actions.voice') }}</v-btn
+      >
+      <v-btn
+        variant="tonal"
+        prepend-icon="mdi-view-grid-plus-outline"
+        :loading="mediaStore.busyAction === 'storyboards'"
+        :disabled="!canStoryboards"
+        @click="$emit('generateStoryboards')"
+        >{{ t('workflow.actions.storyboards') }}</v-btn
+      >
+      <v-btn
+        variant="tonal"
+        prepend-icon="mdi-video-plus-outline"
+        :loading="mediaStore.busyAction === 'videos'"
+        :disabled="!canVideos"
+        @click="$emit('generateVideos')"
+        >{{ t('workflow.actions.videos') }}</v-btn
+      >
+      <v-btn
+        class="col-span-2"
+        color="primary"
+        prepend-icon="mdi-movie-open-plus"
+        :loading="mediaStore.busyAction === 'compose'"
+        :disabled="!canCompose"
+        @click="$emit('compose')"
+        >{{ t('workflow.actions.compose') }}</v-btn
+      >
+      <v-btn
+        v-if="
+          ['voice-plan', 'voice', 'storyboards', 'videos', 'compose', 'resume'].includes(
+            mediaStore.busyAction,
+          )
+        "
+        class="col-span-2"
+        color="error"
+        variant="tonal"
+        prepend-icon="mdi-stop-circle-outline"
+        @click="$emit('cancel')"
+        >{{ t('workflow.actions.stop') }}</v-btn
+      >
+    </div>
+    <div class="text-caption text-medium-emphasis mt-2 text-center">{{ stageHint }}</div>
+  </v-sheet>
 </template>
 
-<script lang="ts" setup>
-import { ref, toRaw, nextTick, computed, watch } from 'vue'
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useMediaTaskStore } from '@/store'
 import { useTranslation } from 'i18next-vue'
-import { RenderStatus, useAppStore } from '@/store'
 
-const appStore = useAppStore()
+defineEmits([
+  'generateVoicePlan',
+  'generateVoice',
+  'generateStoryboards',
+  'generateVideos',
+  'compose',
+  'cancel',
+])
+const mediaStore = useMediaTaskStore()
 const { t } = useTranslation()
-
-const emit = defineEmits<{
-  (e: 'renderVideo'): void
-  (e: 'cancelRender'): void
-}>()
-
-const taskInProgress = computed(() => {
-  return (
-    appStore.renderStatus !== RenderStatus.None &&
-    appStore.renderStatus !== RenderStatus.Completed &&
-    appStore.renderStatus !== RenderStatus.Failed
-  )
-})
-
-const renderProgress = ref(0)
-window.ipcRenderer.on('render-video-progress', (_, progress: number) => {
-  renderProgress.value = Math.max(0, Math.min(100, progress))
-})
-
-watch(
-  () => appStore.renderStatus,
-  (status) => {
-    if (status === RenderStatus.Completed) {
-      renderProgress.value = 100
-      return
-    }
-    if (status === RenderStatus.None) {
-      renderProgress.value = 0
-    }
-  },
+const idle = computed(() => !mediaStore.busyAction)
+const canVoicePlan = computed(
+  () => idle.value && mediaStore.apiConfigured && Boolean(mediaStore.approvedScript),
 )
-
-const renderStatusShortText = computed(() => {
-  switch (appStore.renderStatus) {
-    case RenderStatus.GenerateText:
-      return t('features.render.statusShort.generatingText')
-    case RenderStatus.SynthesizedSpeech:
-      return t('features.render.statusShort.synthesizingSpeech')
-    case RenderStatus.SegmentVideo:
-      return t('features.render.statusShort.segmentingVideo')
-    case RenderStatus.Rendering:
-      return t('features.render.statusShort.rendering')
-    case RenderStatus.Completed:
-      return t('features.render.statusShort.success')
-    case RenderStatus.Failed:
-      return t('features.render.statusShort.failed')
-    default:
-      return t('features.render.statusShort.idle')
-  }
+const canVoice = computed(
+  () => idle.value && mediaStore.apiConfigured && Boolean(mediaStore.voicePlan),
+)
+const canStoryboards = computed(
+  () =>
+    idle.value &&
+    mediaStore.apiConfigured &&
+    Boolean(mediaStore.voicePath && mediaStore.voiceDuration) &&
+    !mediaStore.allImagesReady,
+)
+const canVideos = computed(
+  () =>
+    idle.value &&
+    mediaStore.apiConfigured &&
+    mediaStore.allImagesReady &&
+    !mediaStore.allVideosReady,
+)
+const canCompose = computed(
+  () => idle.value && mediaStore.allVideosReady && Boolean(mediaStore.voicePath),
+)
+const completedStages = computed(
+  () =>
+    Number(Boolean(mediaStore.voicePlan)) +
+    Number(Boolean(mediaStore.voicePath)) +
+    Number(mediaStore.allImagesReady) +
+    Number(mediaStore.allVideosReady) +
+    Number(Boolean(mediaStore.finalPath)),
+)
+const completedTasks = computed(
+  () =>
+    Number(Boolean(mediaStore.voicePath)) +
+    mediaStore.segments.filter((segment) => segment.imageStatus === 'success').length +
+    mediaStore.segments.filter((segment) => segment.videoStatus === 'success').length +
+    Number(Boolean(mediaStore.finalPath)),
+)
+const totalTasks = computed(() => mediaStore.segments.length * 2 + 2)
+const stageHint = computed(() => {
+  if (mediaStore.busyAction) return t('workflow.hints.busy')
+  if (!mediaStore.apiConfigured && !mediaStore.allVideosReady) return t('workflow.hints.api')
+  if (!mediaStore.approvedScript) return t('workflow.hints.approve')
+  if (!mediaStore.voicePlan) return t('workflow.hints.voicePlan')
+  if (!mediaStore.voicePath) return t('workflow.hints.voice')
+  if (!mediaStore.allImagesReady) return t('workflow.hints.storyboards')
+  if (!mediaStore.allVideosReady) return t('workflow.hints.videos')
+  if (!mediaStore.finalPath) return t('workflow.hints.compose')
+  return t('workflow.hints.done')
 })
-
-const progressCenterPrimary = computed(() => {
-  if (appStore.renderStatus === RenderStatus.Rendering) {
-    return `${Math.round(renderProgress.value)}%`
-  }
-  if (appStore.renderStatus === RenderStatus.Completed) {
-    return '100%'
-  }
-  if (appStore.renderStatus === RenderStatus.Failed) {
-    return t('features.render.statusMini.failed')
-  }
-  if (appStore.renderStatus === RenderStatus.GenerateText) {
-    return t('features.render.statusMini.generatingText')
-  }
-  if (appStore.renderStatus === RenderStatus.SynthesizedSpeech) {
-    return t('features.render.statusMini.synthesizingSpeech')
-  }
-  if (appStore.renderStatus === RenderStatus.SegmentVideo) {
-    return t('features.render.statusMini.segmentingVideo')
-  }
-  return t('features.render.statusMini.idle')
-})
-
-const progressCenterSecondary = computed(() => {
-  if (appStore.renderStatus === RenderStatus.Rendering) {
-    return t('features.render.statusMini.rendering')
-  }
-  if (appStore.renderStatus === RenderStatus.Completed) {
-    return t('features.render.statusMini.success')
-  }
-  return ''
-})
-
-const batchSummaryText = computed(() => {
-  return appStore.autoBatch
-    ? t('features.render.config.autoBatchOn')
-    : t('features.render.config.autoBatchOff')
-})
-
-const handleToggleAutoBatch = () => {
-  if (taskInProgress.value) return
-  appStore.autoBatch = !appStore.autoBatch
-}
-
-// 配置合成选项
-const config = ref(structuredClone(toRaw(appStore.renderConfig)))
-const configDialogShow = ref(false)
-const resetConfigDialog = () => {
-  config.value = structuredClone(toRaw(appStore.renderConfig))
-}
-const handleCloseDialog = () => {
-  configDialogShow.value = false
-  nextTick(resetConfigDialog)
-}
-const handleSaveConfig = () => {
-  appStore.updateRenderConfig(config.value)
-  configDialogShow.value = false
-}
-
-// 选择文件夹
-const handleSelectOutputFolder = async () => {
-  const folderPath = await window.electron.selectFolder({
-    title: t('dialogs.selectOutputFolder'),
-    defaultPath: config.value.outputPath,
-  })
-  console.log('用户选择视频导出文件夹，绝对路径：', folderPath)
-  if (folderPath) {
-    config.value.outputPath = folderPath
-  }
-}
-const handleSelectBgmFolder = async () => {
-  const folderPath = await window.electron.selectFolder({
-    title: t('dialogs.selectBgmFolder'),
-    defaultPath: config.value.bgmPath,
-  })
-  console.log('用户选择背景音乐文件夹，绝对路径：', folderPath)
-  if (folderPath) {
-    config.value.bgmPath = folderPath
-  }
-}
 </script>
-
-<style lang="scss" scoped>
-.batch-chip {
-  cursor: pointer;
-}
-
-.batch-chip--locked {
-  cursor: not-allowed;
-}
-
-.batch-chip-text {
-  display: inline-flex;
-  align-items: baseline;
-  white-space: nowrap;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1;
-  letter-spacing: 0.01em;
-}
-</style>

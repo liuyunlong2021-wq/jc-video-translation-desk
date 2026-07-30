@@ -6,14 +6,7 @@ import {
   DeleteParams,
   BulkInsertOrUpdateParams,
 } from './sqlite/types'
-import {
-  ListFilesFromFolderParams,
-  OpenExternalParams,
-  SelectFolderParams,
-  StatEventParams,
-} from './types'
-import { EdgeTtsSynthesizeCommonParams } from './tts/types'
-import { RenderVideoParams } from './ffmpeg/types'
+import { OpenExternalParams, StatEventParams } from './types'
 
 // --------- 向界面渲染进程暴露某些API ---------
 
@@ -58,16 +51,37 @@ contextBridge.exposeInMainWorld('electron', {
   setWindowPosition: (x: number, y: number) => ipcRenderer.send('set-window-position', x, y),
   setZoomFactor: (factor: number) => ipcRenderer.send('set-zoom-factor', factor),
   openExternal: (params: OpenExternalParams) => ipcRenderer.invoke('open-external', params),
-  selectFolder: (params: SelectFolderParams) => ipcRenderer.invoke('select-folder', params),
-  listFilesFromFolder: (params: ListFilesFromFolderParams) =>
-    ipcRenderer.invoke('list-files-from-folder', params),
-  edgeTtsGetVoiceList: () => ipcRenderer.invoke('edge-tts-get-voice-list'),
-  edgeTtsSynthesizeToBase64: (params: EdgeTtsSynthesizeCommonParams) =>
-    ipcRenderer.invoke('edge-tts-synthesize-to-base64', params),
-  edgeTtsSynthesizeToFile: (params: EdgeTtsSynthesizeCommonParams) =>
-    ipcRenderer.invoke('edge-tts-synthesize-to-file', params),
-  renderVideo: (params: RenderVideoParams) => ipcRenderer.invoke('render-video', params),
   statTrack: (params: StatEventParams) => ipcRenderer.invoke('stat-track', params),
+  cloud: {
+    hasApiKey: () => ipcRenderer.invoke('cloud-has-api-key'),
+    saveApiKey: (apiKey: string) => ipcRenderer.invoke('cloud-save-api-key', apiKey),
+    testApiKey: () => ipcRenderer.invoke('cloud-test-api-key'),
+    generateScript: (brief: import('./types').MediaScriptBrief) =>
+      ipcRenderer.invoke('cloud-generate-script', brief),
+    runSkill: (skillName: string, input: string, runId?: string) =>
+      ipcRenderer.invoke('cloud-run-skill', skillName, input, runId),
+    generateVoice: (runId: string, text: string, voicePrompt: string) =>
+      ipcRenderer.invoke('cloud-generate-voice', runId, text, voicePrompt),
+    generateStoryboard: (params: import('./types').GenerateStoryboardImageParams) =>
+      ipcRenderer.invoke('cloud-generate-storyboard', params),
+    generateVideo: (params: import('./types').GenerateSegmentVideoParams) =>
+      ipcRenderer.invoke('cloud-generate-video', params),
+    composeVideo: (params: import('./ffmpeg/types').ComposeGeneratedVideoParams) =>
+      ipcRenderer.invoke('cloud-compose-video', params),
+    resumePending: (runId: string) => ipcRenderer.invoke('cloud-resume-pending', runId),
+    selectCoreReference: (runId: string) =>
+      ipcRenderer.invoke('cloud-select-core-reference', runId),
+    loadLatestState: () => ipcRenderer.invoke('cloud-load-latest-state'),
+    saveState: (runId: string, value: string) =>
+      ipcRenderer.invoke('cloud-save-state', runId, value),
+    cancelRun: (runId: string) => ipcRenderer.invoke('cloud-cancel-run', runId),
+    exportMedia: (runId: string, sourcePath: string) =>
+      ipcRenderer.invoke('cloud-export-media', runId, sourcePath),
+    showMedia: (runId: string, sourcePath: string) =>
+      ipcRenderer.invoke('cloud-show-media', runId, sourcePath),
+    resolveMedia: (runId: string, sourcePaths: string[]) =>
+      ipcRenderer.invoke('cloud-resolve-media', runId, sourcePaths),
+  },
 })
 
 contextBridge.exposeInMainWorld('sqlite', {

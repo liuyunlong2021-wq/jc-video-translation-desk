@@ -74,6 +74,119 @@
   "footer": {
     "poweredBy": "Powered by YILS (Blog: https://yils.blog)"
   },
+  "workflow": {
+    "script": {
+      "title": "Script",
+      "apiConfig": "API settings",
+      "request": "Video brief",
+      "ratio": "Aspect ratio",
+      "duration": "Target duration",
+      "seconds": "sec",
+      "style": "Visual style",
+      "reference": "Core reference",
+      "referenceOptional": "Optional; without one, cross-shot subject consistency is not guaranteed",
+      "addReference": "Upload",
+      "replaceReference": "Replace",
+      "removeReference": "Remove core reference",
+      "generate": "Generate script",
+      "editable": "Script (editable)",
+      "approve": "Approve script",
+      "approved": "Script approved",
+      "changed": "The script changed. Approve it again to start a new run.",
+      "estimate": "About {{seconds}} sec · {{segments}} video segments",
+      "actual": "Current run: {{seconds}} sec · {{segments}} video segments"
+    },
+    "api": {
+      "title": "Jiucaihezi API",
+      "address": "API URL",
+      "savedPlaceholder": "Saved securely; leave blank to keep it",
+      "sessionPlaceholder": "Configured for this session; leave blank to keep it",
+      "emptyPlaceholder": "Enter API Key",
+      "getKey": "Get API Key",
+      "saved": "API Key saved securely",
+      "sessionOnly": "Secure storage is unavailable; the API Key is available for this session only",
+      "missing": "API Key not configured",
+      "test": "Test connection",
+      "savedToast": "API settings saved",
+      "connected": "Connected",
+      "connectedSession": "Connected; the API Key is available for this session only",
+      "keyRequired": "Enter an API Key"
+    },
+    "library": {
+      "title": "Media library",
+      "empty": "Generated audio, storyboards, clips, and final videos appear here",
+      "all": "All",
+      "reference": "Reference",
+      "storyboards": "Storyboards",
+      "videos": "Videos",
+      "storyboardNumber": "Storyboard {{index}}",
+      "videoNumber": "Video {{index}}",
+      "voice": "Unified voiceover",
+      "seconds": "{{value}} sec",
+      "segment": "Segment {{index}} · {{duration}} sec",
+      "videoDone": "Video ready",
+      "storyboardDone": "Storyboard ready",
+      "waiting": "Waiting",
+      "ready": "Ready",
+      "running": "Generating",
+      "failed": "Failed",
+      "cancelled": "Stopped",
+      "storyboardAlt": "Single-shot storyboard image",
+      "retryStoryboard": "Retry storyboard",
+      "retryVideo": "Retry video",
+      "regenerateStoryboard": "Regenerate storyboard",
+      "regenerateVideo": "Regenerate video",
+      "storyboardPrompt": "Storyboard prompt",
+      "videoPrompt": "Video prompt",
+      "final": "Final video",
+      "show": "Show in folder",
+      "export": "Export video",
+      "exported": "Exported to {{path}}"
+    },
+    "voice": {
+      "title": "Voice design",
+      "ready": "Ready",
+      "waiting": "Waiting",
+      "empty": "Approve the script, then generate a voice design below. The app will determine the persona, timbre, style, emotion, and pacing."
+    },
+    "actions": {
+      "voicePlan": "Generate voice design",
+      "voice": "Generate voiceover",
+      "storyboards": "Generate storyboards",
+      "videos": "Generate videos",
+      "compose": "Compose video",
+      "stop": "Stop current stage"
+    },
+    "progress": {
+      "apiReady": "API configured",
+      "apiMissing": "API not configured",
+      "count": "{{done}} / {{total}} stages",
+      "tasks": "{{done}} / {{total}} media tasks"
+    },
+    "hints": {
+      "busy": "This stage is running",
+      "api": "Configure the API Key first",
+      "approve": "Approve the script on the left first",
+      "voicePlan": "Next: generate voice design",
+      "voice": "Next: generate voiceover",
+      "storyboards": "Next: generate storyboards",
+      "videos": "Next: generate videos",
+      "compose": "Next: compose video",
+      "done": "Final video ready"
+    },
+    "messages": {
+      "voicePlanFirst": "Generate the voice design first",
+      "voiceFirst": "Generate the voiceover first",
+      "imagePartial": "Some storyboards failed. Retry them in the media library.",
+      "videoPartial": "Some videos failed. Retry them in the media library.",
+      "assetsIncomplete": "Voiceover or video clips are incomplete",
+      "composed": "Video composed",
+      "imageFailed": "Storyboard generation failed",
+      "videoFailed": "Video generation failed",
+      "cancelled": "Local polling and remaining steps stopped. Cloud work may continue and incur charges.",
+      "visualAnchor": "Global continuity"
+    }
+  },
   "features": {
     "llm": {
       "config": {

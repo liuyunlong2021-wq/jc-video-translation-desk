@@ -1,17 +1,31 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { BrowserWindow, ipcMain, dialog, app, shell } from 'electron'
+import { BrowserWindow, ipcMain, shell } from 'electron'
 import { sqBulkInsertOrUpdate, sqDelete, sqInsert, sqQuery, sqUpdate } from './sqlite'
-import {
-  ListFilesFromFolderParams,
-  OpenExternalParams,
-  SelectFolderParams,
-  StatEventParams,
-} from './types'
-import { edgeTtsGetVoiceList, edgeTtsSynthesizeToBase64, edgeTtsSynthesizeToFile } from './tts'
-import { renderVideo } from './ffmpeg'
+import { OpenExternalParams, StatEventParams } from './types'
+import { composeGeneratedVideo } from './ffmpeg'
 import { sendStatEvent } from './lib/stat'
+import {
+  API_KEYS_URL,
+  cancelRun,
+  generateScript,
+  generateSegmentVideo,
+  generateStoryboardImage,
+  generateVoice,
+  hasApiKey,
+  resumePendingTasks,
+  runSkill,
+  saveApiKey,
+  testApiKey,
+  withRunAbort,
+} from './cloud'
+import {
+  assertRunAsset,
+  exportMedia,
+  loadLatestMediaState,
+  saveMediaState,
+  selectCoreReference,
+} from './media-workspace'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let windowMaximizedByApp = false
@@ -26,54 +40,6 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
   ? path.join(process.env.APP_ROOT, 'public')
   : RENDERER_DIST
-
-function canUsePath(folderPath?: string | null) {
-  if (!folderPath) {
-    return false
-  }
-
-  try {
-    fs.accessSync(folderPath, fs.constants.R_OK)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function tryGetElectronPath(name: Parameters<typeof app.getPath>[0]) {
-  try {
-    return app.getPath(name)
-  } catch (error: any) {
-    console.warn(`[select-folder] getPath(${name}) failed:`, error?.message ?? String(error))
-    return null
-  }
-}
-
-function resolveDefaultFolderPath(customPath?: string | null) {
-  if (canUsePath(customPath)) {
-    return customPath!
-  }
-
-  const fallbackPathKeys: Parameters<typeof app.getPath>[0][] = [
-    'downloads',
-    'desktop',
-    'documents',
-    'home',
-  ]
-
-  for (const key of fallbackPathKeys) {
-    const folderPath = tryGetElectronPath(key)
-    if (canUsePath(folderPath)) {
-      return folderPath
-    }
-  }
-
-  if (canUsePath(process.cwd())) {
-    return process.cwd()
-  }
-
-  return null
-}
 
 export default function initIPC() {
   // sqlite 查询
@@ -161,75 +127,65 @@ export default function initIPC() {
 
   // 打开外部链接
   ipcMain.handle('open-external', (_event, params: OpenExternalParams) => {
-    shell.openExternal(params.url)
+    if (params.url !== API_KEYS_URL) throw new Error('不允许打开该外部地址')
+    return shell.openExternal(API_KEYS_URL)
   })
 
-  // 选择文件夹
-  ipcMain.handle('select-folder', async (event, params?: SelectFolderParams) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (!win) {
-      throw new Error('无法获取窗口')
-    }
-
-    const defaultPath = resolveDefaultFolderPath(params?.defaultPath)
-
-    const dialogOptions: Electron.OpenDialogOptions = {
-      properties: ['openDirectory'],
-      title: params?.title || '选择文件夹',
-    }
-
-    if (defaultPath) {
-      dialogOptions.defaultPath = defaultPath
-    } else {
-      console.warn('[select-folder] all fallback defaultPath attempts unavailable')
-    }
-
-    const result = await dialog.showOpenDialog(win, dialogOptions)
-    if (!result.canceled && result.filePaths.length > 0) {
-      return result.filePaths[0] // 返回绝对路径
-    }
-    return null
-  })
-
-  // 读取文件夹内所有文件
-  ipcMain.handle('list-files-from-folder', async (_event, params: ListFilesFromFolderParams) => {
-    const files = await fs.promises.readdir(params.folderPath, { withFileTypes: true })
-    return files
-      .filter((file) => file.isFile())
-      .map((file) => ({
-        name: file.name,
-        path: path.join(params.folderPath, file.name).replace(/\\/g, '/'),
-      }))
-  })
-
-  // 获取EdgeTTS语音列表
-  ipcMain.handle('edge-tts-get-voice-list', () => edgeTtsGetVoiceList())
+  ipcMain.handle('cloud-has-api-key', () => hasApiKey())
+  ipcMain.handle('cloud-save-api-key', (_event, apiKey: string) => saveApiKey(apiKey))
+  ipcMain.handle('cloud-test-api-key', () => testApiKey())
+  ipcMain.handle('cloud-generate-script', (_event, brief) => generateScript(brief))
+  ipcMain.handle('cloud-run-skill', (_event, skillName: string, input: string, runId?: string) =>
+    runSkill(skillName, input, runId),
+  )
+  ipcMain.handle(
+    'cloud-generate-voice',
+    (_event, runId: string, text: string, voicePrompt: string) =>
+      generateVoice(runId, text, voicePrompt),
+  )
+  ipcMain.handle('cloud-generate-storyboard', (_event, params) =>
+    generateStoryboardImage(
+      params.runId,
+      params.index,
+      params.prompt,
+      params.ratio,
+      params.referencePath,
+    ),
+  )
+  ipcMain.handle('cloud-generate-video', (_event, params) =>
+    generateSegmentVideo(
+      params.runId,
+      params.index,
+      params.prompt,
+      params.ratio,
+      params.generationDuration,
+      params.imagePath,
+    ),
+  )
+  ipcMain.handle('cloud-compose-video', (_event, params) =>
+    withRunAbort(params.runId, (signal) =>
+      composeGeneratedVideo({ ...params, abortSignal: signal }),
+    ),
+  )
+  ipcMain.handle('cloud-resume-pending', (_event, runId: string) => resumePendingTasks(runId))
+  ipcMain.handle('cloud-select-core-reference', (_event, runId: string) =>
+    selectCoreReference(runId),
+  )
+  ipcMain.handle('cloud-load-latest-state', () => loadLatestMediaState())
+  ipcMain.handle('cloud-save-state', (_event, runId: string, value: string) =>
+    saveMediaState(runId, value),
+  )
+  ipcMain.handle('cloud-cancel-run', (_event, runId: string) => cancelRun(runId))
+  ipcMain.handle('cloud-export-media', (_event, runId: string, sourcePath: string) =>
+    exportMedia(assertRunAsset(runId, sourcePath)),
+  )
+  ipcMain.handle('cloud-show-media', (_event, runId: string, sourcePath: string) =>
+    shell.showItemInFolder(assertRunAsset(runId, sourcePath)),
+  )
+  ipcMain.handle('cloud-resolve-media', (_event, runId: string, sourcePaths: string[]) =>
+    sourcePaths.map((sourcePath) => assertRunAsset(runId, sourcePath)),
+  )
 
   // 统计事件上报
   ipcMain.handle('stat-track', (_event, params: StatEventParams) => sendStatEvent(params))
-
-  // 语音合成并获取Base64
-  ipcMain.handle('edge-tts-synthesize-to-base64', (_event, params) =>
-    edgeTtsSynthesizeToBase64(params),
-  )
-
-  // 保存语音合成到文件
-  ipcMain.handle('edge-tts-synthesize-to-file', (_event, params) => edgeTtsSynthesizeToFile(params))
-
-  // 渲染视频
-  ipcMain.handle('render-video', (_event, params) => {
-    // 进度回调
-    const onProgress = (progress: number) => {
-      _event.sender.send('render-video-progress', progress)
-    }
-
-    // 创建 AbortController
-    const controller = new AbortController()
-    // 监听取消事件
-    ipcMain.once('cancel-render-video', () => {
-      controller.abort()
-    })
-
-    return renderVideo({ ...params, onProgress, abortSignal: controller.signal })
-  })
 }

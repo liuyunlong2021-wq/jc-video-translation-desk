@@ -1,10 +1,9 @@
 import fs from 'node:fs'
 import os from 'os'
 import { spawn } from 'child_process'
-import { ExecuteFFmpegResult, RenderVideoParams } from './types'
-import { getTempTtsVoiceFilePath } from '../tts'
-import path from 'node:path'
-import { generateUniqueFileName } from '../lib/tools'
+import type { ComposeGeneratedVideoParams, ExecuteFFmpegResult } from './types.ts'
+import { generateUniqueFileName } from '../lib/tools.ts'
+import { assertRunAsset, ensureRunDir, getRunAssetPath, mediaDuration } from '../media-workspace.ts'
 
 const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 const isWindows = process.platform === 'win32'
@@ -13,176 +12,76 @@ const ffmpegPath: string = VITE_DEV_SERVER_URL
   ? require('ffmpeg-static')
   : (require('ffmpeg-static') as string).replace('app.asar', 'app.asar.unpacked')
 
-// async function test() {
-//   try {
-//     const result = await executeFFmpeg(['-version'])
-//     console.log(result.stdout)
-//   } catch (error) {
-//     console.log(error)
-//   }
-// }
-// test()
+const OUTPUT_SIZES = {
+  '9:16': [1080, 1920],
+  '16:9': [1920, 1080],
+  '1:1': [1080, 1080],
+  '4:3': [1440, 1080],
+  '3:4': [1080, 1440],
+  '21:9': [1920, 824],
+} as const
 
-export async function renderVideo(
-  params: RenderVideoParams & {
+export async function composeGeneratedVideo(
+  params: ComposeGeneratedVideoParams & {
     onProgress?: (progress: number) => void
     abortSignal?: AbortSignal
   },
-): Promise<ExecuteFFmpegResult> {
-  try {
-    // 解构参数
-    const { videoFiles, timeRanges, outputSize, outputDuration, onProgress, abortSignal } = params
-
-    // 音频默认配置
-    const audioFiles = params.audioFiles ?? {}
-    audioFiles.voice = params.audioFiles?.voice ?? getTempTtsVoiceFilePath()
-
-    // 字幕默认配置
-    const subtitleFile =
-      params.subtitleFile ??
-      path
-        .join(
-          path.dirname(getTempTtsVoiceFilePath()),
-          path.basename(getTempTtsVoiceFilePath(), '.mp3') + '.srt',
-        )
-        .replace(/\\/g, '/')
-
-    // 输出路径默认配置
-    if (!fs.existsSync(path.dirname(params.outputPath))) {
-      throw new Error(`输出路径不存在`)
-    }
-    const outputPath = generateUniqueFileName(params.outputPath)
-
-    // 构建args指令
-    const args = []
-
-    // 添加所有视频输入
-    videoFiles.forEach((file) => {
-      args.push('-i', `${file}`)
-    })
-
-    // 添加音频输入
-    // 语音音轨
-    args.push('-i', `${audioFiles.voice}`)
-
-    // 背景音乐
-    audioFiles?.bgm && args.push('-i', `${audioFiles.bgm}`)
-
-    // 构建复杂滤镜
-    const filters = []
-    const videoStreams: string[] = []
-
-    // 处理每个视频片段
-    videoFiles.forEach((_, index) => {
-      const [start, end] = timeRanges[index]
-      const streamLabel = `v${index}`
-      videoStreams.push(streamLabel)
-
-      // 使用 trim、setpts、scale、pad 等操作处理视频
-      filters.push(
-        `[${index}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=${outputSize.width}:${outputSize.height}:force_original_aspect_ratio=decrease,pad=${outputSize.width}:${outputSize.height}:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setsar=1[${streamLabel}]`,
-      )
-    })
-
-    // 拼接视频
-    filters.push(`[${videoStreams.join('][')}]concat=n=${videoFiles.length}:v=1:a=0[vconcat]`)
-
-    // 重置时间基、帧率、色彩空间
-    filters.push(`[vconcat]fps=30,format=yuv420p,setpts=PTS-STARTPTS[vout]`)
-
-    // 在视频拼接后添加字幕
-    filters.push(`[vout]subtitles=${subtitleFile.replace(/\:/g, '\\\\:')}[with_subs]`)
-
-    // 音频处理：使用响度归一化(loudnorm)确保音量均衡
-    const voiceStreamIdx = videoFiles.length
-    const bgmStreamIdx = audioFiles?.bgm ? videoFiles.length + 1 : null
-
-    if (outputDuration) {
-      // 先对音频trim到目标时长，避免loudnorm导致的截断
-      const voiceLoudnorm = `loudnorm=I=-16:TP=-1.5:LRA=11`
-      filters.push(`[${voiceStreamIdx}:a]${voiceLoudnorm}[voice_norm_raw]`)
-      filters.push(
-        `[voice_norm_raw]atrim=0:${outputDuration},asetpts=PTS-STARTPTS[voice_normalized]`,
-      )
-
-      if (bgmStreamIdx !== null) {
-        const bgmLoudnorm = `loudnorm=I=-25:TP=-1.5:LRA=11`
-        // 对BGM先归一化，然后trim到目标时长
-        filters.push(`[${bgmStreamIdx}:a]${bgmLoudnorm}[bgm_norm_raw]`)
-        filters.push(`[bgm_norm_raw]atrim=0:${outputDuration},asetpts=PTS-STARTPTS[bgm_trimmed]`)
-        // 使用 duration=first 混合（以语音为准），并添加 dropout_transition=0
-        filters.push(
-          `[voice_normalized][bgm_trimmed]amix=inputs=2:duration=first:dropout_transition=0[final_audio]`,
-        )
-      } else {
-        filters.push(`[voice_normalized]acopy[final_audio]`)
-      }
-    } else {
-      const voiceLoudnorm = `loudnorm=I=-16:TP=-1.5:LRA=11`
-      filters.push(`[${voiceStreamIdx}:a]${voiceLoudnorm}[voice_normalized]`)
-
-      if (bgmStreamIdx !== null) {
-        const bgmLoudnorm = `loudnorm=I=-25:TP=-1.5:LRA=11`
-        filters.push(`[${bgmStreamIdx}:a]${bgmLoudnorm}[bgm_normalized]`)
-        filters.push(
-          `[voice_normalized][bgm_normalized]amix=inputs=2:duration=first:dropout_transition=0[final_audio]`,
-        )
-      } else {
-        filters.push(`[voice_normalized]acopy[final_audio]`)
-      }
-    }
-
-    // 设置 filter_complex
-    args.push('-filter_complex', `${filters.join(';')}`)
-
-    // 映射输出流
-    args.push('-map', '[with_subs]', '-map', '[final_audio]')
-
-    // 编码参数
-    args.push(
-      '-c:v',
-      'libx264',
-      '-preset',
-      'medium',
-      '-crf',
-      '23',
-      '-r',
-      '30',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '128k',
-      '-fps_mode',
-      'cfr',
-      '-s',
-      `${outputSize.width}x${outputSize.height}`,
-      '-progress',
-      'pipe:1',
-      ...(outputDuration ? ['-t', outputDuration] : []),
-      '-stats',
-      outputPath,
-    )
-
-    // 打印命令
-    // console.log('传入参数:', params)
-    // console.log('执行命令:', args.join(' '))
-
-    // 执行命令
-    const result = await executeFFmpeg(args, { onProgress, abortSignal })
-
-    // 移除临时文件
-    if (fs.existsSync(audioFiles.voice)) {
-      fs.unlinkSync(audioFiles.voice)
-    }
-    if (fs.existsSync(subtitleFile)) {
-      fs.unlinkSync(subtitleFile)
-    }
-
-    // 返回结果
-    return result
-  } catch (error) {
-    throw error
+) {
+  if (!params.videoFiles.length || params.videoFiles.length !== params.playDurations.length) {
+    throw new Error('视频片段和时长不匹配')
   }
+  const durations = params.playDurations.map(Number)
+  if (durations.some((duration) => !Number.isFinite(duration) || duration <= 0)) {
+    throw new Error('视频片段时长无效')
+  }
+  const videoFiles = params.videoFiles.map((file) => assertRunAsset(params.runId, file))
+  const voiceFile = assertRunAsset(params.runId, params.voiceFile)
+  await ensureRunDir(params.runId)
+  const outputPath = generateUniqueFileName(getRunAssetPath(params.runId, 'final'))
+  const [width, height] = OUTPUT_SIZES[params.ratio]
+  const totalDuration = await mediaDuration(voiceFile)
+  durations[durations.length - 1] +=
+    totalDuration - durations.reduce((total, duration) => total + duration, 0)
+  const args: string[] = []
+  videoFiles.forEach((file) => args.push('-i', file))
+  args.push('-i', voiceFile)
+
+  const streams = videoFiles.map((_, index) => `v${index}`)
+  const filters = videoFiles.map((_, index) => {
+    const duration = durations[index]
+    return `[${index}:v]setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setsar=1,tpad=stop_mode=clone:stop_duration=${duration},trim=duration=${duration}[v${index}]`
+  })
+  filters.push(`[${streams.join('][')}]concat=n=${streams.length}:v=1:a=0[vout]`)
+  filters.push(
+    `[${videoFiles.length}:a]loudnorm=I=-16:TP=-1.5:LRA=11,atrim=0:${totalDuration},asetpts=PTS-STARTPTS[aout]`,
+  )
+
+  args.push(
+    '-filter_complex',
+    filters.join(';'),
+    '-map',
+    '[vout]',
+    '-map',
+    '[aout]',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'medium',
+    '-crf',
+    '23',
+    '-r',
+    '30',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '128k',
+    '-t',
+    String(totalDuration),
+    '-y',
+    outputPath,
+  )
+  await executeFFmpeg(args, params)
+  return outputPath
 }
 
 export async function executeFFmpeg(

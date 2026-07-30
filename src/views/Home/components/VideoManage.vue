@@ -1,311 +1,154 @@
 <template>
-  <div class="w-full h-full">
-    <v-form class="w-full h-full" :disabled="disabled">
-      <v-sheet class="h-full p-2 flex flex-col" border rounded>
-        <div class="flex gap-2 mb-2">
-          <v-text-field
-            v-model="appStore.videoAssetsFolder"
-            :label="t('features.assets.config.folderLabel')"
-            density="compact"
-            hide-details
-            readonly
-          >
-          </v-text-field>
-          <v-btn
-            class="mt-[2px]"
-            prepend-icon="mdi-folder-open"
-            :disabled="disabled"
-            @click="handleSelectFolder"
-          >
-            {{ t('common.buttons.selectFolder') }}
-          </v-btn>
-        </div>
+  <v-sheet class="h-full min-h-0 p-3 flex flex-col" border rounded>
+    <div class="flex items-center justify-between gap-2 mb-2">
+      <div class="text-subtitle-1 font-weight-medium">{{ t('workflow.library.title') }}</div>
+      <v-chip size="small" variant="tonal" title="veo-3.1-generate-preview">Veo 3.1</v-chip>
+    </div>
 
-        <div class="flex-1 h-0 w-full border">
-          <div
-            v-if="videoAssets.length"
-            class="w-full max-h-full overflow-y-auto grid grid-cols-3 gap-2 p-2"
-          >
-            <div
-              class="w-full h-full max-h-[200px]"
-              v-for="(item, index) in videoAssets"
-              :key="index"
-            >
-              <VideoAutoPreview :asset="item" />
-            </div>
-          </div>
-          <v-empty-state
-            v-else
-            :headline="t('emptyStates.noContent')"
-            :text="t('emptyStates.hintSelectFolder')"
-          ></v-empty-state>
-        </div>
+    <v-btn-toggle v-model="filter" mandatory density="compact" class="library-filters mb-2">
+      <v-btn v-for="item in filters" :key="item.value" :value="item.value" size="small">
+        {{ item.title }}
+      </v-btn>
+    </v-btn-toggle>
 
-        <div class="my-2">
-          <v-btn
-            block
-            prepend-icon="mdi-refresh"
-            :disabled="disabled || !appStore.videoAssetsFolder"
-            :loading="refreshAssetsLoading"
-            @click="refreshAssets"
-          >
-            {{ t('common.buttons.refreshAssets') }}
+    <div v-if="!hasVisibleAssets" class="flex-1 grid place-items-center text-medium-emphasis text-body-2 text-center px-6">
+      {{ t('workflow.library.empty') }}
+    </div>
+    <div v-else class="min-h-0 flex-1 overflow-y-auto pr-1">
+      <div v-if="voiceVisible" class="voice-row mb-2">
+        <v-icon size="20">mdi-waveform</v-icon>
+        <div class="voice-label">{{ t('workflow.library.voice') }}<small>{{ mediaStore.voiceDuration.toFixed(1) }}s</small></div>
+        <audio controls :src="fileUrl(mediaStore.voicePath)" />
+      </div>
+      <div v-if="visibleAssets.length" class="asset-grid">
+        <button
+          v-for="asset in visibleAssets"
+          :key="asset.id"
+          type="button"
+          class="asset-tile"
+          @click="selected = asset"
+        >
+          <img v-if="asset.path && (asset.kind === 'reference' || asset.kind === 'storyboard')" :src="fileUrl(asset.path)" :alt="asset.title" />
+          <video v-else-if="asset.path && (asset.kind === 'video' || asset.kind === 'final')" :src="fileUrl(asset.path)" muted preload="metadata" />
+          <div v-else class="asset-placeholder"><v-icon size="28">{{ asset.kind === 'storyboard' ? 'mdi-image-outline' : 'mdi-video-outline' }}</v-icon></div>
+          <div class="asset-meta"><strong>{{ asset.title }}</strong><small>{{ statusText(asset.status) }}</small></div>
+          <v-icon v-if="asset.error" class="asset-error" color="error" size="18">mdi-alert-circle</v-icon>
+        </button>
+      </div>
+    </div>
+
+    <v-dialog :model-value="Boolean(selected)" max-width="820" @update:model-value="!$event && (selected = null)">
+      <v-card v-if="selected" :title="selected.title">
+        <template #append>
+          <v-btn icon="mdi-close" variant="text" :title="t('common.buttons.close')" @click="selected = null" />
+        </template>
+        <v-card-text class="preview-body">
+          <img v-if="selected.path && (selected.kind === 'reference' || selected.kind === 'storyboard')" :src="fileUrl(selected.path)" :alt="selected.title" class="preview-media" />
+          <video v-else-if="selected.path && (selected.kind === 'video' || selected.kind === 'final')" :src="fileUrl(selected.path)" class="preview-media" controls autoplay preload="metadata" />
+          <div v-else class="preview-placeholder"><v-icon size="48">mdi-alert-circle-outline</v-icon><span>{{ statusText(selected.status) }}</span></div>
+
+          <div v-if="selected.segment" class="text-body-2">{{ selected.segment.script }}</div>
+          <details v-if="selected.segment?.storyboardImagePrompt">
+            <summary>{{ t('workflow.library.storyboardPrompt') }}</summary>
+            <div class="prompt-text">{{ selected.segment.storyboardImagePrompt }}</div>
+          </details>
+          <details v-if="selected.segment?.videoPrompt">
+            <summary>{{ t('workflow.library.videoPrompt') }}</summary>
+            <div class="prompt-text">{{ selected.segment.videoPrompt }}</div>
+          </details>
+          <div v-if="selected.error" class="text-error text-body-2">{{ selected.error }}</div>
+        </v-card-text>
+        <v-card-actions>
+          <v-btn v-if="selected.kind === 'storyboard'" variant="tonal" :disabled="Boolean(mediaStore.busyAction)" @click="retryImage(selected.segment!.index)">
+            {{ t('workflow.library.regenerateStoryboard') }}
           </v-btn>
-        </div>
-      </v-sheet>
-    </v-form>
-  </div>
+          <v-btn v-if="selected.kind === 'video'" variant="tonal" :disabled="Boolean(mediaStore.busyAction)" @click="retryVideo(selected.segment!.index)">
+            {{ t('workflow.library.regenerateVideo') }}
+          </v-btn>
+          <v-spacer />
+          <v-btn v-if="selected.kind === 'final'" prepend-icon="mdi-folder-open-outline" variant="tonal" @click="showFinal">{{ t('workflow.library.show') }}</v-btn>
+          <v-btn v-if="selected.kind === 'final'" prepend-icon="mdi-download" color="primary" variant="tonal" @click="exportFinal">{{ t('workflow.library.export') }}</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+  </v-sheet>
 </template>
 
-<script lang="ts" setup>
-import { h, onMounted, ref, toRaw } from 'vue'
-import { useTranslation } from 'i18next-vue'
-import { useAppStore } from '@/store'
+<script setup lang="ts">
+import { computed, ref } from 'vue'
 import { useToast } from 'vue-toastification'
-import { ListFilesFromFolderRecord } from '~/electron/types'
-import { RenderVideoParams } from '~/electron/ffmpeg/types'
-import VideoAutoPreview from '@/components/VideoAutoPreview.vue'
-import ActionToastEmbed from '@/components/ActionToastEmbed.vue'
-import random from 'random'
-import { formatErrorForCopy } from '@/lib/error-copy'
+import { useTranslation } from 'i18next-vue'
+import { useMediaTaskStore } from '@/store'
+import type { StoryboardSegment } from '@/runtime/videoWorkflow'
+import { managedMediaUrl } from '@/runtime/managedMediaUrl'
 
+type AssetKind = 'reference' | 'voice' | 'storyboard' | 'video' | 'final'
+type AssetStatus = StoryboardSegment['imageStatus'] | StoryboardSegment['videoStatus'] | 'success'
+type Asset = { id: string; kind: Exclude<AssetKind, 'voice'>; title: string; path?: string; status: AssetStatus; segment?: StoryboardSegment; error?: string }
+
+const emit = defineEmits<{ retryImage: [index: number]; retryVideo: [index: number] }>()
+const mediaStore = useMediaTaskStore()
 const toast = useToast()
-const appStore = useAppStore()
 const { t } = useTranslation()
-
-defineProps<{
-  disabled?: boolean
-}>()
-
-// 选择文件夹
-const handleSelectFolder = async () => {
-  const folderPath = await window.electron.selectFolder({
-    title: t('dialogs.selectAssetsFolder'),
-    defaultPath: appStore.videoAssetsFolder,
-  })
-  console.log('用户选择分镜素材文件夹，绝对路径：', folderPath)
-  if (folderPath) {
-    appStore.videoAssetsFolder = folderPath
-    refreshAssets()
+const filter = ref<'all' | AssetKind>('all')
+const selected = ref<Asset | null>(null)
+const filters = computed(() => [
+  { value: 'all', title: t('workflow.library.all') },
+  { value: 'reference', title: t('workflow.library.reference') },
+  { value: 'voice', title: t('workflow.library.voice') },
+  { value: 'storyboard', title: t('workflow.library.storyboards') },
+  { value: 'video', title: t('workflow.library.videos') },
+  { value: 'final', title: t('workflow.library.final') },
+])
+const assets = computed<Asset[]>(() => {
+  const items: Asset[] = []
+  if (mediaStore.finalPath) items.push({ id: 'final', kind: 'final', title: t('workflow.library.final'), path: mediaStore.finalPath, status: 'success' })
+  if (mediaStore.coreReference) items.push({ id: mediaStore.coreReference.id, kind: 'reference', title: mediaStore.coreReference.label, path: mediaStore.coreReference.relativePath, status: 'success' })
+  for (const segment of mediaStore.segments) {
+    items.push({ id: `image-${segment.index}`, kind: 'storyboard', title: t('workflow.library.storyboardNumber', { index: segment.index }), path: segment.imagePath, status: segment.imageStatus, segment, error: segment.imageStatus === 'failed' ? segment.error : undefined })
+    if (segment.videoPath || segment.videoStatus === 'running' || segment.videoStatus === 'failed' || segment.videoStatus === 'success') items.push({ id: `video-${segment.index}`, kind: 'video', title: `${t('workflow.library.videoNumber', { index: segment.index })} · ${segment.playDuration.toFixed(1)}s`, path: segment.videoPath, status: segment.videoStatus, segment, error: segment.videoStatus === 'failed' ? segment.error : undefined })
   }
-}
-
-// 刷新素材库
-const videoAssets = ref<ListFilesFromFolderRecord[]>([])
-const videoDurationCache = ref(new Map<string, number>())
-const refreshAssetsLoading = ref(false)
-const refreshAssets = async () => {
-  if (!appStore.videoAssetsFolder) {
-    return
-  }
-  refreshAssetsLoading.value = true
-  try {
-    const assets = await window.electron.listFilesFromFolder({
-      folderPath: appStore.videoAssetsFolder,
-    })
-    console.log(`素材库刷新:`, assets)
-    videoAssets.value = assets.filter((asset) => asset.name.toLowerCase().endsWith('.mp4'))
-    videoDurationCache.value.clear()
-    if (!videoAssets.value.length) {
-      if (assets.length) {
-        toast.warning(t('features.assets.errors.noMp4InFolder'))
-      } else {
-        toast.warning(t('emptyStates.assetsFolderEmpty'))
-      }
-    } else {
-      toast.success(t('features.assets.success.loadSucceeded'))
-    }
-  } catch (error: any) {
-    console.dir(error)
-    const errorMessage = error?.error?.message || error?.message || error
-    toast.error({
-      component: {
-        // 使用vnode方式创建自定义错误弹窗实例，以获得良好的类型提示
-        render: () =>
-          h(ActionToastEmbed, {
-            message: t('features.assets.errors.loadFailed'),
-            detail: String(errorMessage),
-            actionText: t('common.buttons.copyErrorDetail'),
-            onActionTirgger: () => {
-              navigator.clipboard.writeText(
-                formatErrorForCopy(t('features.assets.errors.loadFailed'), String(errorMessage)),
-              )
-              toast.success(t('common.messages.success.copySuccess'))
-            },
-          }),
-      },
-    })
-  } finally {
-    refreshAssetsLoading.value = false
-  }
-}
-onMounted(() => {
-  refreshAssets()
+  return items
 })
+const visibleAssets = computed(() => filter.value === 'all' ? assets.value : assets.value.filter((asset) => asset.kind === filter.value))
+const voiceVisible = computed(() => Boolean(mediaStore.voicePath) && (filter.value === 'all' || filter.value === 'voice'))
+const hasVisibleAssets = computed(() => voiceVisible.value || visibleAssets.value.length > 0)
 
-const readVideoDuration = (assetPath: string) => {
-  const cached = videoDurationCache.value.get(assetPath)
-  if (typeof cached === 'number' && Number.isFinite(cached) && cached > 0) {
-    return Promise.resolve(cached)
-  }
-
-  return new Promise<number>((resolve, reject) => {
-    const video = document.createElement('video')
-    const normalizedPath = assetPath.replace(/\\/g, '/')
-    const src = normalizedPath.startsWith('/')
-      ? `file://${normalizedPath}`
-      : `file:///${normalizedPath}`
-    const timeout = window.setTimeout(() => {
-      cleanup()
-      reject(new Error('读取视频元数据超时'))
-    }, 8000)
-
-    const cleanup = () => {
-      window.clearTimeout(timeout)
-      video.removeEventListener('loadedmetadata', onLoaded)
-      video.removeEventListener('error', onError)
-      video.pause()
-      video.removeAttribute('src')
-      video.load()
-    }
-
-    const onLoaded = () => {
-      const duration = video.duration
-      cleanup()
-      if (!Number.isFinite(duration) || duration <= 0) {
-        reject(new Error('视频时长无效'))
-        return
-      }
-      videoDurationCache.value.set(assetPath, duration)
-      resolve(duration)
-    }
-
-    const onError = () => {
-      cleanup()
-      reject(new Error('视频元数据读取失败'))
-    }
-
-    video.preload = 'metadata'
-    video.addEventListener('loadedmetadata', onLoaded)
-    video.addEventListener('error', onError)
-    video.src = encodeURI(src)
-  })
+function fileUrl(filePath: string) {
+  return managedMediaUrl(mediaStore.runId, filePath)
 }
-
-// 获取视频分镜随机素材片段
-const getVideoSegments = async (options: { duration: number }) => {
-  if (options.duration <= 0) {
-    throw new Error(t('features.assets.errors.audioDurationInvalid'))
-  }
-
-  if (!videoAssets.value.length) {
-    throw new Error(t('features.assets.errors.noVideoAssets'))
-  }
-
-  // 搜集随机素材片段
-  const segments: Pick<RenderVideoParams, 'videoFiles' | 'timeRanges'> = {
-    videoFiles: [],
-    timeRanges: [],
-  }
-  const minSegmentDuration = 2
-  const maxSegmentDuration = 15
-
-  let currentTotalDuration = 0
-  let tempVideoAssets = structuredClone(toRaw(videoAssets.value))
-  const trunc3 = (n: number) => ((n * 1e3) << 0) / 1e3
-  let attempts = 0
-  const maxAttempts = Math.max(videoAssets.value.length * 6, 60)
-
-  while (currentTotalDuration < options.duration) {
-    if (attempts > maxAttempts) {
-      throw new Error(t('features.assets.errors.durationInsufficient'))
-    }
-
-    // 如果素材库中没有剩余素材，时长还不够，重新来一轮
-    if (tempVideoAssets.length === 0) {
-      tempVideoAssets = structuredClone(toRaw(videoAssets.value))
-      continue
-    }
-
-    // 获取一个随机素材以及相关信息
-    const randomAsset = random.choice(tempVideoAssets)!
-    const randomAssetIndex = tempVideoAssets.findIndex((asset) => asset.path === randomAsset.path)
-    if (randomAssetIndex < 0) {
-      attempts += 1
-      continue
-    }
-
-    // 删除已选素材
-    tempVideoAssets.splice(randomAssetIndex, 1)
-
-    attempts += 1
-
-    let randomAssetDuration = 0
-    try {
-      randomAssetDuration = await readVideoDuration(randomAsset.path)
-    } catch (error) {
-      console.warn('读取素材时长失败，跳过该素材：', randomAsset.path, error)
-      continue
-    }
-
-    if (!Number.isFinite(randomAssetDuration) || randomAssetDuration <= 0) {
-      continue
-    }
-
-    // 如果素材时长小于最小片段时长，直接添加
-    if (randomAssetDuration < minSegmentDuration) {
-      segments.videoFiles.push(randomAsset.path)
-      segments.timeRanges.push([String(0), String(trunc3(randomAssetDuration))])
-      currentTotalDuration = trunc3(currentTotalDuration + randomAssetDuration)
-      continue
-    }
-
-    // 如果素材时长大于最小片段时长，随机一个片段
-    let randomSegmentDuration = random.float(
-      minSegmentDuration,
-      Math.min(maxSegmentDuration, randomAssetDuration),
-    )
-
-    // 处理最后一个片段时长超出规划时长情况
-    if (currentTotalDuration + randomSegmentDuration > options.duration) {
-      randomSegmentDuration = options.duration - currentTotalDuration
-    }
-
-    // 处理最后一个片段时长小于最小片段时长情况
-    if (options.duration - currentTotalDuration - randomSegmentDuration < minSegmentDuration) {
-      if (options.duration - currentTotalDuration < randomAssetDuration) {
-        randomSegmentDuration = options.duration - currentTotalDuration
-      }
-    }
-
-    const randomSegmentStart = random.float(0, randomAssetDuration - randomSegmentDuration)
-
-    segments.videoFiles.push(randomAsset.path)
-    segments.timeRanges.push([
-      String(trunc3(randomSegmentStart)),
-      String(trunc3(randomSegmentStart + randomSegmentDuration)),
-    ])
-    currentTotalDuration = trunc3(currentTotalDuration + randomSegmentDuration)
-
-    console.table([
-      {
-        素材名称: randomAsset.name,
-        素材时长: randomAssetDuration,
-        片段开始: trunc3(randomSegmentStart),
-        片段时长: trunc3(randomSegmentDuration),
-      },
-    ])
-  }
-
-  console.log('随机素材片段总时长:', currentTotalDuration)
-  console.log('随机素材片段汇总:', segments)
-
-  return segments
+function statusText(status: AssetStatus) {
+  if (status === 'success') return t('workflow.library.ready')
+  if (status === 'running') return t('workflow.library.running')
+  if (status === 'failed') return t('workflow.library.failed')
+  if (status === 'cancelled') return t('workflow.library.cancelled')
+  return t('workflow.library.waiting')
 }
-
-defineExpose({ getVideoSegments })
+function retryImage(index: number) { selected.value = null; emit('retryImage', index) }
+function retryVideo(index: number) { selected.value = null; emit('retryVideo', index) }
+async function exportFinal() {
+  if (!mediaStore.finalPath) return
+  const output = await window.electron.cloud.exportMedia(mediaStore.runId, mediaStore.finalPath)
+  if (output) toast.success(t('workflow.library.exported', { path: output }))
+}
+function showFinal() { if (mediaStore.finalPath) window.electron.cloud.showMedia(mediaStore.runId, mediaStore.finalPath) }
 </script>
 
-<style lang="scss" scoped>
-//
+<style scoped>
+.library-filters { max-width: 100%; overflow-x: auto; flex: none; }
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); align-content: start; gap: 8px; }
+.asset-tile { position: relative; min-width: 0; padding: 0; overflow: hidden; border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 6px; background: transparent; text-align: left; }
+.asset-tile img, .asset-tile video, .asset-placeholder { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: grid; place-items: center; background: #171717; color: white; }
+.asset-meta { padding: 6px 8px; min-width: 0; }
+.asset-meta strong, .asset-meta small { display: block; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.asset-meta small { margin-top: 2px; color: rgba(0, 0, 0, 0.58); }
+.asset-error { position: absolute; top: 5px; right: 5px; }
+.voice-row { min-height: 48px; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 6px; }
+.voice-label { min-width: 78px; font-size: 12px; font-weight: 600; }
+.voice-label small { display: block; font-weight: 400; color: rgba(0, 0, 0, 0.58); }
+.voice-row audio { flex: 1; min-width: 0; height: 32px; }
+.preview-body { display: flex; flex-direction: column; gap: 12px; max-height: 72vh; overflow-y: auto; }
+.preview-media { width: 100%; max-height: 54vh; object-fit: contain; background: #111; border-radius: 4px; }
+.preview-placeholder { min-height: 220px; display: grid; place-items: center; align-content: center; gap: 8px; background: rgba(0, 0, 0, 0.04); }
+.prompt-text { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: rgba(0, 0, 0, 0.68); }
 </style>

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen, Menu } from 'electron'
+import { app, BrowserWindow, screen, Menu, protocol } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { isDev } from './lib/is-dev'
@@ -10,6 +10,11 @@ import { changeAppLanguage, initI18n } from './i18n'
 import { i18nLanguages } from './i18n/common-options'
 import useCookieAllowCrossSite from './lib/cookie-allow-cross-site'
 import { sendStatEvent } from './lib/stat'
+import { assertRunAsset } from './media-workspace'
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'short-video-media', privileges: { secure: true, standard: true, stream: true } },
+])
 
 // 用于引入 CommonJS 模块的方法
 // import { createRequire } from 'node:module'
@@ -194,6 +199,15 @@ app.on('activate', () => {
 // app.disableHardwareAcceleration();
 
 app.whenReady().then(() => {
+  protocol.registerFileProtocol('short-video-media', (request, callback) => {
+    try {
+      const url = new URL(request.url)
+      if (url.hostname !== 'asset') throw new Error('无效的媒体地址')
+      callback(assertRunAsset(url.searchParams.get('runId') || '', url.searchParams.get('path') || ''))
+    } catch {
+      callback({ error: -10 })
+    }
+  })
   initSqlite()
   initI18n()
   initIPC()
