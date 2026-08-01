@@ -1,1 +1,3 @@
-export const isDev = !!process.env['VITE_DEV_SERVER_URL']
+import { app } from 'electron'
+
+export const isDev = !app.isPackaged

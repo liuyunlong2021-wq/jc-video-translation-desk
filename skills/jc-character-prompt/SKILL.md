@@ -1,21 +1,29 @@
 ---
 name: jc-character-prompt
 description: Use when a user asks to create a character design prompt, character concept image, or reusable character visual asset from story material.
-triggers:
-  - '角色设计'
-  - '人物设定图'
-  - '角色提示词'
-  - '角色概念图'
-  - 'character design'
-  - '画角色'
-  - '设计角色'
-  - '角色卡'
-  - '人物设计'
-  - '找参考图'
-  - '角色参考'
 ---
 
 # 角色参考图 → 提示词
+
+## 应用运行时模式
+
+输入 `mode: "app-plan"` 时，直接从 `script` 提取所有需要跨镜保持一致的角色，一次输出：
+
+```json
+{ "assets": [{ "role": "character", "label": "角色名", "description": "角色职责", "identityTraits": ["不可漂移特征"], "styleRequirements": ["项目风格要求"], "required": true, "design": { "严格完整遵守 references/prompt-format.md 的 JSON 模板": "不得省略字段" }, "searchQuery": "从 design 派生的一条精确英文 Pinterest 查询" }] }
+```
+
+`design` 是唯一生图事实源，必须把输入 `projectStyle` 的视觉风格和比例原样写入 `design.project`。不得输出 `generationPrompt`、`prompt` 或另一份自然语言提示词。`searchQuery` 只能从完整 `design` 派生，严格使用“媒介 + 身份/原型与关键外貌 + 制作用途构图”的一条英文查询。真人项目必须包含 `live action` 以及 `full body cast portrait` 或 `full body character reference`；动画项目必须包含具体动画媒介以及 `character sheet` 或 `character turnaround`。例如 `live action anxious office worker full body cast portrait`。情绪只能修饰身份，不能替代角色构图词。不输出多个备选查询。没有角色时输出 `{ "assets": [] }`。不得提取场景或道具，不得返回路径、图片或其他字段。
+
+输入 `mode: "app-runtime"` 时跳过下方搜图、询问和文件流程。只读取 `asset` 和 `projectStyle`，输出：
+
+```json
+{ "assetId": "原样返回 asset.id", "design": {}, "searchQuery": "从 design 派生的一条精确英文 Pinterest 查询" }
+```
+
+`design` 必须严格完整遵守 `references/prompt-format.md`，锁定 `identityTraits`、服装、人物比例、项目风格和画面比例，使用纯净背景和可复用角色设定图构图。不得返回路径、图片、Markdown、`generationPrompt`、`prompt` 或其他字段。
+
+输入 `mode: "app-revise"` 时读取 `asset`、`currentDesign`、`instruction` 和 `projectStyle`，只把用户意见应用到完整设计，并从修改后的 `design` 重新派生 `searchQuery`，返回相同的 `{ "assetId", "design", "searchQuery" }` 合同。不得搜索、下载、生成图片或改变角色身份。
 
 > 输入人物小传 → Pinterest 搜索真实参考图 → 分析图片提取视觉DNA → 融合人物小传输出生图提示词。参考图是像素，不是回忆。
 
@@ -207,7 +215,7 @@ gallery-dl "<pin页面URL>" -d ./references/
 
 ## 约束
 
-1. 必须先有参考图，再有提示词——不凭空生成
+1. App 中先生成完整设计与提示词；参考图是可选增强，可随后联网搜索
 2. 身高必须出现在最终提示词中
 3. 不满意就换图，不走选项流程
 4. 视觉 DNA 提取必须详尽——不跳过任何维度

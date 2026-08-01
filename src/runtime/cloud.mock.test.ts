@@ -11,7 +11,7 @@ const { after, mock } = nodeTest as any
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'short-video-factory-cloud-'))
 let postCount = 0
 let downloadCount = 0
-let downloadMode: 'success' | 'fail-once' | 'abort' | 'unsafe-redirect' = 'fail-once'
+let downloadMode: 'success' | 'fail-once' | 'connection-closed' | 'abort' | 'unsafe-redirect' = 'fail-once'
 const requests: any[] = []
 const downloads: any[] = []
 const chatOutputs: any[] = []
@@ -135,6 +135,10 @@ mock.module('electron', {
               request.emit('error', new Error('download failed'))
               return
             }
+            if (downloadMode === 'connection-closed') {
+              request.emit('error', new Error('net::ERR_CONNECTION_CLOSED'))
+              return
+            }
             if (downloadMode === 'abort') return
             const response = Readable.from([
               url.includes('i.pinimg.com') ? Buffer.from([0xff, 0xd8, 0xff, 0xd9]) : Buffer.from([1, 2, 3]),
@@ -177,6 +181,15 @@ test('retries a failed download without resubmitting the paid image task', async
   assert.equal(downloadCount, 2)
   assert.equal(fs.readFileSync(output).byteLength, 3)
   assert.equal(JSON.parse(fs.readFileSync(pendingPath, 'utf8')).tasks[0].status, 'success')
+})
+
+test('falls back to the Node downloader when Electron closes a media connection', async () => {
+  downloadMode = 'connection-closed'
+  const before = downloadCount
+  const output = await cloud.generateStoryboardImage('connection-closed-run', 1, 'prompt', '9:16')
+  assert.equal(downloadCount, before + 2)
+  assert.equal(fs.readFileSync(output).byteLength, 3)
+  downloadMode = 'success'
 })
 
 test('uses an in-memory API key when secure storage is unavailable', async () => {
@@ -465,7 +478,7 @@ test('resumes persisted work and cancellation stops local download recovery', as
   assert.equal(runState.tasks.find((task: any) => task.id === 'storyboard:1').status, 'success')
 })
 
-test('submits the fixed voice and Veo contracts through controlled run assets', async () => {
+test('submits the fixed voice and selectable video contracts through controlled run assets', async () => {
   downloadMode = 'success'
   const runId = 'media-contract-run'
   const voice = await cloud.generateVoice(
@@ -483,7 +496,15 @@ test('submits the fixed voice and Veo contracts through controlled run assets', 
   assert.equal('language' in voiceRequest.data, false)
 
   const imagePath = await cloud.generateStoryboardImage(runId, 1, 'prompt', '9:16')
-  await cloud.generateSegmentVideo(runId, 1, '无背景音乐', '9:16', 8, imagePath)
+  await cloud.generateSegmentVideo(
+    runId,
+    1,
+    'veo-3.1-generate-preview',
+    '无背景音乐',
+    '9:16',
+    8,
+    imagePath,
+  )
   assert.equal(
     requests.some((request) => request.url.includes('/api/creations/uploads')),
     false,
@@ -502,9 +523,51 @@ test('submits the fixed voice and Veo contracts through controlled run assets', 
   assert.equal(videoDownload.headers.Authorization, 'Bearer test-key')
   assert.throws(() => workspace.assertRunAsset(runId, '../outside.mp4'), /素材不属于当前任务/)
   await assert.rejects(
-    cloud.generateSegmentVideo(runId, 2, '无背景音乐', '9:16', 7, imagePath),
+    cloud.generateSegmentVideo(
+      runId,
+      2,
+      'veo-3.1-generate-preview',
+      '无背景音乐',
+      '9:16',
+      7,
+      imagePath,
+    ),
     /4、6 或 8/,
   )
+  await assert.rejects(
+    cloud.generateSegmentVideo(
+      runId,
+      2,
+      'unknown-video-model' as any,
+      '无背景音乐',
+      '9:16',
+      6,
+      imagePath,
+    ),
+    /不支持的视频模型/,
+  )
+
+  const grokImagePath = await cloud.generateStoryboardImage(runId, 2, 'prompt', '9:16')
+  const grokRequestStart = requests.length
+  await cloud.generateSegmentVideo(
+    runId,
+    2,
+    'rh-grok-image-video',
+    '单一连续镜头',
+    '9:16',
+    4,
+    grokImagePath,
+  )
+  const grokRequest = requests
+    .slice(grokRequestStart)
+    .find((request) => request.url.endsWith('/v1/videos'))
+  assert.equal(grokRequest.data.model, 'rh-grok-image-video')
+  assert.equal(grokRequest.data.duration, 6)
+  assert.equal(grokRequest.data.aspectRatio, '9:16')
+  assert.equal(grokRequest.data.resolution, '720p')
+  assert.equal(grokRequest.data.images.length, 1)
+  assert.match(grokRequest.data.images[0], /^data:image\/png;base64,/)
+  assert.equal('input_reference' in grokRequest.data, false)
 })
 
 test('uses the selected text model and retries one malformed Skill JSON response', async () => {
@@ -625,8 +688,35 @@ test('imports one managed core reference and uses GPT Image edits multipart', as
     prop: { name: '展示手机' },
     shape: { silhouette: '完整手机' },
   }
-  await cloud.generateAssetImage('reference-run', 'asset-phone', design)
+  await cloud.generateAssetImage('reference-run', 'asset-phone', 'prop', design)
   const assetRequest = requests.filter((request) => request.url.endsWith('/v1/images/generations')).at(-1)
   assert.deepEqual(JSON.parse(assetRequest.data.prompt), design)
+
+  await cloud.generateAssetImage(
+    'reference-run',
+    'asset-phone-reference',
+    'prop',
+    design,
+    reference.relativePath,
+  )
+  const referencedAssetRequest = requests
+    .filter((request) => request.url.endsWith('/v1/images/edits'))
+    .at(-1)
+  assert.match(referencedAssetRequest.data.prompt, /请结合全部参考图生成/)
+  assert.match(referencedAssetRequest.data.prompt, /最终内容、画风和比例以资产设计 JSON 为准/)
+  assert.match(referencedAssetRequest.data.prompt, /"name": "展示手机"/)
+
+  await cloud.generateAssetImage(
+    'reference-run',
+    'asset-phone-multi-reference',
+    'prop',
+    design,
+    [reference.relativePath, 'inputs/second.png'],
+  )
+  const multiReferenceAssetRequest = requests
+    .filter((request) => request.url.endsWith('/v1/images/edits'))
+    .at(-1)
+  assert.equal(Array.isArray(multiReferenceAssetRequest.data.image), true)
+  assert.equal(multiReferenceAssetRequest.data.image.length, 2)
   selectedFile = ''
 })

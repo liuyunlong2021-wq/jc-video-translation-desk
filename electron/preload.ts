@@ -1,42 +1,17 @@
 import { ipcRenderer, contextBridge } from 'electron'
-import {
-  QueryParams,
-  InsertParams,
-  UpdateParams,
-  DeleteParams,
-  BulkInsertOrUpdateParams,
-} from './sqlite/types'
 import { OpenExternalParams, StatEventParams } from './types'
 
 // --------- 向界面渲染进程暴露某些API ---------
-
-contextBridge.exposeInMainWorld('ipcRenderer', {
-  on(...args: Parameters<typeof ipcRenderer.on>) {
-    const [channel, listener] = args
-    return ipcRenderer.on(channel, (event, ...args) => listener(event, ...args))
-  },
-  once(...args: Parameters<typeof ipcRenderer.once>) {
-    const [channel, listener] = args
-    return ipcRenderer.once(channel, (event, ...args) => listener(event, ...args))
-  },
-  off(...args: Parameters<typeof ipcRenderer.off>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.off(channel, ...omit)
-  },
-  send(...args: Parameters<typeof ipcRenderer.send>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.send(channel, ...omit)
-  },
-  invoke(...args: Parameters<typeof ipcRenderer.invoke>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.invoke(channel, ...omit)
-  },
-})
 
 contextBridge.exposeInMainWorld('i18n', {
   getLocalesPath: () => ipcRenderer.invoke('i18n-getLocalesPath'),
   getLanguage: () => ipcRenderer.invoke('i18n-getLanguage'),
   changeLanguage: (lng: string) => ipcRenderer.invoke('i18n-changeLanguage', lng),
+  onLanguageChanged: (listener: (lng: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, lng: string) => listener(lng)
+    ipcRenderer.on('i18n-changeLanguage', handler)
+    return () => ipcRenderer.off('i18n-changeLanguage', handler)
+  },
 })
 
 contextBridge.exposeInMainWorld('electron', {
@@ -58,12 +33,29 @@ contextBridge.exposeInMainWorld('electron', {
     testApiKey: () => ipcRenderer.invoke('cloud-test-api-key'),
     generateScript: (brief: import('./types').MediaScriptBrief) =>
       ipcRenderer.invoke('cloud-generate-script', brief),
-    runSkill: (skillName: string, input: string, runId?: string) =>
-      ipcRenderer.invoke('cloud-run-skill', skillName, input, runId),
-    generateVoice: (runId: string, text: string, voicePrompt: string) =>
-      ipcRenderer.invoke('cloud-generate-voice', runId, text, voicePrompt),
+    runSkill: (
+      skillName: string,
+      input: string,
+      runId?: string,
+      textModel?: import('./types').TextModel,
+    ) => ipcRenderer.invoke('cloud-run-skill', skillName, input, runId, textModel),
+    runWikiSkill: (
+      skillName: string,
+      input: string,
+      projectId: string,
+      textModel?: import('./types').TextModel,
+    ) => ipcRenderer.invoke('cloud-run-wiki-skill', skillName, input, projectId, textModel),
+    generateVoice: (
+      runId: string,
+      text: string,
+      voicePrompt: string,
+      engine: import('./types').VoiceEngine,
+    ) => ipcRenderer.invoke('cloud-generate-voice', runId, text, voicePrompt, engine),
+    localVoiceStatus: () => ipcRenderer.invoke('local-voice-status'),
     generateStoryboard: (params: import('./types').GenerateStoryboardImageParams) =>
       ipcRenderer.invoke('cloud-generate-storyboard', params),
+    generateAsset: (params: import('./types').GenerateAssetImageParams) =>
+      ipcRenderer.invoke('cloud-generate-asset', params),
     generateVideo: (params: import('./types').GenerateSegmentVideoParams) =>
       ipcRenderer.invoke('cloud-generate-video', params),
     composeVideo: (params: import('./ffmpeg/types').ComposeGeneratedVideoParams) =>
@@ -71,10 +63,49 @@ contextBridge.exposeInMainWorld('electron', {
     resumePending: (runId: string) => ipcRenderer.invoke('cloud-resume-pending', runId),
     selectCoreReference: (runId: string) =>
       ipcRenderer.invoke('cloud-select-core-reference', runId),
+    selectAssetImage: (runId: string, assetId: string) =>
+      ipcRenderer.invoke('project-select-asset-image', runId, assetId),
+    searchAssetImage: (runId: string, assetId: string, searchQuery: string, rejectedPinIds?: string[]) =>
+      ipcRenderer.invoke('project-search-asset-image', runId, assetId, searchQuery, rejectedPinIds),
     loadLatestState: () => ipcRenderer.invoke('cloud-load-latest-state'),
+    createProject: (projectId: string, state: string) =>
+      ipcRenderer.invoke('project-create', projectId, state),
+    listProjects: () => ipcRenderer.invoke('project-list'),
+    loadProject: (projectId: string) => ipcRenderer.invoke('project-load', projectId),
+    getLastOpenedProject: () => ipcRenderer.invoke('project-last-opened'),
+    setLastOpenedProject: (projectId: string) =>
+      ipcRenderer.invoke('project-set-last-opened', projectId),
+    renameProject: (projectId: string, name: string) =>
+      ipcRenderer.invoke('project-rename', projectId, name),
+    showProject: (projectId: string) => ipcRenderer.invoke('project-show', projectId),
+    saveRawSubmission: (projectId: string, content: string) =>
+      ipcRenderer.invoke('project-save-raw', projectId, content),
+    importMarkdown: (projectId: string) => ipcRenderer.invoke('project-import-markdown', projectId),
+    listMarkdown: (projectId: string) => ipcRenderer.invoke('project-markdown-list', projectId),
+    readMarkdown: (projectId: string, relativePath: string) =>
+      ipcRenderer.invoke('project-markdown-read', projectId, relativePath),
+    beginStoryboardUpdate: (projectId: string) =>
+      ipcRenderer.invoke('project-storyboard-begin', projectId),
+    commitStoryboardUpdate: (projectId: string, transactionId: string, writtenPaths: string[]) =>
+      ipcRenderer.invoke('project-storyboard-commit', projectId, transactionId, writtenPaths),
+    rollbackStoryboardUpdate: (projectId: string, transactionId: string) =>
+      ipcRenderer.invoke('project-storyboard-rollback', projectId, transactionId),
+    writeMarkdown: (
+      projectId: string,
+      relativePath: string,
+      content: string,
+      revision?: string,
+    ) => ipcRenderer.invoke('project-markdown-write', projectId, relativePath, content, revision),
     saveState: (runId: string, value: string) =>
       ipcRenderer.invoke('cloud-save-state', runId, value),
     cancelRun: (runId: string) => ipcRenderer.invoke('cloud-cancel-run', runId),
+    listTasks: (runId: string) => ipcRenderer.invoke('cloud-list-tasks', runId),
+    resumeTask: (runId: string, taskId: string) =>
+      ipcRenderer.invoke('cloud-resume-task', runId, taskId),
+    stopTask: (runId: string, taskId: string) =>
+      ipcRenderer.invoke('cloud-stop-task', runId, taskId),
+    abandonTask: (runId: string, taskId: string) =>
+      ipcRenderer.invoke('cloud-abandon-task', runId, taskId),
     exportMedia: (runId: string, sourcePath: string) =>
       ipcRenderer.invoke('cloud-export-media', runId, sourcePath),
     showMedia: (runId: string, sourcePath: string) =>
@@ -82,13 +113,4 @@ contextBridge.exposeInMainWorld('electron', {
     resolveMedia: (runId: string, sourcePaths: string[]) =>
       ipcRenderer.invoke('cloud-resolve-media', runId, sourcePaths),
   },
-})
-
-contextBridge.exposeInMainWorld('sqlite', {
-  query: (params: QueryParams) => ipcRenderer.invoke('sqlite-query', params),
-  insert: (params: InsertParams) => ipcRenderer.invoke('sqlite-insert', params),
-  update: (params: UpdateParams) => ipcRenderer.invoke('sqlite-update', params),
-  delete: (params: DeleteParams) => ipcRenderer.invoke('sqlite-delete', params),
-  bulkInsertOrUpdate: (params: BulkInsertOrUpdateParams) =>
-    ipcRenderer.invoke('sqlite-bulk-insert-or-update', params),
 })

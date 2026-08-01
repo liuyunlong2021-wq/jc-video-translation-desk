@@ -6,6 +6,10 @@
 
 ```json
 {
+  "project": {
+    "visualStyle": "从 projectStyle.prompt 原样写入",
+    "aspectRatio": "从 projectStyle.ratio 原样写入"
+  },
   "character": {
     "name": "角色名",
     "alias": "别名或代号",
@@ -102,6 +106,10 @@
 
 ```json
 {
+  "project": {
+    "visualStyle": "偏写实·日式anime",
+    "aspectRatio": "9:16"
+  },
   "character": {
     "name": "温宁",
     "alias": "监控兄",

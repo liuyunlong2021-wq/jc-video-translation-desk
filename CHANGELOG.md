@@ -4,6 +4,36 @@ All significant changes to this project will be recorded in this file.
 
 此项目的所有显著更改都将记录在此文件中。
 
+## [Unreleased] - 2026-07-30
+
+### AI-native staged creation workflow
+
+- Replace the legacy EdgeTTS, BGM, subtitle, batch-mixing and user media-folder workflow with explicit script, voice, storyboard, video and composition stages
+- Add built-in Skills for media scripting, shot planning, GPT Image prompting and Qwen voice design
+- Fix the cloud contracts to `gemini-3.6-flash`, `gpt-image-2`, `veo-3.1-generate-preview` and `rh-aiapp-voice-design`
+- Add one managed core reference image with GPT Image multipart editing support
+- Generate one continuous-shot Veo video per storyboard image with discrete 4, 6 or 8 second durations
+- Persist resumable paid tasks and generated media under the Electron user-data directory
+- Add a compact, filterable media library with modal previews and per-item retry
+- Compose final videos locally with FFmpeg, discard source clip audio and use the unified designed voice as the only final audio track
+- Add build-output cleanup to prevent stale Electron dynamic chunks from entering a package
+- Add SDDs, a development Wiki and focused runtime contract tests
+
+### AI 原生分阶段创作工作流
+
+- 用文稿、声音方案、配音、分镜图、视频和合成的显式阶段替代旧版 EdgeTTS、BGM、字幕、批量混剪和用户素材文件夹流程
+- 内置媒体文稿、镜头规划、GPT Image 提示词和千问声音设计 Skills
+- 固定使用 `gemini-3.6-flash`、`gpt-image-2`、`veo-3.1-generate-preview` 和 `rh-aiapp-voice-design`
+- 支持一个应用托管的核心参考图，并通过 GPT Image multipart 编辑接口保持主体一致
+- 每张分镜图生成一条单一连续镜头视频，模型时长仅取 4、6 或 8 秒
+- 将可恢复的付费任务与媒体素材保存在 Electron 用户数据目录
+- 增加紧凑分类素材库、弹窗预览和单项重试
+- 使用本地 FFmpeg 合成，丢弃片段原声并将统一设计配音作为最终唯一音轨
+- 构建前清理旧产物，避免 Electron 动态分块版本混入
+- 增加 SDD、开发 Wiki 和工作流合同测试
+
+> 以下版本记录描述旧版素材混剪产品，作为历史保留，不代表当前界面仍提供对应功能。
+
 ## [v1.2.2] - 2026-04-07
 
 ### Fixed & Optimized

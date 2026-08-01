@@ -23,6 +23,19 @@ import i18nInitialized from './lib/i18n.ts'
 const vuetify = createVuetify({
   components,
   directives,
+  theme: {
+    defaultTheme: 'money-clips',
+    themes: {
+      'money-clips': {
+        dark: false,
+        colors: {
+          primary: '#15803D',
+          'primary-darken-1': '#166534',
+          'primary-lighten-1': '#DCFCE7',
+        },
+      },
+    },
+  },
   icons: {
     defaultSet: 'mdi',
     aliases,
@@ -47,13 +60,8 @@ app.use(store)
 i18nInitialized().then(() => {
   app.use(I18NextVue, { i18next })
   app.mount('#app').$nextTick(() => {
-    // 测试消息
-    window.ipcRenderer.on('main-process-message', (_event, message) => {
-      console.log(message)
-    })
-
     // 监听主进程切换语言
-    window.ipcRenderer.on('i18n-changeLanguage', (_event, lng) => {
+    window.i18n.onLanguageChanged((lng) => {
       i18next.changeLanguage(lng)
       useAppStore().updateLocale(lng)
     })

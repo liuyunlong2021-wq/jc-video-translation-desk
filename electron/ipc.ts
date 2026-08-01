@@ -1,30 +1,54 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { BrowserWindow, ipcMain, shell } from 'electron'
+import { isDev } from './lib/is-dev'
 import { sqBulkInsertOrUpdate, sqDelete, sqInsert, sqQuery, sqUpdate } from './sqlite'
 import { OpenExternalParams, StatEventParams } from './types'
 import { composeGeneratedVideo } from './ffmpeg'
 import { sendStatEvent } from './lib/stat'
 import {
-  API_KEYS_URL,
   cancelRun,
+  generateAssetImage,
   generateScript,
   generateSegmentVideo,
   generateStoryboardImage,
-  generateVoice,
+  generateVoice as generateCloudVoice,
   hasApiKey,
+  listCloudTasks,
+  resumeCloudTask,
   resumePendingTasks,
   runSkill,
+  runReferenceSearchSkill,
+  runWikiSkill,
   saveApiKey,
   testApiKey,
+  stopCloudTask,
+  abandonCloudTask,
   withRunAbort,
 } from './cloud'
+import { cancelLocalVoice, generateLocalVoice, getLocalVoiceStatus } from './local-tts'
 import {
   assertRunAsset,
+  beginStoryboardMarkdownUpdate,
+  commitStoryboardMarkdownUpdate,
+  createProject,
   exportMedia,
+  getLastOpenedProject,
+  getRunDir,
+  importMarkdown,
+  listProjectMarkdown,
+  listProjects,
+  loadProjectState,
   loadLatestMediaState,
+  renameProject,
+  readProjectMarkdown,
+  rollbackStoryboardMarkdownUpdate,
+  saveRawSubmission,
   saveMediaState,
+  selectAssetImage,
   selectCoreReference,
+  setLastOpenedProject,
+  writeProjectMarkdown,
 } from './media-workspace'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -33,7 +57,7 @@ let windowMaximizedByApp = false
 process.env.APP_ROOT = path.join(__dirname, '..')
 
 // 🚧 使用['ENV_NAME'] 避免 vite:define plugin - Vite@2.x
-export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
+export const VITE_DEV_SERVER_URL = isDev ? process.env['VITE_DEV_SERVER_URL'] : undefined
 export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
 export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
@@ -127,35 +151,58 @@ export default function initIPC() {
 
   // 打开外部链接
   ipcMain.handle('open-external', (_event, params: OpenExternalParams) => {
-    if (params.url !== API_KEYS_URL) throw new Error('不允许打开该外部地址')
-    return shell.openExternal(API_KEYS_URL)
+    const url = new URL(String(params?.url || ''))
+    if (!['http:', 'https:', 'mailto:'].includes(url.protocol))
+      throw new Error('不允许打开该外部地址')
+    return shell.openExternal(url.toString())
   })
 
   ipcMain.handle('cloud-has-api-key', () => hasApiKey())
   ipcMain.handle('cloud-save-api-key', (_event, apiKey: string) => saveApiKey(apiKey))
   ipcMain.handle('cloud-test-api-key', () => testApiKey())
   ipcMain.handle('cloud-generate-script', (_event, brief) => generateScript(brief))
-  ipcMain.handle('cloud-run-skill', (_event, skillName: string, input: string, runId?: string) =>
-    runSkill(skillName, input, runId),
+  ipcMain.handle(
+    'cloud-run-skill',
+    (_event, skillName: string, input: string, runId?: string, textModel?: import('./types').TextModel) =>
+      runSkill(skillName, input, runId, textModel),
+  )
+  ipcMain.handle(
+    'cloud-run-wiki-skill',
+    (_event, skillName: string, input: string, projectId: string, textModel?: import('./types').TextModel) =>
+      runWikiSkill(skillName, input, projectId, textModel),
   )
   ipcMain.handle(
     'cloud-generate-voice',
-    (_event, runId: string, text: string, voicePrompt: string) =>
-      generateVoice(runId, text, voicePrompt),
+    (_event, runId: string, text: string, voicePrompt: string, engine: 'cloud' | 'local') =>
+      engine === 'local'
+        ? generateLocalVoice(runId, text, voicePrompt)
+        : generateCloudVoice(runId, text, voicePrompt),
   )
+  ipcMain.handle('local-voice-status', () => getLocalVoiceStatus())
   ipcMain.handle('cloud-generate-storyboard', (_event, params) =>
     generateStoryboardImage(
       params.runId,
       params.index,
       params.prompt,
       params.ratio,
-      params.referencePath,
+      params.referencePaths?.length ? params.referencePaths : params.referencePath,
+    ),
+  )
+  ipcMain.handle('cloud-generate-asset', (_event, params) =>
+    generateAssetImage(
+      params.runId,
+      params.assetId,
+      params.role,
+      params.design,
+      params.referencePaths?.length ? params.referencePaths : params.referencePath,
+      params.assetLabel,
     ),
   )
   ipcMain.handle('cloud-generate-video', (_event, params) =>
     generateSegmentVideo(
       params.runId,
       params.index,
+      params.model,
       params.prompt,
       params.ratio,
       params.generationDuration,
@@ -168,14 +215,80 @@ export default function initIPC() {
     ),
   )
   ipcMain.handle('cloud-resume-pending', (_event, runId: string) => resumePendingTasks(runId))
+  ipcMain.handle('cloud-list-tasks', (_event, runId: string) => listCloudTasks(runId))
+  ipcMain.handle('cloud-resume-task', (_event, runId: string, taskId: string) =>
+    resumeCloudTask(runId, taskId),
+  )
+  ipcMain.handle('cloud-stop-task', (_event, runId: string, taskId: string) =>
+    stopCloudTask(runId, taskId),
+  )
+  ipcMain.handle('cloud-abandon-task', (_event, runId: string, taskId: string) =>
+    abandonCloudTask(runId, taskId),
+  )
   ipcMain.handle('cloud-select-core-reference', (_event, runId: string) =>
     selectCoreReference(runId),
   )
+  ipcMain.handle('project-select-asset-image', (_event, runId: string, assetId: string) =>
+    selectAssetImage(runId, assetId),
+  )
+  ipcMain.handle(
+    'project-search-asset-image',
+    (_event, runId: string, assetId: string, searchQuery: string, rejectedPinIds?: string[]) =>
+      runReferenceSearchSkill(runId, assetId, searchQuery, rejectedPinIds),
+  )
   ipcMain.handle('cloud-load-latest-state', () => loadLatestMediaState())
+  ipcMain.handle('project-create', (_event, projectId: string, state: string) =>
+    createProject(projectId, state),
+  )
+  ipcMain.handle('project-list', () => listProjects())
+  ipcMain.handle('project-load', (_event, projectId: string) => loadProjectState(projectId))
+  ipcMain.handle('project-last-opened', () => getLastOpenedProject())
+  ipcMain.handle('project-set-last-opened', (_event, projectId: string) =>
+    setLastOpenedProject(projectId),
+  )
+  ipcMain.handle('project-rename', (_event, projectId: string, name: string) =>
+    renameProject(projectId, name),
+  )
+  ipcMain.handle('project-show', (_event, projectId: string) =>
+    shell.openPath(getRunDir(projectId)),
+  )
+  ipcMain.handle('project-save-raw', (_event, projectId: string, content: string) =>
+    saveRawSubmission(projectId, content),
+  )
+  ipcMain.handle('project-import-markdown', (_event, projectId: string) =>
+    importMarkdown(projectId),
+  )
+  ipcMain.handle('project-markdown-list', (_event, projectId: string) =>
+    listProjectMarkdown(projectId),
+  )
+  ipcMain.handle('project-markdown-read', (_event, projectId: string, relativePath: string) =>
+    readProjectMarkdown(projectId, relativePath),
+  )
+  ipcMain.handle('project-storyboard-begin', (_event, projectId: string) =>
+    beginStoryboardMarkdownUpdate(projectId),
+  )
+  ipcMain.handle(
+    'project-storyboard-commit',
+    (_event, projectId: string, transactionId: string, writtenPaths: string[]) =>
+      commitStoryboardMarkdownUpdate(projectId, transactionId, writtenPaths),
+  )
+  ipcMain.handle(
+    'project-storyboard-rollback',
+    (_event, projectId: string, transactionId: string) =>
+      rollbackStoryboardMarkdownUpdate(projectId, transactionId),
+  )
+  ipcMain.handle(
+    'project-markdown-write',
+    (_event, projectId: string, relativePath: string, content: string, revision?: string) =>
+      writeProjectMarkdown(projectId, relativePath, content, revision),
+  )
   ipcMain.handle('cloud-save-state', (_event, runId: string, value: string) =>
     saveMediaState(runId, value),
   )
-  ipcMain.handle('cloud-cancel-run', (_event, runId: string) => cancelRun(runId))
+  ipcMain.handle(
+    'cloud-cancel-run',
+    async (_event, runId: string) => (await cancelRun(runId)) + cancelLocalVoice(runId),
+  )
   ipcMain.handle('cloud-export-media', (_event, runId: string, sourcePath: string) =>
     exportMedia(assertRunAsset(runId, sourcePath)),
   )

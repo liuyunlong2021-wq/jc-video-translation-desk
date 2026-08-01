@@ -3,7 +3,6 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import electron from 'vite-plugin-electron/simple'
 import vue from '@vitejs/plugin-vue'
-import vueDevTools from 'vite-plugin-vue-devtools'
 import UnoCSS from 'unocss/vite'
 import { version } from './package.json'
 import { syncElectronDevServerUrl } from './build/vite-plugins/sync-electron-dev-server-url'
@@ -16,7 +15,6 @@ export default defineConfig({
   plugins: [
     syncElectronDevServerUrl(),
     vue(),
-    vueDevTools(),
     UnoCSS(),
     electron({
       main: {

@@ -9,11 +9,11 @@ import {
   BulkInsertOrUpdateParams,
 } from './types'
 import { app } from 'electron'
+import { isDev } from '../lib/is-dev'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 process.env.APP_ROOT = path.join(__dirname, '..')
 
-export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 export const NATIVE_DIST = path.join(process.env.APP_ROOT, 'dist-native')
 
 // 根据当前系统和架构，判断使用哪个native模块
@@ -22,7 +22,7 @@ const arch = process.arch
 const nativeDir = `${platform}-${arch}`
 
 // 设置native模块路径
-const nativePath = VITE_DEV_SERVER_URL
+const nativePath = isDev
   ? path.join(
       process.env.APP_ROOT,
       'native/better-sqlite3',

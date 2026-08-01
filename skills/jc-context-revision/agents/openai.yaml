@@ -1,0 +1,4 @@
+interface:
+  display_name: '上下文 AI 修改'
+  short_description: '在锁定范围内修改文稿、声音方案或单镜分镜对象'
+  default_prompt: 'Use $jc-context-revision to generate a scoped revision proposal for the selected object.'

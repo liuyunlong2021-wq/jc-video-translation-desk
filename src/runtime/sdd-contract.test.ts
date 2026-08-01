@@ -27,7 +27,7 @@ const paceSdd = read('docs/镜头节奏控制SDD.md')
 const brandingSdd = read('docs/创作参数与品牌视觉升级SDD.md')
 const propSdd = read('docs/道具提示词参考搜索与资产生成P0-SDD.md')
 
-test('locks the API, selectable text models, and fixed media models to the SDD values', () => {
+test('locks the API and selectable text and video models to the SDD values', () => {
   for (const model of [
     'gemini-3.6-flash',
     'claude-fable-5',
@@ -39,10 +39,14 @@ test('locks the API, selectable text models, and fixed media models to the SDD v
     assert.match(textUi, new RegExp(model))
   }
   assert.match(cloud, /model: 'gpt-image-2'/)
-  assert.match(cloud, /model: 'veo-3\.1-generate-preview'/)
+  for (const model of ['veo-3.1-generate-preview', 'rh-grok-image-video']) {
+    assert.match(cloud, new RegExp(model.replace(/\./g, '\\.')))
+    assert.match(textUi, new RegExp(model.replace(/\./g, '\\.')))
+  }
   assert.match(cloud, /model: 'rh-aiapp-voice-design'/)
   assert.match(textUi, /:model-value="API_URL"\s+readonly/)
   assert.match(textUi, /mediaStore\.textModel/)
+  assert.match(textUi, /mediaStore\.videoModel/)
   assert.match(cloud, /上次输出解析失败/)
   assert.match(cloud, /response_format: \{ type: 'json_object' \}/)
   assert.match(cloud, /status === 524/)
@@ -121,19 +125,31 @@ test('keeps five center views and one contextual scrolling inspector', () => {
   assert.equal((renderTemplate.match(/生成资产设计 JSON/g) || []).length, 1)
   assert.equal((renderTemplate.match(/搜索下载参考图/g) || []).length, 1)
   assert.equal((renderTemplate.match(/>生成资产图</g) || []).length, 1)
-  assert.doesNotMatch(mediaUi, /上传参考|>确认</)
+  assert.equal((renderTemplate.match(/>进入分镜</g) || []).length, 1)
+  assert.match(mediaUi, /添加参考图/)
+  assert.match(mediaUi, /uploadAssetReference/)
   assert.match(homeUi, /searchAssetImage/)
+  const storyboardGeneration = homeUi.slice(
+    homeUi.indexOf('async function generateStoryboards'),
+    homeUi.indexOf('async function generateVideos'),
+  )
+  const videoGeneration = homeUi.slice(
+    homeUi.indexOf('async function generateVideos'),
+    homeUi.indexOf('async function composeVideo'),
+  )
+  assert.doesNotMatch(storyboardGeneration, /reloadStoryboardMarkdown/)
+  assert.doesNotMatch(videoGeneration, /reloadStoryboardMarkdown/)
   assert.match(cloud, /runReferenceSearchSkill/)
   assert.match(cloud, /contract\.includes\('search_and_download'\)/)
   assert.match(cloud, /generatedBySkill: 'jc-asset-reference-search'/)
   assert.match(referenceSearchSkill, /search_and_download/)
   assert.doesNotMatch(referenceSearchSkill, /generationPrompt|生成资产图/)
   assert.match(homeUi, /validPropDesign/)
-  assert.match(homeUi, /design: asset\.design \|\| existingById\.get\(asset\.id\)\?\.design/)
-  assert.match(homeUi, /searchQuery: asset\.searchQuery \|\| existingById\.get\(asset\.id\)\?\.searchQuery/)
+  assert.match(homeUi, /design: withProjectDesign\([\s\S]*asset\.design \|\| existing\?\.design[\s\S]*mediaStore\.ratio/)
+  assert.match(homeUi, /searchQuery: asset\.searchQuery \|\| existing\?\.searchQuery/)
   assert.match(homeUi, /searchAssets/)
   assert.match(mediaUi, /removeAssetReferenceVersion/)
-  assert.match(mediaUi, /删除当前参考图/)
+  assert.match(mediaUi, /删除参考图/)
   assert.doesNotMatch(mediaUi, /删除当前资产图/)
   assert.match(homeUi, /searchQuery\.length > 160/)
   assert.doesNotMatch(homeUi, /searchWords\.length/)
@@ -145,6 +161,10 @@ test('keeps five center views and one contextual scrolling inspector', () => {
     /revision/,
   )
   assert.doesNotMatch(textUi, /创作结果会显示在中间工作区/)
+  assert.match(textUi, /v-model="mediaStore\.videoModel"\s+class="text-model-select"/)
+  assert.match(homeUi, /task\.kind === 'video'\) mediaStore\.invalidateShot\(segment\.index, 'video'\)/)
+  assert.match(homeUi, /cloudTasks\.every\(\(item\) => item\.status === 'success'\).*taskDrawerOpen\.value = false/)
+  assert.match(homeUi, /new Set\(pendingVideos\.map\(\(item\) => item\.error\)\.filter\(Boolean\)\)/)
 })
 
 test('keeps asset generation recoverable and validates every professional design', () => {
@@ -156,7 +176,8 @@ test('keeps asset generation recoverable and validates every professional design
   assert.match(homeUi, /project\?\.aspectRatio/)
   assert.match(homeUi, /visualStyle: VISUAL_STYLES\.find/)
   assert.match(homeUi, /aspectRatio: mediaStore\.ratio/)
-  assert.match(cloud, /const prompt = JSON\.stringify\(design, null, 2\)/)
+  assert.match(cloud, /const designJson = JSON\.stringify\(design, null, 2\)/)
+  assert.match(cloud, /请结合全部参考图生成，最终内容、画风和比例以资产设计 JSON 为准/)
   assert.match(homeUi, /design: JSON\.parse\(JSON\.stringify\(asset\.design\)\)/)
   assert.doesNotMatch(homeUi, /asset\.prompt|generationPrompt|currentPrompt/)
   assert.match(workspace, /assertDownloadedImage/)
@@ -170,6 +191,8 @@ test('keeps asset generation recoverable and validates every professional design
   assert.match(pinterestReference, /i\.pinimg\.com/)
   assert.doesNotMatch(workspace, /BaseSearchResource|get\/|www\.bing\.com\/images\/search|commons\.wikimedia\.org/)
   assert.match(referenceSearchSkill, /媒介、具体对象和制作用途构图/)
+  assert.match(homeUi, /assetReferenceSearchQuery\(asset\.searchQuery!, asset\.role, mediaStore\.styleId\)/)
+  assert.doesNotMatch(homeUi, /将生成 \$\{pending\.length\} 张资产图/)
   assert.match(pinterestReference, /show: false/)
   assert.match(pinterestReference, /closeAfterBatch/)
   assert.match(pinterestAudit, /Pinterest 搜索窗口未自动关闭/)
@@ -247,7 +270,7 @@ test('implements the multi-asset image contract and discrete video durations', (
   assert.match(textUi, /targetDuration/)
   assert.match(textUi, /styleId/)
   assert.doesNotMatch(textUi, /selectCoreReference/)
-  assert.doesNotMatch(mediaUi, /uploadAsset/)
+  assert.match(mediaUi, /uploadAssetReference/)
   assert.match(homeUi, /referencePaths/)
   assert.match(main, /short-video-media/)
   assert.match(main, /assertRunAsset/)

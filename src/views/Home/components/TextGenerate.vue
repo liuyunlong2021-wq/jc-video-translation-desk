@@ -3,15 +3,47 @@
     <div class="flex items-center justify-between gap-2">
       <div>
         <div class="text-subtitle-1 font-weight-medium">{{ t('workflow.script.title') }}</div>
-        <div class="text-caption text-medium-emphasis">Gemini 3.6 Flash</div>
+        <div class="text-caption text-medium-emphasis">当前项目创作模型</div>
       </div>
-      <v-btn
-        icon="mdi-cog-outline"
-        variant="text"
-        :title="t('workflow.script.apiConfig')"
-        @click="configDialog = true"
-      />
+      <div class="flex items-center gap-1">
+        <v-btn
+          icon="mdi-file-upload-outline"
+          variant="text"
+          size="small"
+          title="导入 Markdown"
+          :disabled="Boolean(mediaStore.busyAction)"
+          @click="$emit('importMarkdown')"
+        />
+        <v-btn
+          icon="mdi-cog-outline"
+          variant="text"
+          :title="t('workflow.script.apiConfig')"
+          @click="openConfig"
+        />
+      </div>
     </div>
+
+    <v-select
+      v-model="mediaStore.textModel"
+      class="text-model-select"
+      :items="TEXT_MODELS"
+      label="文本模型"
+      density="compact"
+      hide-details
+      :disabled="Boolean(mediaStore.busyAction)"
+    />
+
+    <v-select
+      v-model="mediaStore.videoModel"
+      class="text-model-select"
+      :items="VIDEO_MODELS"
+      item-title="title"
+      item-value="value"
+      label="视频模型"
+      density="compact"
+      hide-details
+      :disabled="Boolean(mediaStore.busyAction)"
+    />
 
     <v-textarea
       v-model="mediaStore.request"
@@ -31,17 +63,38 @@
         :disabled="Boolean(mediaStore.busyAction)"
         @update:model-value="changeRatio"
       />
-      <v-select
-        :model-value="mediaStore.targetDuration"
-        :items="durationItems"
-        item-title="title"
-        item-value="value"
-        :label="t('workflow.script.duration')"
-        density="compact"
-        hide-details
-        :disabled="Boolean(mediaStore.busyAction)"
-        @update:model-value="changeTargetDuration"
-      />
+      <div>
+        <v-select
+          v-if="durationSelection !== 'custom'"
+          v-model="durationSelection"
+          :items="durationItems"
+          item-title="title"
+          item-value="value"
+          :label="t('workflow.script.duration')"
+          density="compact"
+          hide-details
+          :disabled="Boolean(mediaStore.busyAction)"
+          @update:model-value="changeDurationSelection"
+        />
+        <v-text-field
+          v-else
+          v-model="customDuration"
+          type="number"
+          min="5"
+          max="180"
+          step="1"
+          suffix="秒"
+          :label="t('workflow.script.customDuration')"
+          append-inner-icon="mdi-chevron-down"
+          density="compact"
+          hide-details
+          autofocus
+          :disabled="Boolean(mediaStore.busyAction)"
+          @blur="commitCustomDuration"
+          @keydown.enter.prevent="commitCustomDuration"
+          @click:append-inner="leaveCustomDuration"
+        />
+      </div>
       <v-select
         :model-value="mediaStore.styleId"
         :items="styleItems"
@@ -53,84 +106,23 @@
         :disabled="Boolean(mediaStore.busyAction)"
         @update:model-value="changeStyle"
       />
-      <v-btn
-        color="primary"
-        prepend-icon="mdi-auto-fix"
-        :loading="mediaStore.busyAction === 'script'"
-        :disabled="
-          !mediaStore.apiConfigured || !mediaStore.request.trim() || Boolean(mediaStore.busyAction)
-        "
-        @click="generateScript"
-        >{{ t('workflow.script.generate') }}</v-btn
-      >
-    </div>
-
-    <div class="reference-control">
-      <img
-        v-if="mediaStore.coreReference"
-        :src="fileUrl(mediaStore.coreReference.relativePath)"
-        :alt="t('workflow.script.reference')"
-        class="reference-thumb"
-      />
-      <div class="min-w-0 flex-1">
-        <div class="text-body-2 font-weight-medium">{{ t('workflow.script.reference') }}</div>
-        <div class="text-caption text-medium-emphasis text-truncate">
-          {{ mediaStore.coreReference?.label || t('workflow.script.referenceOptional') }}
-        </div>
-      </div>
-      <v-btn
-        size="small"
-        variant="tonal"
-        :prepend-icon="mediaStore.coreReference ? 'mdi-image-edit-outline' : 'mdi-image-plus-outline'"
+      <v-select
+        :model-value="mediaStore.shotPace"
+        :items="paceItems"
+        item-title="title"
+        item-value="value"
+        :label="t('workflow.script.shotPace')"
+        density="compact"
+        hide-details
         :disabled="Boolean(mediaStore.busyAction)"
-        @click="selectCoreReference"
-      >{{ t(mediaStore.coreReference ? 'workflow.script.replaceReference' : 'workflow.script.addReference') }}</v-btn>
-      <v-btn
-        v-if="mediaStore.coreReference"
-        icon="mdi-close"
-        size="small"
-        variant="text"
-        :title="t('workflow.script.removeReference')"
-        :disabled="Boolean(mediaStore.busyAction)"
-        @click="removeCoreReference"
+        @update:model-value="changeShotPace"
       />
     </div>
 
-    <v-textarea
-      :model-value="mediaStore.script"
-      class="flex-1"
-      :label="t('workflow.script.editable')"
-      no-resize
-      hide-details
-      :disabled="Boolean(mediaStore.busyAction)"
-      @update:model-value="editScript"
-    />
-    <div v-if="mediaStore.script.trim()" class="text-caption text-medium-emphasis">
-      {{
-        mediaStore.segments.length
-          ? t('workflow.script.actual', {
-              seconds: mediaStore.voiceDuration.toFixed(1),
-              segments: mediaStore.segments.length,
-            })
-          : t('workflow.script.estimate', {
-              seconds: Math.round(estimatedDuration),
-              segments: Math.ceil(estimatedDuration / 8),
-            })
-      }}
-    </div>
-    <v-btn
-      block
-      color="success"
-      prepend-icon="mdi-check-circle-outline"
-      :loading="mediaStore.busyAction === 'approve'"
-      :disabled="!mediaStore.script.trim() || Boolean(mediaStore.busyAction)"
-      @click="approveScript"
-      >{{ t('workflow.script.approve') }}</v-btn
-    >
-
-    <v-dialog v-model="configDialog" max-width="560" persistent>
+    <v-dialog v-model="configDialog" max-width="620" persistent>
       <v-card prepend-icon="mdi-key-variant" :title="t('workflow.api.title')">
         <v-card-text class="flex flex-col gap-3">
+          <div class="text-subtitle-2">{{ t('workflow.api.section') }}</div>
           <v-text-field
             :label="t('workflow.api.address')"
             :model-value="API_URL"
@@ -161,7 +153,9 @@
           </div>
           <div
             class="text-caption"
-            :class="sessionOnly ? 'text-warning' : hasApiKey ? 'text-success' : 'text-medium-emphasis'"
+            :class="
+              sessionOnly ? 'text-warning' : hasApiKey ? 'text-success' : 'text-medium-emphasis'
+            "
           >
             {{
               sessionOnly
@@ -170,6 +164,44 @@
                   ? t('workflow.api.saved')
                   : t('workflow.api.missing')
             }}
+          </div>
+          <v-divider />
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <div class="text-subtitle-2">{{ t('workflow.localVoice.title') }}</div>
+              <div class="text-caption text-medium-emphasis">
+                {{ t('workflow.localVoice.description') }}
+              </div>
+            </div>
+            <v-btn-toggle
+              :model-value="mediaStore.voiceEngine"
+              mandatory
+              density="compact"
+              color="primary"
+              @update:model-value="changeVoiceEngine"
+            >
+              <v-btn value="cloud">{{ t('workflow.localVoice.cloud') }}</v-btn>
+              <v-btn value="local">{{ t('workflow.localVoice.local') }}</v-btn>
+            </v-btn-toggle>
+          </div>
+          <div v-if="mediaStore.voiceEngine === 'local'" class="local-voice-status">
+            <v-chip
+              size="small"
+              variant="tonal"
+              :color="localVoiceStatus?.available ? 'success' : 'warning'"
+            >
+              {{ t(`workflow.localVoice.status.${localVoiceStatus?.reason || 'checking'}`) }}
+            </v-chip>
+            <span class="text-caption text-medium-emphasis text-truncate">
+              {{ localVoiceStatus?.modelPath || t('workflow.localVoice.model') }}
+            </span>
+            <v-btn
+              size="small"
+              variant="tonal"
+              :loading="checkingLocalVoice"
+              @click="checkLocalVoice"
+              >{{ t('workflow.localVoice.check') }}</v-btn
+            >
           </div>
         </v-card-text>
         <v-card-actions>
@@ -193,18 +225,36 @@ import { useToast } from 'vue-toastification'
 import { useTranslation } from 'i18next-vue'
 import { useMediaTaskStore } from '@/store'
 import {
-  createRunId,
-  estimateDuration,
-  hashScript,
+  isValidTargetDuration,
+  SHOT_PACES,
   TARGET_DURATIONS,
   VIDEO_RATIOS,
-  VISUAL_STYLES,
+  VISUAL_STYLE_GROUPS,
 } from '@/runtime/videoWorkflow'
-import type { VideoRatio, VisualStyleId } from '~/electron/types'
-import { managedMediaUrl } from '@/runtime/managedMediaUrl'
+import type {
+  LocalVoiceStatus,
+  ShotPace,
+  TargetDuration,
+  VideoRatio,
+  VoiceEngine,
+  VisualStyleId,
+} from '~/electron/types'
+
+defineEmits(['importMarkdown'])
 
 const API_URL = 'https://api.jiucaihezi.studio/v1'
 const KEYS_URL = 'https://api.jiucaihezi.studio/keys'
+const TEXT_MODELS = [
+  'gemini-3.6-flash',
+  'claude-fable-5',
+  'claude-opus-5',
+  'gpt-5.6-sol',
+  'deepseek-v4-pro',
+]
+const VIDEO_MODELS = [
+  { title: 'Veo 3.1', value: 'veo-3.1-generate-preview' },
+  { title: 'Grok Video 图生视频', value: 'rh-grok-image-video' },
+]
 const mediaStore = useMediaTaskStore()
 const toast = useToast()
 const { t } = useTranslation()
@@ -213,18 +263,62 @@ const apiKey = ref('')
 const hasApiKey = ref(false)
 const sessionOnly = ref(false)
 const testing = ref(false)
+const checkingLocalVoice = ref(false)
+const localVoiceStatus = ref<LocalVoiceStatus | null>(null)
 const showApiKey = ref(false)
-const estimatedDuration = computed(() => estimateDuration(mediaStore.script))
-const durationItems = computed(() =>
-  TARGET_DURATIONS.map((value) => ({ title: `${value} ${t('workflow.script.seconds')}`, value })),
+const customDuration = ref(String(mediaStore.targetDuration))
+const durationSelection = ref<TargetDuration | 'custom'>(
+  TARGET_DURATIONS.includes(mediaStore.targetDuration) ? mediaStore.targetDuration : 'custom',
 )
-const styleItems = computed(() => VISUAL_STYLES.map(({ id, label }) => ({ title: label, value: id })))
+const durationItems = computed(() => [
+  ...TARGET_DURATIONS.map((value) => ({
+    title: `${value} ${t('workflow.script.seconds')}`,
+    value,
+  })),
+  { title: t('workflow.script.customDuration'), value: 'custom' as const },
+])
+const styleItems = computed(() =>
+  VISUAL_STYLE_GROUPS.flatMap((group) => [
+    { title: group.label, value: null, props: { disabled: true } },
+    ...group.styles.map(({ id, label }) => ({ title: `  ${label}`, value: id })),
+  ]),
+)
+const paceItems = computed(() =>
+  SHOT_PACES.map((value) => ({ title: t(`workflow.script.paces.${value}`), value })),
+)
 
 onMounted(async () => {
   hasApiKey.value = await window.electron.cloud.hasApiKey()
   mediaStore.apiConfigured = hasApiKey.value
   if (!hasApiKey.value) configDialog.value = true
+  if (mediaStore.voiceEngine === 'local') await checkLocalVoice()
 })
+
+async function openConfig() {
+  configDialog.value = true
+  if (mediaStore.voiceEngine === 'local') await checkLocalVoice()
+}
+
+async function checkLocalVoice() {
+  checkingLocalVoice.value = true
+  try {
+    localVoiceStatus.value = await window.electron.cloud.localVoiceStatus()
+  } finally {
+    checkingLocalVoice.value = false
+  }
+}
+
+async function changeVoiceEngine(value: VoiceEngine) {
+  if (!value || value === mediaStore.voiceEngine) return
+  mediaStore.voiceEngine = value
+  if (mediaStore.voicePath || mediaStore.segments.length || mediaStore.finalPath) {
+    mediaStore.invalidateFrom('voice')
+    mediaStore.voicePath = ''
+    mediaStore.voiceDuration = 0
+    mediaStore.stage = mediaStore.voicePlan ? 'voice-plan-ready' : 'script-approved'
+  }
+  if (value === 'local') await checkLocalVoice()
+}
 
 async function saveConfig() {
   if (!hasApiKey.value && !apiKey.value.trim()) {
@@ -264,92 +358,55 @@ function openKeysPage() {
   window.electron.openExternal({ url: KEYS_URL })
 }
 
-async function generateScript() {
-  mediaStore.busyAction = 'script'
-  mediaStore.error = ''
-  try {
-    if (mediaStore.approvedScript) {
-      mediaStore.archiveCurrent()
-      mediaStore.invalidateFrom('script')
-      mediaStore.approvedScript = ''
-      mediaStore.scriptHash = ''
-    }
-    mediaStore.script = await window.electron.cloud.generateScript({
-      request: mediaStore.request.trim(),
-      verifiedFacts: mediaStore.request.trim(),
-      targetDuration: mediaStore.targetDuration,
-      ratio: mediaStore.ratio as '9:16' | '16:9',
-      styleId: mediaStore.styleId,
-      hasCoreReference: Boolean(mediaStore.coreReference),
-    })
-    mediaStore.stage = 'script-generated'
-  } catch (error) {
-    mediaStore.error = error instanceof Error ? error.message : String(error)
-    toast.error(mediaStore.error)
-  } finally {
-    mediaStore.busyAction = ''
-  }
-}
-
-function editScript(value: string) {
-  if (mediaStore.approvedScript && value !== mediaStore.approvedScript) {
-    mediaStore.archiveCurrent()
-    mediaStore.invalidateFrom('script')
-    mediaStore.approvedScript = ''
-    mediaStore.scriptHash = ''
-    mediaStore.stage = 'script-generated'
-    toast.info(t('workflow.script.changed'))
-  }
-  mediaStore.script = value
-}
-
-async function approveScript() {
-  if (mediaStore.busyAction) return
-  mediaStore.busyAction = 'approve'
-  const approvedScript = mediaStore.script.trim()
-  try {
-    const scriptHash = await hashScript(approvedScript)
-    mediaStore.invalidateFrom('script')
-    mediaStore.approvedScript = approvedScript
-    mediaStore.scriptHash = scriptHash
-    mediaStore.runId ||= createRunId()
-    mediaStore.stage = 'script-approved'
-    toast.success(t('workflow.script.approved'))
-  } finally {
-    mediaStore.busyAction = ''
-  }
-}
-
 function changeRatio(value: VideoRatio) {
   if (mediaStore.ratio === value) return
   mediaStore.ratio = value
   invalidateVisuals()
 }
 
-function changeStyle(value: VisualStyleId) {
+function changeStyle(value: VisualStyleId | null) {
+  if (!value) return
   if (mediaStore.styleId === value) return
   mediaStore.styleId = value
   invalidateVisuals()
 }
 
-function changeTargetDuration(value: 10 | 15 | 30) {
-  if (mediaStore.targetDuration === value) return
+function changeShotPace(value: ShotPace) {
+  if (mediaStore.shotPace === value) return
+  mediaStore.shotPace = value
+  invalidateVisuals()
+}
+
+function applyTargetDuration(value: TargetDuration) {
+  if (!isValidTargetDuration(value) || mediaStore.targetDuration === value) return
   mediaStore.targetDuration = value
   invalidateVisuals()
 }
 
-async function selectCoreReference() {
-  mediaStore.runId ||= createRunId()
-  const selected = await window.electron.cloud.selectCoreReference(mediaStore.runId)
-  if (!selected) return
-  const [resolved] = await window.electron.cloud.resolveMedia(mediaStore.runId, [selected.relativePath])
-  mediaStore.coreReference = { ...selected, relativePath: resolved }
-  invalidateVisuals()
+function changeDurationSelection(value: TargetDuration | 'custom') {
+  if (value === 'custom') {
+    customDuration.value = String(mediaStore.targetDuration)
+    durationSelection.value = 'custom'
+    return
+  }
+  durationSelection.value = value
+  applyTargetDuration(value)
 }
 
-function removeCoreReference() {
-  mediaStore.coreReference = null
-  invalidateVisuals()
+function commitCustomDuration() {
+  const value = Number(customDuration.value)
+  if (!isValidTargetDuration(value)) {
+    customDuration.value = String(mediaStore.targetDuration)
+    toast.error(t('workflow.script.durationInvalid'))
+    return
+  }
+  applyTargetDuration(value)
+}
+
+function leaveCustomDuration() {
+  durationSelection.value = 15
+  customDuration.value = '15'
+  applyTargetDuration(15)
 }
 
 function invalidateVisuals() {
@@ -365,26 +422,17 @@ function invalidateVisuals() {
           ? 'script-generated'
           : 'draft'
 }
-
-function fileUrl(filePath: string) {
-  return managedMediaUrl(mediaStore.runId, filePath)
-}
 </script>
 
 <style scoped>
-.reference-control {
-  min-height: 64px;
-  display: flex;
+.text-model-select {
+  flex: none;
+}
+.local-voice-status {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  padding: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 6px;
-}
-.reference-thumb {
-  width: 48px;
-  height: 48px;
-  object-fit: cover;
-  border-radius: 4px;
 }
 </style>

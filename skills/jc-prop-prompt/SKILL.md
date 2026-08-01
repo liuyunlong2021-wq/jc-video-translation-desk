@@ -1,19 +1,29 @@
 ---
 name: jc-prop-prompt
 description: Use when a user asks to create a prop design prompt, prop concept image, or reusable prop visual asset from story material.
-triggers:
-  - '道具设计'
-  - '道具设定图'
-  - '道具提示词'
-  - '道具清单'
-  - 'prop design'
-  - '画道具'
-  - '设计道具'
-  - '道具资产'
-  - '道具参考'
 ---
 
 # 道具参考图 → 提示词
+
+## 应用运行时模式
+
+输入 `mode: "app-plan"` 时，直接从 `script` 提取所有需要跨镜保持一致的重要道具，一次输出：
+
+```json
+{ "assets": [{ "role": "prop", "label": "道具名", "description": "用途与叙事职责", "identityTraits": ["轮廓、结构、材质、尺寸和识别标记"], "styleRequirements": ["项目风格要求"], "required": true, "design": { "严格完整遵守 references/prop-format.md 的 JSON 模板": "不得省略字段" }, "searchQuery": "从 design 派生的一条精确英文 Pinterest 查询" }] }
+```
+
+品牌设备、包装和应用载体统一作为 `prop`；在 `identityTraits` 和 `design` 中锁定 Logo、文字、品牌色、包装轮廓及关键结构。`design` 是唯一生图事实源，必须把输入 `projectStyle` 的视觉风格和比例原样写入 `design.project`。不得输出 `generationPrompt`、`prompt` 或另一份自然语言提示词。`searchQuery` 只能从完整 `design` 派生，严格使用“媒介 + 具体物件与关键结构/材质/用途 + 独立道具制作用途”的一条英文查询。真人项目使用 `isolated film prop reference` 或 `product reference`；动画项目使用具体动画媒介以及 `prop concept sheet` 或 `game asset reference`。例如 `branded smartphone display isolated film prop reference`。不得只搜索品牌名、用途或物件类别。不输出多个备选查询。没有重要道具时输出 `{ "assets": [] }`。不得提取角色或场景，不得返回路径、图片或其他字段。
+
+输入 `mode: "app-runtime"` 时跳过下方搜图、询问和文件流程。只读取 `asset` 和 `projectStyle`，输出：
+
+```json
+{ "assetId": "原样返回 asset.id", "design": {}, "searchQuery": "从 design 派生的一条精确英文 Pinterest 查询" }
+```
+
+`design` 必须严格完整遵守 `references/prop-format.md`，锁定轮廓、结构、材质、尺寸、识别标记、项目风格和画面比例，使用纯净背景、多角度和特写标注的资产设定图。不得返回路径、图片、Markdown、`generationPrompt`、`prompt` 或其他字段。
+
+输入 `mode: "app-revise"` 时读取 `asset`、`currentDesign`、`instruction` 和 `projectStyle`，只把用户意见应用到完整设计，并从修改后的 `design` 重新派生 `searchQuery`，返回相同的 `{ "assetId", "design", "searchQuery" }` 合同。不得搜索、下载或生成图片，不得改变道具身份。
 
 > 输入道具描述 → Pinterest 搜索真实道具参考图 → 分析图片提取视觉DNA → 融合道具需求输出道具设定图 JSON。参考图是像素，不是回忆。
 
@@ -175,7 +185,7 @@ view_image 查看选定的参考图
 
 ## 约束
 
-1. 必须先有参考图，再有提示词——不凭空生成
+1. App 中先生成完整设计与提示词；参考图是可选增强，可随后联网搜索或由用户上传
 2. 道具图须纯色背景、多角度展示
 3. 视觉 DNA 提取必须详尽——特别关注材质磨损和使用痕迹
 4. 不满意就换图，不走选项流程

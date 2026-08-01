@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "AI Short Video Factory"
+    "name": "Dian Yi Dian"
   },
   "menu": {
     "app": {
@@ -82,13 +82,23 @@
       "ratio": "Aspect ratio",
       "duration": "Target duration",
       "seconds": "sec",
+      "customDuration": "Custom",
+      "durationInvalid": "Duration must be an integer from 5 to 180 seconds",
       "style": "Visual style",
+      "shotPace": "Shot pacing",
+      "paces": {
+        "auto": "Auto",
+        "slow": "Slow · about 7 sec/shot",
+        "medium": "Medium · about 4.5 sec/shot",
+        "fast": "Fast · about 2.5 sec/shot"
+      },
       "reference": "Core reference",
       "referenceOptional": "Optional; without one, cross-shot subject consistency is not guaranteed",
       "addReference": "Upload",
       "replaceReference": "Replace",
       "removeReference": "Remove core reference",
       "generate": "Generate script",
+      "newProject": "New project",
       "editable": "Script (editable)",
       "approve": "Approve script",
       "approved": "Script approved",
@@ -97,7 +107,8 @@
       "actual": "Current run: {{seconds}} sec · {{segments}} video segments"
     },
     "api": {
-      "title": "Jiucaihezi API",
+      "title": "Generation settings",
+      "section": "Jiucaihezi API",
       "address": "API URL",
       "savedPlaceholder": "Saved securely; leave blank to keep it",
       "sessionPlaceholder": "Configured for this session; leave blank to keep it",
@@ -111,6 +122,21 @@
       "connected": "Connected",
       "connectedSession": "Connected; the API Key is available for this session only",
       "keyRequired": "Enter an API Key"
+    },
+    "localVoice": {
+      "title": "Voice engine",
+      "description": "Local mode uses Qwen3-TTS VoiceDesign and never falls back to cloud",
+      "cloud": "Cloud",
+      "local": "Local",
+      "model": "Qwen3-TTS VoiceDesign 1.7B",
+      "check": "Check",
+      "status": {
+        "checking": "Checking",
+        "ready": "Local ready",
+        "platform": "Apple silicon Mac required",
+        "runtime": "MLX Audio runtime missing",
+        "model": "VoiceDesign model missing"
+      }
     },
     "library": {
       "title": "Media library",
@@ -145,13 +171,23 @@
     },
     "voice": {
       "title": "Voice design",
+      "prompt": "Voice design prompt (editable)",
       "ready": "Ready",
       "waiting": "Waiting",
       "empty": "Approve the script, then generate a voice design below. The app will determine the persona, timbre, style, emotion, and pacing."
     },
+    "shots": {
+      "title": "Shot plan",
+      "empty": "Generate the voiceover, then select Plan shots to review each shot here.",
+      "visualAnchor": "Global continuity (editable)",
+      "number": "Shot {{index}}",
+      "duration": "{{value}} sec",
+      "script": "Script"
+    },
     "actions": {
       "voicePlan": "Generate voice design",
       "voice": "Generate voiceover",
+      "shotPlan": "Plan shots",
       "storyboards": "Generate storyboards",
       "videos": "Generate videos",
       "compose": "Compose video",
@@ -169,6 +205,7 @@
       "approve": "Approve the script on the left first",
       "voicePlan": "Next: generate voice design",
       "voice": "Next: generate voiceover",
+      "shotPlan": "Next: plan shots and review them in the right panel",
       "storyboards": "Next: generate storyboards",
       "videos": "Next: generate videos",
       "compose": "Next: compose video",
@@ -177,6 +214,7 @@
     "messages": {
       "voicePlanFirst": "Generate the voice design first",
       "voiceFirst": "Generate the voiceover first",
+      "shotPlanFirst": "Plan and review the shots first",
       "imagePartial": "Some storyboards failed. Retry them in the media library.",
       "videoPartial": "Some videos failed. Retry them in the media library.",
       "assetsIncomplete": "Voiceover or video clips are incomplete",
@@ -184,6 +222,7 @@
       "imageFailed": "Storyboard generation failed",
       "videoFailed": "Video generation failed",
       "cancelled": "Local polling and remaining steps stopped. Cloud work may continue and incur charges.",
+      "largeTaskConfirm": "This stage will submit {{count}} {{kind}} generation tasks and may incur significant charges. Continue?",
       "visualAnchor": "Global continuity"
     }
   },

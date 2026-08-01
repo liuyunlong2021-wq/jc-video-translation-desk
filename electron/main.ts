@@ -1,14 +1,14 @@
-import { app, BrowserWindow, screen, Menu, protocol } from 'electron'
+import { app, BrowserWindow, screen, Menu, protocol, shell } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { isDev } from './lib/is-dev'
 import path from 'node:path'
+import fs from 'node:fs'
 import initIPC from './ipc'
 import { initSqlite } from './sqlite'
 import i18next from 'i18next'
 import { changeAppLanguage, initI18n } from './i18n'
 import { i18nLanguages } from './i18n/common-options'
-import useCookieAllowCrossSite from './lib/cookie-allow-cross-site'
 import { sendStatEvent } from './lib/stat'
 import { assertRunAsset } from './media-workspace'
 
@@ -22,6 +22,13 @@ protocol.registerSchemesAsPrivileged([
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
+// Keep existing media and keys when the visible product name changes.
+const appDataPath = app.getPath('appData')
+const legacyUserDataCandidates = ['短视频工厂', 'short-video-factory', 'AI Short Video Factory']
+  .map((name) => path.join(appDataPath, name))
+  .filter((candidate) => fs.existsSync(path.join(candidate, 'media-runs')) || fs.existsSync(path.join(candidate, 'data.db')))
+if (legacyUserDataCandidates[0]) app.setPath('userData', legacyUserDataCandidates[0])
+
 // 已构建的目录结构
 //
 // ├─┬─┬ dist
@@ -34,7 +41,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 process.env.APP_ROOT = path.join(__dirname, '..')
 
 // 🚧 使用['ENV_NAME'] 避免 vite:define plugin - Vite@2.x
-export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
+export const VITE_DEV_SERVER_URL = isDev ? process.env['VITE_DEV_SERVER_URL'] : undefined
 export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
 export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
@@ -63,9 +70,17 @@ function createWindow() {
           frame: false,
         }),
     webPreferences: {
-      webSecurity: false,
+      webSecurity: true,
+      contextIsolation: true,
+      nodeIntegration: false,
       preload: path.join(__dirname, 'preload.js'),
     },
+  })
+
+  win.webContents.on('will-navigate', (event) => event.preventDefault())
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
+    return { action: 'deny' }
   })
 
   // 优化应用进入体验
@@ -73,9 +88,7 @@ function createWindow() {
     win?.show()
   })
 
-  //测试向渲染器进程发送的活动推送消息。
   win.webContents.on('did-finish-load', () => {
-    win?.webContents.send('main-process-message', new Date().toLocaleString())
     void sendStatEvent({
       title: '软件主界面',
       userAgent: win?.webContents.getUserAgent(),
@@ -217,10 +230,4 @@ app.whenReady().then(() => {
     buildMenu()
   })
 
-  // 允许跨站请求携带cookie
-  useCookieAllowCrossSite()
-  // 禁用 CORS
-  app.commandLine.appendSwitch('disable-features', 'OutOfBlinkCors')
-  // 允许本地网络请求
-  app.commandLine.appendSwitch('disable-features', 'BlockInsecurePrivateNetworkRequests')
 })

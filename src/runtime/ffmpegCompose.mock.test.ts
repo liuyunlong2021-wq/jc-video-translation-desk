@@ -15,6 +15,7 @@ const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'short-video-factory-ffmp
 mock.module('electron', {
   namedExports: {
     app: { getPath: () => userData },
+    net: {},
     dialog: {},
   },
 })

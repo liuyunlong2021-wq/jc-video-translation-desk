@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "AI Short Video Factory - 短视频工厂"
+    "name": "点一点"
   },
   "menu": {
     "app": {
@@ -82,13 +82,23 @@
       "ratio": "画面比例",
       "duration": "目标时长",
       "seconds": "秒",
+      "customDuration": "自定义",
+      "durationInvalid": "时长必须是 5 到 180 秒的整数",
       "style": "视觉风格",
+      "shotPace": "镜头节奏",
+      "paces": {
+        "auto": "自动判断",
+        "slow": "慢 · 约 7 秒/镜",
+        "medium": "中 · 约 4.5 秒/镜",
+        "fast": "快 · 约 2.5 秒/镜"
+      },
       "reference": "核心参考图",
       "referenceOptional": "可选；不上传则不保证主体跨镜头一致性",
       "addReference": "上传",
       "replaceReference": "替换",
       "removeReference": "移除核心参考图",
       "generate": "生成文稿",
+      "newProject": "新建项目",
       "editable": "文稿（可编辑）",
       "approve": "确认文稿",
       "approved": "文稿已确认",
@@ -97,7 +107,8 @@
       "actual": "当前任务 {{seconds}} 秒 · {{segments}} 个视频段"
     },
     "api": {
-      "title": "韭菜盒子 API",
+      "title": "生成设置",
+      "section": "韭菜盒子 API",
       "address": "API 地址",
       "savedPlaceholder": "已安全保存，留空则不修改",
       "sessionPlaceholder": "本次运行已配置，留空则不修改",
@@ -111,6 +122,21 @@
       "connected": "连接成功",
       "connectedSession": "连接成功；API Key 仅在本次运行中使用",
       "keyRequired": "请输入 API Key"
+    },
+    "localVoice": {
+      "title": "配音引擎",
+      "description": "本地模式使用 Qwen3-TTS VoiceDesign；不会自动切换云端",
+      "cloud": "云端",
+      "local": "本地",
+      "model": "Qwen3-TTS VoiceDesign 1.7B",
+      "check": "检测",
+      "status": {
+        "checking": "检测中",
+        "ready": "本地可用",
+        "platform": "仅支持 Apple 芯片 Mac",
+        "runtime": "缺少 MLX Audio 环境",
+        "model": "未找到 VoiceDesign 模型"
+      }
     },
     "library": {
       "title": "媒体库",
@@ -145,13 +171,23 @@
     },
     "voice": {
       "title": "声音方案",
+      "prompt": "声音设计提示词（可编辑）",
       "ready": "已生成",
       "waiting": "待生成",
       "empty": "确认文稿后，在下方生成声音方案。系统会自动确定人设、音色、风格、情感和节奏。"
     },
+    "shots": {
+      "title": "分镜方案",
+      "empty": "生成配音后点击“转分镜”，镜头设计会在这里逐条显示。",
+      "visualAnchor": "全局一致性（可编辑）",
+      "number": "镜头 {{index}}",
+      "duration": "{{value}} 秒",
+      "script": "对应文稿"
+    },
     "actions": {
       "voicePlan": "生成声音方案",
       "voice": "生成配音",
+      "shotPlan": "转分镜",
       "storyboards": "生成分镜图",
       "videos": "生成视频",
       "compose": "合成视频",
@@ -169,6 +205,7 @@
       "approve": "先在左侧确认文稿",
       "voicePlan": "下一步：生成声音方案",
       "voice": "下一步：生成配音",
+      "shotPlan": "下一步：转分镜并在右栏检查镜头设计",
       "storyboards": "下一步：生成分镜图",
       "videos": "下一步：生成视频",
       "compose": "下一步：合成视频",
@@ -177,6 +214,7 @@
     "messages": {
       "voicePlanFirst": "请先生成声音方案",
       "voiceFirst": "请先生成配音",
+      "shotPlanFirst": "请先转分镜并检查镜头设计",
       "imagePartial": "部分分镜图生成失败，请在素材库中重试",
       "videoPartial": "部分视频生成失败，请在素材库中重试",
       "assetsIncomplete": "配音或视频片段不完整",
@@ -184,6 +222,7 @@
       "imageFailed": "分镜图生成失败",
       "videoFailed": "视频生成失败",
       "cancelled": "已停止本地轮询和后续步骤；云端任务可能仍会继续并产生费用",
+      "largeTaskConfirm": "本阶段将提交 {{count}} 个{{kind}}生成任务，可能产生较多费用。确定继续吗？",
       "visualAnchor": "全局一致性"
     }
   },

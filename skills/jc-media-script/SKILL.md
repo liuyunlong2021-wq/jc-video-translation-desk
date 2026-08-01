@@ -13,9 +13,9 @@ description: Turn a structured short-video brief into one concise narration scri
 
 - `request`：用户诉求；
 - `verifiedFacts`：可选的已核实事实，未提供的信息不得虚构；
-- `targetDuration`：`10`、`15` 或 `30` 秒；
+- `targetDuration`：`5` 到 `180` 秒的整数目标时长；
 - `ratio`：`9:16` 或 `16:9`；
-- `styleId`：视觉风格标识；
+- `styleId`：具体视觉风格预设标识，不接受真人、动画等泛化大类；
 - `hasCoreReference`：是否有核心参考图。
 
 ## 写作规则

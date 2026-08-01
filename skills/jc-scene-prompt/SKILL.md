@@ -1,20 +1,29 @@
 ---
 name: jc-scene-prompt
 description: Use when a user asks to create a scene design prompt, scene concept image, empty-environment shot, or a reusable scene asset from story material.
-triggers:
-  - '场景设计'
-  - '场景设定图'
-  - '场景提示词'
-  - '场景概念图'
-  - 'scene design'
-  - '画场景'
-  - '设计场景'
-  - '空镜设计'
-  - '场景资产'
-  - '场景参考'
 ---
 
 # 场景参考图 → 提示词
+
+## 应用运行时模式
+
+输入 `mode: "app-plan"` 时，直接从 `script` 提取所有主要场景，一次输出：
+
+```json
+{ "assets": [{ "role": "scene", "label": "场景名", "description": "空间功能与氛围", "identityTraits": ["固定空间结构"], "styleRequirements": ["项目风格要求"], "required": true, "design": { "严格完整遵守 references/scene-format.md 的 JSON 模板": "不得省略字段" }, "searchQuery": "从 design 派生的一条精确英文 Pinterest 查询" }] }
+```
+
+`design` 是唯一生图事实源，必须把输入 `projectStyle` 的视觉风格和比例原样写入 `design.project`。不得输出 `generationPrompt`、`prompt` 或另一份自然语言提示词。`searchQuery` 只能从完整 `design` 派生，严格使用“媒介 + 具体空间与关键氛围/结构 + 全景制作用途”的一条英文查询。真人项目必须包含 `live action film set` 或 `cinematic location reference` 以及 `wide establishing shot`；动画项目必须包含具体动画媒介以及 `anime background art` 或 `environment concept art`。例如 `cinematic modern home study wide interior establishing shot`。不得只搜索抽象氛围或泛化空间。不输出多个备选查询。没有主要场景时输出 `{ "assets": [] }`。不得提取角色或道具；设计必须是无人物、无角色剪影、无动物的空环境。不得返回路径、图片或其他字段。
+
+输入 `mode: "app-runtime"` 时跳过下方搜图、询问和文件流程。只读取 `asset` 和 `projectStyle`，输出：
+
+```json
+{ "assetId": "原样返回 asset.id", "design": {}, "searchQuery": "从 design 派生的一条精确英文 Pinterest 查询" }
+```
+
+`design` 必须严格完整遵守 `references/scene-format.md`，锁定空间布局、材质、光源、关键物件、项目风格和画面比例，并明确纯环境空镜、无人物、无角色剪影、无动物。不得返回路径、图片、Markdown、`generationPrompt`、`prompt` 或其他字段。
+
+输入 `mode: "app-revise"` 时读取 `asset`、`currentDesign`、`instruction` 和 `projectStyle`，只把用户意见应用到完整设计，并从修改后的 `design` 重新派生 `searchQuery`，返回相同的 `{ "assetId", "design", "searchQuery" }` 合同。不得搜索、下载、生成图片、改变空间身份或加入人物。
 
 > 输入场景描述 → Pinterest 搜索真实场景参考图 → 分析图片提取视觉DNA → 融合场景需求输出场景设定图 JSON。参考图是像素，不是回忆。
 
@@ -178,7 +187,7 @@ view_image 查看选定的参考图
 
 ## 约束
 
-1. 必须先有参考图，再有提示词——不凭空生成
+1. App 中先生成完整设计与提示词；参考图是可选增强，可随后联网搜索
 2. 场景图须是空镜（无人物），纯色背景或自然环境的空场景
 3. 视觉 DNA 提取必须详尽——不跳过任何维度
 4. 不满意就换图，不走选项流程

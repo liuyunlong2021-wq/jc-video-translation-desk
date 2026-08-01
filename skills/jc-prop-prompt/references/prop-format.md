@@ -6,6 +6,10 @@
 
 ```json
 {
+  "project": {
+    "visualStyle": "从 projectStyle.prompt 原样写入",
+    "aspectRatio": "从 projectStyle.ratio 原样写入"
+  },
   "prop": {
     "name": "道具名称",
     "category": "武器/工具/饰品/文件/日常用品/其他",
@@ -71,6 +75,10 @@
 
 ```json
 {
+  "project": {
+    "visualStyle": "韩国爱情浪漫风",
+    "aspectRatio": "9:16"
+  },
   "prop": {
     "name": "破旧镰刀",
     "category": "工具/武器",

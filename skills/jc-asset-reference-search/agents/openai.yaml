@@ -1,0 +1,4 @@
+interface:
+  display_name: "资产参考图搜索"
+  short_description: "使用简短关键词联网搜索并下载一张可追溯的资产参考图片"
+  default_prompt: "Use $jc-asset-reference-search to search and download one asset reference image."

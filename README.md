@@ -1,194 +1,120 @@
-<a id="readme-top"></a>
+# 点一点
 
-<!-- 项目海报 -->
-<div align="center">
-  <img src="images/ScreenShot.png" alt="Poster" width="100%">
-</div>
+点一点是一款分阶段生成 AI 短视频的 Electron 桌面应用。用户输入视频诉求，依次确认文稿与配音，准备角色、场景和道具资产，再生成分镜图、单镜头视频并合成为最终成片。
 
----
+当前版本基于 [YILS-LIN/short-video-factory](https://github.com/YILS-LIN/short-video-factory) 演进，现行仓库为 [liuyunlong2021-wq/short-video-factory](https://github.com/liuyunlong2021-wq/short-video-factory)。
 
-<!-- 项目LOGO -->
-<br />
-<div align="center">
-  <a href="https://github.com/YILS-LIN/short-video-factory">
-    <img src="public/icon.png" alt="Logo" height="100">
-  </a>
+## 当前工作流
 
-<h3 align="center">AI Short Video Factory - 短视频工厂</h3>
+```text
+用户诉求
+  -> 生成并确认文稿
+  -> 生成声音方案
+  -> 生成统一配音
+  -> 生成逐镜分镜图
+  -> 每张图生成一条单镜头视频
+  -> 本地 FFmpeg 拼接画面并替换为统一配音
+  -> 最终成片
+```
 
-  <p align="center">
-    🚀 一键生成产品营销与泛内容短视频，AI批量自动剪辑，高颜值跨平台桌面端工具
-  </p>
+每个付费阶段都由用户明确触发，音频、分镜图、视频和最终成片会立即进入中栏素材库。失败后只重试未成功的任务，不重复提交已经成功的生成请求。
 
-  <!-- 项目徽章 -->
+## 固定媒体能力
 
-[![贡献者][contributors-shield]][contributors-url]
-[![分支][forks-shield]][forks-url]
-[![星标][stars-shield]][stars-url]
-[![问题][issues-shield]][issues-url]
-[![最新版本][release-shield]][release-url]
+| 阶段 | 模型或能力 | 说明 |
+|---|---|---|
+| 文稿与内置 Skill | `gemini-3.6-flash` | 根据诉求、目标时长、比例和视觉风格生成文稿 |
+| 声音设计 | `rh-aiapp-voice-design` | 基于文稿生成并应用人设、音色、风格、情感和节奏 |
+| 分镜图 | `gpt-image-2` | 支持无参考图生成和单核心参考图编辑 |
+| 分镜视频 | `veo-3.1-generate-preview` | 一张分镜图生成一个 4、6 或 8 秒连续镜头 |
+| 最终合成 | `ffmpeg-static` | 丢弃视频片段原声，按统一配音真实时长输出成片 |
 
-<!-- ![发布日期][release-date-shield] -->
+云端能力通过韭菜盒子 API 使用：
 
-[![许可证][license-shield]][license-url]
+- API 地址：`https://api.jiucaihezi.studio/v1`
+- 获取 API Key：[https://api.jiucaihezi.studio/keys](https://api.jiucaihezi.studio/keys)
 
-  <p align="center">
-    <a href="https://github.com/YILS-LIN/short-video-factory/issues/new?labels=bug&template=bug-report---.md">报告Bug</a>
-    &middot;
-    <a href="https://github.com/YILS-LIN/short-video-factory/issues/new?labels=enhancement&template=feature-request---.md">请求功能</a>
-  </p>
-</div>
+界面只要求配置 API Key，不需要填写模型名或 API 地址。
 
-<!-- 关于项目 -->
+## 核心特性
 
-## 📖 关于项目
+- 分段确认：文稿、声音、分镜图、视频和合成可分别测试与重试。
+- 单核心参考资产：可上传一张产品或主体参考图，按镜头决定是否保持主体一致。
+- 单镜头合同：每个视频片段只描述一个连续镜头，避免让模型在单张图中错误切镜。
+- 真实音频时长：先生成配音，再据此计算分镜数量和最终时间线。
+- 统一声音：最终成片只保留声音设计生成的统一配音。
+- 可恢复任务：任务状态和媒体文件保存在 Electron `userData/media-runs/<runId>/`。
+- 受控媒体路径：应用只允许读取当前任务目录内的素材。
+- 紧凑素材库：参考图、音频、分镜图、视频和成片分类展示，点击后弹窗预览。
+- 双语界面：保留中文和英文界面资源。
 
-短视频工厂是一个开源的桌面端应用，旨在通过AI技术简化短视频的制作流程。用户可以通过简单的提示词文本+视频分镜素材，快速且自动的剪辑出高质量的产品营销和泛内容短视频。该项目集成了AI驱动的文案生成、语音合成、视频剪辑、字幕特效等功能，旨在为用户提供开箱即用的短视频制作体验。
+当前第一版不包含字幕、BGM、批量自动生产、用户素材文件夹绑定，也不包含完整角色、场景和道具资产系统。
 
-### 核心功能
+## 支持范围
 
-- 🤖 **AI驱动**：集成了最新的AI技术，提升视频制作效率和质量
-- 📝 **文案生成**：基于提示词生成高质量的短视频文案
-- 🎥 **自动剪辑**：支持多种视频格式，自动化批量处理视频剪辑任务
-- 🎙️ **语音合成**：将生成的文案转换为自然流畅的语音
-- 🎬 **字幕特效**：自动添加字幕和特效，提升视频质量
-- 📦 **批量处理**：支持批量任务，按预设自动持续合成视频
-- 🌐 **多语言支持**：支持中文、英文等多种语言，满足不同用户需求
-- 📦 **开箱即用**：无需复杂配置，用户可以快速上手
-- 📈 **持续更新**：定期发布新版本，修复bug并添加新功能
-- 🔒 **安全可靠**：完全本地本地化运行，确保用户数据安全
-- 🎨 **用户友好**：简洁直观的用户界面，易于操作
-- 💻 **多平台支持**：支持Windows、macOS和Linux等多个操作系统
+- 系统：macOS、Windows、Linux
+- 画面比例：当前 AI 视频工作流支持 `9:16` 和 `16:9`
+- 视频生成时长：每段仅支持 4、6、8 秒
+- 核心参考图：PNG、JPEG、WebP，最大 20 MB
 
-<p align="right">(<a href="#readme-top">返回顶部</a>)</p>
+## 本地开发
 
-## 🚀 开始使用
+环境要求：
 
-前往 [Github Release](https://github.com/YILS-LIN/short-video-factory/releases) 下载最新版本
+- Node.js `>=22.17.0`
+- pnpm `10.12.4`
 
-前往 [官方文档](https://short-video-factory.yils.blog) 查看使用手册
+安装依赖：
 
-<p align="right">(<a href="#readme-top">返回顶部</a>)</p>
+```bash
+pnpm install
+```
 
-## 🗺️ 路线图
+运行测试：
 
-**喜欢可以点个 Star 支持一下哦！**
+```bash
+pnpm test
+```
 
-下面是已实现和计划中的功能：
+构建安装包：
 
-- [x] 文案生成，兼容通用的 OpenAI 接口格式
-- [x] 语音合成，支持EdgeTTS
-- [x] 视频剪辑，文案、视频、音频、字幕合成，自动混剪
-- [x] 批量处理，支持一个批量任务，按预设自动持续合成视频
-- [x] 多语言支持，能够支持中文、英文等多种语言
-- [x] 完善的使用手册
-- [ ] 更全面的参数调整
-- [ ] 更多的语音合成API
-- [ ] 字幕特效，支持多种字幕样式和特效
+```bash
+pnpm build
+```
 
-查看[开放问题](https://github.com/YILS-LIN/short-video-factory/issues)以获取提议功能（和已知问题）的完整列表。
+macOS 构建完成后可直接打开：
 
-<p align="right">(<a href="#readme-top">返回顶部</a>)</p>
+```bash
+open release/1.2.2/mac-universal/点一点.app
+```
 
-## 🎞️ 示例视频
+Vue DevTools 在 Node 25 中导致的 `localStorage` 配置加载问题已通过移除未使用插件修复，详情见[开发环境 localStorage 兼容问题](docs/wiki/排障/开发环境localStorage兼容问题.md)。
 
-<table>
-<thead>
-<tr>
-<th align="center"><g-emoji class="g-emoji" alias="arrow_forward">▶️</g-emoji> 《产品营销短视频》</th>
-<th align="center"><g-emoji class="g-emoji" alias="arrow_forward">▶️</g-emoji> 《暖心治愈系语录》</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td align="center"><video src="https://github.com/user-attachments/assets/165a8f96-861b-4cf3-946c-444b9692cef8"></video></td>
-<td align="center"><video src="https://github.com/user-attachments/assets/12694618-e0fe-4848-8a7e-98b3f3a7aece"></video></td>
-</tr>
-</tbody>
-</table>
+## 项目文档
 
-注：素材来源于网络，仅用于展示剪辑效果
+- [项目 Wiki 总入口](docs/wiki/CLAUDE.md)
+- [当前状态与风险](docs/wiki/hot.md)
+- [单核心参考资产的单镜头媒体编排工作流 SDD](docs/短视频工厂AI原生创作改造SDD.md)
+- [工作流架构](docs/wiki/架构/分段式AI短视频工作流.md)
+- [实现落地记录](docs/wiki/开发/AI原生创作工作流落地.md)
+- [本地构建与发布](docs/wiki/运维/本地构建与发布.md)
+- [2026-07-30 验证状态](docs/wiki/巡检报告/2026-07-30验证状态.md)
 
-<p align="right">(<a href="#readme-top">返回顶部</a>)</p>
+## 当前验证状态
 
-<!-- 贡献 -->
+- 构建版已完成一次端到端人工验证，最终视频合成成功。
+- 39 项自动测试、类型检查和未签名本地应用打包已通过，覆盖媒体合同、恢复、持久化、合成、镜头节奏和品牌参数迁移。
+- AI 原生工作流实现提交：`57c48b6`。
 
-## 🤝 贡献
+## 数据与安全
 
-贡献让开源社区成为了一个学习、启发和创造的绝佳场所。**非常感谢**您所做的任何贡献。
+- API Key 优先使用 Electron `safeStorage` 加密保存；系统安全存储不可用时仅在当前会话内使用。
+- `run.json` 和 Wiki 不保存 API Key。
+- 云端生成结果只接受 HTTPS 地址，不允许重定向降级到 HTTP。
+- 媒体生成依赖云端 API；任务状态、下载后的素材和最终 FFmpeg 合成保存在本机。
 
-如果您有可以改善此项目的建议，请fork本项目仓库并创建一个pull request。您也可以简单地创建一个带有"enhancement"标签的issue。
-不要忘记给项目点个Star！再次感谢！
+## 历史与许可证
 
-1. Fork此项目
-2. 创建您的功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交您的更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启一个Pull Request
+旧版 EdgeTTS、BGM、字幕、批量混剪和用户素材文件夹工作流已被当前 AI 原生工作流替代。历史版本说明保留在 [CHANGELOG.md](CHANGELOG.md)，不代表当前界面仍提供这些能力。
 
-### 主要贡献者：
-
-<a href="https://github.com/YILS-LIN/short-video-factory/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=YILS-LIN/short-video-factory" alt="contrib.rocks image" />
-</a>
-
-<p align="right">(<a href="#readme-top">返回顶部</a>)</p>
-
-## 💖 鸣谢
-
-- [rany2/edge-tts](https://github.com/rany2/edge-tts)
-- [duyquangnvx/edge-tts](https://github.com/duyquangnvx/edge-tts)
-
-<p align="right">(<a href="#readme-top">返回顶部</a>)</p>
-
-<!-- 许可证 -->
-
-## 🎗 许可证
-
-[![许可证][license-shield]][license-url]
-
-Copyright © 2025 YILS.
-
-<p align="right">(<a href="#readme-top">返回顶部</a>)</p>
-
-## 🐱 捐赠
-
-如果这个项目对你有帮助，欢迎请作者喝杯咖啡(或者啤酒) 🍺
-
-你的 **Star ⭐** 和 **捐赠** 是我持续更新的最大动力！
-
-<div align="left">
-  <img src="https://github.com/user-attachments/assets/6b832dd3-38ea-4927-9c3b-97549c77a1f0" alt="YILS的微信赞赏码" width="400">
-</div>
-
-👉 在此处查看捐赠者名单：[千古留名 - 捐赠者留言板](https://short-video-factory.yils.blog/donate/list.html)
-
-<p align="right">(<a href="#readme-top">返回顶部</a>)</p>
-
-<!-- 星标历史 -->
-
-## ⭐ 星标历史
-
-<div align="center">
-  <a href="#">
-    <img src="./images/StarHistory.png" alt="Star History Chart" width="800">
-  </a>
-</div>
-
-<p align="right">(<a href="#readme-top">返回顶部</a>)</p>
-
-<!-- MARKDOWN链接和图片 -->
-
-[contributors-shield]: https://img.shields.io/github/contributors/YILS-LIN/short-video-factory.svg?color=c4f042&labelColor=black&style=flat-square
-[contributors-url]: https://github.com/YILS-LIN/short-video-factory/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/YILS-LIN/short-video-factory.svg?color=8ae8ff&labelColor=black&style=flat-square
-[forks-url]: https://github.com/YILS-LIN/short-video-factory/network/members
-[stars-shield]: https://img.shields.io/github/stars/YILS-LIN/short-video-factory.svg?color=ffcb47&labelColor=black&style=flat-square
-[stars-url]: https://github.com/YILS-LIN/short-video-factory/stargazers
-[issues-shield]: https://img.shields.io/github/issues/YILS-LIN/short-video-factory.svg?labelColor=black&style=flat-square
-[issues-url]: https://github.com/YILS-LIN/short-video-factory/issues
-[release-shield]: https://img.shields.io/github/v/release/YILS-LIN/short-video-factory?labelColor=black&style=flat-square
-[release-url]: https://github.com/YILS-LIN/short-video-factory/releases
-[release-date-shield]: https://img.shields.io/github/release-date/YILS-LIN/short-video-factory?color=9cf&style=flat-round
-[license-shield]: https://img.shields.io/github/license/YILS-LIN/short-video-factory.svg?labelColor=black&style=flat-square
-[license-url]: https://github.com/YILS-LIN/short-video-factory/blob/main/LICENSE
+项目沿用原仓库许可证，详见 [LICENSE](LICENSE)。原项目作者与历史贡献记录归 [YILS-LIN/short-video-factory](https://github.com/YILS-LIN/short-video-factory) 所有。

@@ -3,12 +3,12 @@ import os from 'os'
 import { spawn } from 'child_process'
 import type { ComposeGeneratedVideoParams, ExecuteFFmpegResult } from './types.ts'
 import { generateUniqueFileName } from '../lib/tools.ts'
+import { isDev } from '../lib/is-dev.ts'
 import { assertRunAsset, ensureRunDir, getRunAssetPath, mediaDuration } from '../media-workspace.ts'
 
-const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 const isWindows = process.platform === 'win32'
 
-const ffmpegPath: string = VITE_DEV_SERVER_URL
+const ffmpegPath: string = isDev
   ? require('ffmpeg-static')
   : (require('ffmpeg-static') as string).replace('app.asar', 'app.asar.unpacked')
 

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title>赚钱短片</title>
+  <rect width="256" height="256" rx="56" fill="#15803D"/>
+  <path d="M59 111c0-45 30-72 69-72s69 27 69 72v28c0 48-28 78-69 78s-69-30-69-78z" fill="#fff"/>
+  <path d="M61 103c5-43 31-64 67-64 31 0 56 15 66 45-18-9-35-15-55-15-24 0-48 12-78 34z" fill="#111827"/>
+  <path d="M72 110c-16 7-24 20-24 37 0 16 7 27 19 33" fill="#111827"/>
+  <path d="M184 110c16 7 24 20 24 37 0 16-7 27-19 33" fill="#111827"/>
+  <path d="M72 104h49v34H72zM135 104h49v34h-49zM121 116h14v10h-14z" fill="#111827"/>
+  <path d="M80 111h33v20H80zM143 111h33v20h-33z" fill="#fff"/>
+  <g fill="#111827">
+    <circle cx="97" cy="121" r="8"/>
+    <circle cx="159" cy="121" r="8"/>
+    <path d="M118 168c12 8 28 8 40 0-5 18-35 18-40 0z"/>
+  </g>
+  <path d="M87 78c18-14 42-19 64-14" fill="#15803D"/>
+</svg>

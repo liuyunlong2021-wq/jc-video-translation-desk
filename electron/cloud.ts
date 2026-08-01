@@ -5,7 +5,7 @@ import axios, { AxiosError } from 'axios'
 import { app, safeStorage } from 'electron'
 import { generateUniqueFileName } from './lib/tools.ts'
 import type { PendingCloudTask, ResumedCloudTask } from './types.ts'
-import type { MediaScriptBrief, TextModel } from './types.ts'
+import type { MediaScriptBrief, TextModel, VideoModel } from './types.ts'
 import {
   assertRunAsset,
   downloadMedia,
@@ -149,12 +149,22 @@ async function request<T = any>(
 
 async function downloadResultMedia(url: string, outputPath: string, signal?: AbortSignal) {
   const apiKey = new URL(url).origin === API_ORIGIN ? await readApiKey() : ''
-  return downloadMedia(
-    url,
-    outputPath,
-    signal,
-    apiKey ? { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey } : undefined,
-  )
+  const headers = apiKey ? { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey } : undefined
+  try {
+    return await downloadMedia(url, outputPath, signal, headers)
+  } catch (error) {
+    if (!/ERR_CONNECTION_CLOSED/.test(error instanceof Error ? error.message : String(error))) throw error
+    const response = await axios.get<ArrayBuffer>(url, {
+      responseType: 'arraybuffer',
+      timeout: 300_000,
+      maxRedirects: 0,
+      headers,
+      signal,
+    })
+    await fs.promises.mkdir(path.dirname(outputPath), { recursive: true })
+    await fs.promises.writeFile(outputPath, Buffer.from(response.data))
+    return outputPath
+  }
 }
 
 export async function testApiKey() {
@@ -974,21 +984,28 @@ export async function generateStoryboardImage(
 export async function generateAssetImage(
   runId: string,
   assetId: string,
+  role: 'character' | 'scene' | 'prop',
   design: Record<string, unknown>,
-  referencePath?: string,
+  referencePath?: string | string[],
   assetLabel?: string,
 ) {
   if (!/^[A-Za-z0-9_-]+$/.test(assetId)) throw new Error('无效的资产 ID')
+  if (!['character', 'scene', 'prop'].includes(role)) throw new Error('无效的资产类型')
   if (!design || typeof design !== 'object' || Array.isArray(design)) throw new Error('资产设计 JSON 无效')
   const ratio = String((design as any).project?.aspectRatio || '')
   imageSize(ratio)
-  const prompt = JSON.stringify(design, null, 2)
+  const designJson = JSON.stringify(design, null, 2)
+  const prompt = referencePath
+    ? `请结合全部参考图生成，最终内容、画风和比例以资产设计 JSON 为准。\n\n${designJson}`
+    : designJson
   const pendingId = `asset:${assetId}`
   return withTaskAbort(runId, pendingId, async (signal) => {
     const existing = (await readPending(runId)).find((task) => task.id === pendingId)
     if (existing && existing.status !== 'success' && (existing.resultUrl || existing.pollRoute))
       return finishPending(runId, existing, signal)
-    const references = referencePath ? [assertRunAsset(runId, referencePath)] : []
+    const references = (Array.isArray(referencePath) ? referencePath : referencePath ? [referencePath] : [])
+      .filter(Boolean)
+      .map((item) => assertRunAsset(runId, item))
     const outputPath = generateUniqueFileName(
       path.join(getRunDir(runId), 'assets', assetId, 'generated.png'),
     )
@@ -1007,7 +1024,10 @@ export async function generateAssetImage(
             prompt,
             size: imageSize(ratio),
             response_format: 'url',
-            image: fs.createReadStream(references[0]),
+            image:
+              references.length === 1
+                ? fs.createReadStream(references[0])
+                : references.map((item) => fs.createReadStream(item)),
           },
           {
             timeout: 300_000,
@@ -1068,49 +1088,76 @@ export async function generateAssetImage(
 export async function generateSegmentVideo(
   runId: string,
   index: number,
+  model: VideoModel,
   prompt: string,
   ratio: string,
   generationDuration: number,
   imagePath: string,
 ) {
+  if (!['veo-3.1-generate-preview', 'rh-grok-image-video'].includes(model))
+    throw new Error('不支持的视频模型')
   const pendingId = `video:${index}`
   return withTaskAbort(runId, pendingId, async (signal) => {
     const existing = (await readPending(runId)).find((task) => task.id === pendingId)
-    if (existing && existing.status !== 'success' && (existing.resultUrl || existing.pollRoute))
+    if (
+      existing &&
+      (existing.model || 'veo-3.1-generate-preview') === model &&
+      existing.status !== 'success' &&
+      (existing.resultUrl || existing.pollRoute)
+    )
       return finishPending(runId, existing, signal)
     imageSize(ratio)
-    if (![4, 6, 8].includes(generationDuration)) {
-      throw new Error('Veo 3.1 生成时长只能为 4、6 或 8 秒')
-    }
-    if (ratio !== '9:16' && ratio !== '16:9') throw new Error('Veo 3.1 仅支持 9:16 或 16:9')
+    if (![4, 6, 8].includes(generationDuration)) throw new Error('视频生成时长只能为 4、6 或 8 秒')
+    if (ratio !== '9:16' && ratio !== '16:9') throw new Error('视频模型仅支持 9:16 或 16:9')
+    const seconds = model === 'rh-grok-image-video' ? Math.max(6, generationDuration) : generationDuration
     const localImage = assertRunAsset(runId, imagePath)
     const outputPath = generateUniqueFileName(getRunAssetPath(runId, 'clip', index))
     await putPending(
       runId,
-      pendingTask(runId, 'video', index, outputPath, {}, '', undefined, pendingId),
+      { ...pendingTask(runId, 'video', index, outputPath, {}, '', undefined, pendingId), model },
     )
     let data: any
     try {
-      const apiKey = await readApiKey()
-      const response = await axios.postForm(
-        `${OPENAI_BASE_URL}/videos`,
-        {
-          model: 'veo-3.1-generate-preview',
-          prompt,
-          input_reference: fs.createReadStream(localImage),
-          seconds: String(generationDuration),
-          size: ratio === '9:16' ? '720x1280' : '1280x720',
-          resolution: '720p',
-          aspectRatio: ratio,
-        },
-        {
-          timeout: 300_000,
-          headers: { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey },
+      if (model === 'rh-grok-image-video') {
+        const extension = path.extname(localImage).toLowerCase()
+        const mimeType = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.webp' ? 'image/webp' : 'image/png'
+        const image = `data:${mimeType};base64,${await fs.promises.readFile(localImage, 'base64')}`
+        data = await request(
+          'POST',
+          '/v1/videos',
+          {
+            model,
+            prompt,
+            duration: seconds,
+            aspectRatio: ratio,
+            resolution: '720p',
+            images: [image],
+          },
           signal,
-          maxBodyLength: Infinity,
-        },
-      )
-      data = response.data
+        )
+      } else {
+        const apiKey = await readApiKey()
+        const response = await axios.postForm(
+          `${OPENAI_BASE_URL}/videos`,
+          {
+            model,
+            prompt,
+            input_reference: fs.createReadStream(localImage),
+            seconds: String(seconds),
+            duration: String(seconds),
+            size: ratio === '9:16' ? '720x1280' : '1280x720',
+            resolution: '720p',
+            aspectRatio: ratio,
+          },
+          {
+            timeout: 300_000,
+            headers: { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey },
+            signal,
+            maxBodyLength: Infinity,
+          },
+        )
+        data = response.data
+      }
     } catch (error) {
       if (!signal.aborted)
         await updateTask(runId, pendingId, (task) => ({
@@ -1127,7 +1174,11 @@ export async function generateSegmentVideo(
     if (!url) {
       const taskId = extractTaskId(data)
       if (!taskId) throw new Error('视频任务没有返回任务 ID')
-      pollRoute = `/v1/video/generations/${encodeURIComponent(taskId)}`
+      pollRoute = model === 'rh-grok-image-video'
+        ? /^task_/.test(taskId)
+          ? `/v1/videos/${encodeURIComponent(taskId)}`
+          : `/rh/tasks/${encodeURIComponent(taskId)}`
+        : `/v1/video/generations/${encodeURIComponent(taskId)}`
     }
     await ensureRunDir(runId)
     const task = pendingTask(
@@ -1139,6 +1190,7 @@ export async function generateSegmentVideo(
       url,
       pollRoute,
     )
+    task.model = model
     await putPending(runId, task)
     if (signal.aborted) {
       await markCloudTaskStopped(runId, pendingId)

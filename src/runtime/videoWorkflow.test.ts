@@ -2,15 +2,81 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   estimateDuration,
+  expectedShotCount,
+  generateValidatedPlan,
   generationDurationFor,
   hashScript,
+  isValidTargetDuration,
+  parseAssetPlan,
   parseStoryboardPlan,
+  parseRevisionProposal,
   parseVoiceDesign,
   unfinishedSegments,
+  assetReferenceSearchQuery,
 } from './videoWorkflow.ts'
+
+test('narrows Pinterest searches by asset role and visual medium', () => {
+  assert.equal(
+    assetReferenceSearchQuery('anxious office worker', 'character', 'cinematic-contrast'),
+    'anxious office worker film character costume portrait full body movie still',
+  )
+  assert.equal(
+    assetReferenceSearchQuery('student dining hall', 'scene', 'cel-cinematic'),
+    'student dining hall animation background art establishing shot wide shot',
+  )
+  assert.equal(
+    assetReferenceSearchQuery('old smartphone', 'prop', 'handmade-clay'),
+    'old smartphone animation prop design concept art',
+  )
+})
+
+test('validates a storyboard asset plan and preserves shot references', () => {
+  const plan = parseAssetPlan({
+    assetPlan: [
+      {
+        assetKey: 'character:host',
+        role: 'character',
+        label: '主持人',
+        description: '主角',
+        identityTraits: ['短发'],
+        styleRequirements: ['粘土'],
+        required: true,
+      },
+      {
+        assetKey: 'scene:studio',
+        role: 'scene',
+        label: '演播室',
+        description: '主要场景',
+        required: true,
+      },
+    ],
+    shots: [{ assetKeys: ['scene:studio', 'character:host'] }],
+  })
+  assert.deepEqual(plan.shotAssetKeys, [['scene:studio', 'character:host']])
+  assert.throws(
+    () => parseAssetPlan({ assetPlan: [], shots: [{ assetKeys: ['missing'] }] }),
+    /资产计划/,
+  )
+  assert.throws(
+    () =>
+      parseAssetPlan({
+        assetPlan: [{ assetKey: 'product:legacy', role: 'product', label: '旧产品', description: '旧类型' }],
+        shots: [{ assetKeys: ['product:legacy'] }],
+      }),
+    /资产类型无效/,
+  )
+})
 
 test('estimates 200 Chinese characters as 60 seconds', () => {
   assert.equal(estimateDuration('字'.repeat(200)), 60)
+})
+
+test('accepts only integer target durations from 5 to 180 seconds', () => {
+  assert.equal(isValidTargetDuration(5), true)
+  assert.equal(isValidTargetDuration(180), true)
+  assert.equal(isValidTargetDuration(4), false)
+  assert.equal(isValidTargetDuration(181), false)
+  assert.equal(isValidTargetDuration(15.5), false)
 })
 
 test('freezes an approved script with a stable SHA-256 hash', async () => {
@@ -18,15 +84,16 @@ test('freezes an approved script with a stable SHA-256 hash', async () => {
   assert.equal((await hashScript('文稿')).length, 64)
 })
 
-test('accepts a complete eight-part 60 second storyboard', () => {
-  const parts = ['甲。', '乙。', '丙。', '丁。', '戊。', '己。', '庚。', '辛。']
+test('accepts a complete slow-paced 60 second storyboard', () => {
+  const parts = ['甲。', '乙。', '丙。', '丁。', '戊。', '己。', '庚。', '辛。', '壬。']
   const script = parts.join('')
   const plan = parseStoryboardPlan(
     {
+      resolvedPace: 'slow',
       visualAnchor: '统一写实风格',
       segments: parts.map((text, index) => ({
         index: index + 1,
-        playDuration: 7.5,
+        playDuration: 60 / 9,
         generationDuration: 8,
         script: text,
         coreReferenceVisible: true,
@@ -36,18 +103,20 @@ test('accepts a complete eight-part 60 second storyboard', () => {
     },
     script,
     60,
+    'slow',
   )
-  assert.equal(plan.segments.length, 8)
+  assert.equal(plan.segments.length, 9)
 })
 
-test('requires an additional segment when real voice duration exceeds 64 seconds', () => {
-  const parts = ['甲。', '乙。', '丙。', '丁。', '戊。', '己。', '庚。', '辛。', '壬。']
+test('slow pacing adds another segment after 63 seconds', () => {
+  const parts = ['甲。', '乙。', '丙。', '丁。', '戊。', '己。', '庚。', '辛。', '壬。', '癸。']
   const script = parts.join('')
   const plan = parseStoryboardPlan(
     {
+      resolvedPace: 'slow',
       visualAnchor: '统一写实风格',
       segments: parts.map((text, index) => ({
-        playDuration: 65 / 9,
+        playDuration: 65 / 10,
         generationDuration: 8,
         script: text,
         coreReferenceVisible: false,
@@ -57,8 +126,70 @@ test('requires an additional segment when real voice duration exceeds 64 seconds
     },
     script,
     65,
+    'slow',
   )
-  assert.equal(plan.segments.length, 9)
+  assert.equal(plan.segments.length, 10)
+})
+
+test('maps 15 seconds to three, four, or six independent shots', () => {
+  assert.equal(expectedShotCount(15, 'slow'), 3)
+  assert.equal(expectedShotCount(15, 'medium'), 4)
+  assert.equal(expectedShotCount(15, 'fast'), 6)
+})
+
+test('accepts a director-selected shot count that differs from the pace estimate', () => {
+  const parts = ['甲', '乙', '丙', '丁', '戊']
+  const plan = parseStoryboardPlan(
+    {
+      resolvedPace: 'fast',
+      visualAnchor: '统一写实风格',
+      segments: parts.map((script, index) => ({
+        playDuration: 2,
+        generationDuration: 4,
+        script,
+        coreReferenceVisible: false,
+        storyboardImagePrompt: `图${index + 1}`,
+        videoPrompt: `视频${index + 1}，单一连续镜头，无切镜，无背景音乐`,
+      })),
+    },
+    parts.join(''),
+    10,
+    'fast',
+  )
+  assert.equal(expectedShotCount(10, 'fast'), 4)
+  assert.equal(plan.segments.length, 5)
+})
+
+test('retries one invalid plan with the validation error', async () => {
+  const errors: string[] = []
+  const plan = await generateValidatedPlan(
+    async (validationError) => {
+      errors.push(validationError)
+      return { visualAnchor: errors.length === 1 ? '' : '统一视觉锚点' }
+    },
+    (value) => {
+      if (!value.visualAnchor) throw new Error('分镜方案缺少全局一致性锚点')
+    },
+  )
+  assert.equal(plan.visualAnchor, '统一视觉锚点')
+  assert.deepEqual(errors, ['', '分镜方案缺少全局一致性锚点'])
+})
+
+test('auto pacing accepts one resolved pace while fixed pacing cannot drift', () => {
+  const value = {
+    resolvedPace: 'fast',
+    visualAnchor: '统一写实风格',
+    segments: Array.from({ length: 4 }, (_, index) => ({
+      playDuration: 2.5,
+      generationDuration: 4,
+      script: '字',
+      coreReferenceVisible: false,
+      storyboardImagePrompt: `图${index + 1}`,
+      videoPrompt: `视频${index + 1}，单一连续镜头，无切镜，无背景音乐`,
+    })),
+  }
+  assert.equal(parseStoryboardPlan(value, '字字字字', 10, 'auto').resolvedPace, 'fast')
+  assert.throws(() => parseStoryboardPlan(value, '字字字字', 10, 'medium'), /用户选择/)
 })
 
 test('requires the five voice-design fields in their fixed order', () => {
@@ -79,6 +210,7 @@ test('rejects a video segment that asks Veo to cut between shots', () => {
     () =>
       parseStoryboardPlan(
         {
+          resolvedPace: 'slow',
           visualAnchor: '统一写实风格',
           segments: [
             {
@@ -93,6 +225,7 @@ test('rejects a video segment that asks Veo to cut between shots', () => {
         },
         '测试文稿',
         4,
+        'slow',
       ),
     /单一连续镜头/,
   )
@@ -110,6 +243,7 @@ test('rejects non-discrete Veo generation durations', () => {
     () =>
       parseStoryboardPlan(
         {
+          resolvedPace: 'slow',
           visualAnchor: '统一写实风格',
           segments: [
             {
@@ -124,6 +258,7 @@ test('rejects non-discrete Veo generation durations', () => {
         },
         '测试文稿',
         6,
+        'slow',
       ),
     /4、6 或 8/,
   )
@@ -134,6 +269,7 @@ test('rejects a larger Veo duration when a smaller supported duration covers the
     () =>
       parseStoryboardPlan(
         {
+          resolvedPace: 'slow',
           visualAnchor: '统一写实风格',
           segments: [
             {
@@ -148,6 +284,7 @@ test('rejects a larger Veo duration when a smaller supported duration covers the
         },
         '测试文稿',
         4,
+        'slow',
       ),
     /最小模型时长/,
   )
@@ -158,6 +295,87 @@ test('stage retries exclude already successful paid tasks', () => {
     { index: 1, imageStatus: 'success', videoStatus: 'success' },
     { index: 2, imageStatus: 'failed', videoStatus: 'failed' },
   ] as any
-  assert.deepEqual(unfinishedSegments(segments, 'image').map((item) => item.index), [2])
-  assert.deepEqual(unfinishedSegments(segments, 'video').map((item) => item.index), [2])
+  assert.deepEqual(
+    unfinishedSegments(segments, 'image').map((item) => item.index),
+    [2],
+  )
+  assert.deepEqual(
+    unfinishedSegments(segments, 'video').map((item) => item.index),
+    [2],
+  )
+})
+
+test('preserves the complete director document and reference bindings', () => {
+  const plan = parseStoryboardPlan(
+    {
+      creativeIdentity: '大卫·芬奇《社交网络》开场审讯式对话节奏',
+      sceneReference: '用快速信息推进建立钩子',
+      rhythmArchive: '近景与插入镜头交替',
+      distributionIntent: '首秒结果，结尾回收',
+      resolvedPace: 'fast',
+      referenceShotCount: 2,
+      finalShotCount: 1,
+      shotCountRationale: '单一连续动作更适合长镜',
+      visualAnchor: '冷暖对比电影光',
+      segments: [
+        {
+          index: 1,
+          storyBeat: '展示产品结果',
+          shotRole: 'hook',
+          editTreatment: 'hold',
+          playDuration: 4,
+          generationDuration: 4,
+          script: '测试文稿',
+          coreReferenceVisible: true,
+          referenceAssetIds: ['core-1'],
+          shotSize: '近景',
+          cameraAngle: '平视',
+          cameraMovement: '缓慢推进',
+          startState: '产品居中',
+          actionProgression: '镜头推进',
+          endState: '标识清晰',
+          storyboardImagePrompt: '产品单幅首帧',
+          videoPrompt: '单一连续镜头，无切镜，无背景音乐',
+        },
+      ],
+    },
+    '测试文稿',
+    4,
+    'fast',
+  )
+  assert.equal(plan.creativeIdentity.startsWith('大卫·芬奇'), true)
+  assert.equal(plan.finalShotCount, 1)
+  assert.deepEqual(plan.segments[0].referenceAssetIds, ['core-1'])
+  assert.equal(plan.segments[0].cameraMovement, '缓慢推进')
+})
+
+test('rejects mismatched final shot counts and revision targets', () => {
+  assert.throws(
+    () =>
+      parseStoryboardPlan(
+        {
+          resolvedPace: 'slow',
+          finalShotCount: 2,
+          visualAnchor: '锚点',
+          segments: [
+            {
+              playDuration: 4,
+              generationDuration: 4,
+              script: '文稿',
+              coreReferenceVisible: false,
+              storyboardImagePrompt: '图',
+              videoPrompt: '单一连续镜头，无切镜，无背景音乐',
+            },
+          ],
+        },
+        '文稿',
+        4,
+        'slow',
+      ),
+    /最终镜头数/,
+  )
+  assert.throws(
+    () => parseRevisionProposal({ targetType: 'shot', targetId: '2', revised: {} }, 'shot', '1'),
+    /目标/,
+  )
 })

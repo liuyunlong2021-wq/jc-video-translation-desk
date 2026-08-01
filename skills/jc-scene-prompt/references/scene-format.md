@@ -6,6 +6,10 @@
 
 ```json
 {
+  "project": {
+    "visualStyle": "从 projectStyle.prompt 原样写入",
+    "aspectRatio": "从 projectStyle.ratio 原样写入"
+  },
   "scene": {
     "name": "场景名称",
     "episode": "集号",
@@ -64,7 +68,7 @@
     "alternateAngles": [{ "angle": "角度名称", "description": "从这个角度看到什么" }]
   },
   "background": "纯色中性灰（物件/材质特写时）或自然环境的空场景",
-  "lighting": "均匀柔光·无人物·无戏剧阴影",
+  "presentationLighting": "均匀柔光·无人物·无戏剧阴影",
   "layout": "合理排版·主镜头大图+关键区域特写+物件标注·自然视觉流",
   "noHumans": true
 }

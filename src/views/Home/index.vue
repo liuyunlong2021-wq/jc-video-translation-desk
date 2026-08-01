@@ -71,7 +71,7 @@
         :disabled="!mediaStore.runId"
         @click="taskDrawerOpen = !taskDrawerOpen"
       >
-        <v-badge :content="activeTaskCount" :model-value="activeTaskCount > 0" color="error">
+        <v-badge :content="activeTaskCount" :model-value="activeTaskCount > 0" color="success">
           <v-icon>mdi-progress-clock</v-icon>
         </v-badge>
       </v-btn>
@@ -135,6 +135,7 @@
       <VideoManage
         @edit-script="editScript"
         @markdown-saved="reloadStoryboardMarkdown"
+        @upload-asset-reference="uploadAssetReference"
       />
       <v-btn
         class="inspector-toggle"
@@ -189,9 +190,10 @@ import {
   expectedShotCount,
   unfinishedSegments,
   VISUAL_STYLES,
+  assetReferenceSearchQuery,
   type StoryboardSegment,
 } from '@/runtime/videoWorkflow'
-import { assetGenerationChanged, isLegacyStoryboardMarkdown, mergeStoryboardMedia, parseStoryboardMarkdown } from '@/runtime/storyboardMarkdown'
+import { assetGenerationChanged, assetVersionMatches, isLegacyStoryboardMarkdown, mergeStoryboardMedia, parseStoryboardMarkdown, withProjectDesign } from '@/runtime/storyboardMarkdown'
 import { deserializeMediaTask, serializeMediaTask } from '@/runtime/mediaPersistence'
 import type {
   AssetRole,
@@ -343,7 +345,20 @@ async function resumeTask(task: PendingCloudTask) {
 
 async function abandonTask(task: PendingCloudTask) {
   await window.electron.cloud.abandonTask(mediaStore.runId, task.id)
+  const segment = mediaStore.segments.find((item) => String(item.index) === task.targetId)
+  if (segment && task.kind === 'storyboard') mediaStore.invalidateShot(segment.index, 'image')
+  if (segment && task.kind === 'video') mediaStore.invalidateShot(segment.index, 'video')
+  if (task.kind === 'asset') {
+    const asset = mediaStore.referenceAssets.find((item) => item.id === task.targetId)
+    if (asset)
+      asset.status = mediaStore.currentGeneratedAssetVersion(asset.id)
+        ? 'approved'
+        : asset.versions.some((version) => version.source !== 'generated')
+          ? 'ready'
+          : 'design-ready'
+  }
   await refreshCloudTasks()
+  if (mediaStore.cloudTasks.every((item) => item.status === 'success')) taskDrawerOpen.value = false
 }
 
 async function retryTask(task: PendingCloudTask) {
@@ -709,9 +724,27 @@ async function reloadStoryboardMarkdown(runPaths?: string[]) {
       if (!existing) return asset
       if (assetGenerationChanged(asset, existing)) {
         changedAssetIds.add(asset.id)
-        return { ...asset, status: asset.design ? 'design-ready' : 'planned', versions: existing.versions }
+        return {
+          ...asset,
+          status: asset.design ? 'design-ready' : 'planned',
+          versions: existing.versions,
+          referenceRevision: existing.referenceRevision,
+          rejectedReferencePinIds: existing.rejectedReferencePinIds,
+        }
       }
-      return { ...asset, status: existing.status, versions: existing.versions, activeVersionId: existing.activeVersionId, pendingVersionId: existing.pendingVersionId }
+      const recoveredVersion = [...existing.versions]
+        .reverse()
+        .find((version) => assetVersionMatches(asset, version))
+      const activeVersionId = existing.activeVersionId || recoveredVersion?.id
+      return {
+        ...asset,
+        status: activeVersionId ? 'approved' : existing.status,
+        versions: existing.versions,
+        activeVersionId,
+        pendingVersionId: existing.pendingVersionId,
+        referenceRevision: existing.referenceRevision,
+        rejectedReferencePinIds: existing.rejectedReferencePinIds,
+      }
     })
     mediaStore.resolvedPace = plan.resolvedPace
     mediaStore.creativeIdentity = plan.creativeIdentity
@@ -738,13 +771,20 @@ async function reloadStoryboardMarkdown(runPaths?: string[]) {
       })
       mediaStore.finalPath = ''
     }
-    mediaStore.referenceAssets = referenceAssets.map((asset) => ({
-      ...asset,
-      generatedBySkill: existingById.get(asset.id)?.generatedBySkill,
-      sourceDocument: existingById.get(asset.id)?.sourceDocument || asset.sourceDocument,
-      design: asset.design || existingById.get(asset.id)?.design,
-      searchQuery: asset.searchQuery || existingById.get(asset.id)?.searchQuery,
-    }))
+    mediaStore.referenceAssets = referenceAssets.map((asset) => {
+      const existing = existingById.get(asset.id)
+      return {
+        ...asset,
+        generatedBySkill: existing?.generatedBySkill,
+        sourceDocument: existing?.sourceDocument || asset.sourceDocument,
+        design: withProjectDesign(
+          asset.design || existing?.design,
+          VISUAL_STYLES.find((style) => style.id === mediaStore.styleId)?.prompt || '',
+          mediaStore.ratio,
+        ),
+        searchQuery: asset.searchQuery || existing?.searchQuery,
+      }
+    })
     if (mediaStore.segments.length) mediaStore.stage = 'shot-plan-ready'
 }
 
@@ -806,6 +846,14 @@ ${asset.searchQuery || '未生成'}
 等待导演分镜绑定。`
 }
 
+function currentProjectDesign(design: ReferenceAsset['design']) {
+  return withProjectDesign(
+    design,
+    VISUAL_STYLES.find((style) => style.id === mediaStore.styleId)?.prompt || '',
+    mediaStore.ratio,
+  )
+}
+
 function parsePlannedAssets(value: any, role: AssetRole, skill: string): ReferenceAsset[] {
   if (!Array.isArray(value?.assets)) throw new Error(`${assetFolder(role)} Skill 没有返回 assets`)
   const existing = new Map(
@@ -819,13 +867,7 @@ function parsePlannedAssets(value: any, role: AssetRole, skill: string): Referen
     const description = String(item?.description || '').trim()
     if (!label || !description)
       throw new Error(`${assetFolder(role)}第 ${index + 1} 项内容不完整`)
-    const design = {
-      ...(item?.design || {}),
-      project: {
-        visualStyle: VISUAL_STYLES.find((style) => style.id === mediaStore.styleId)?.prompt,
-        aspectRatio: mediaStore.ratio,
-      },
-    }
+    const design = currentProjectDesign(item?.design)
     const searchQuery = String(item?.searchQuery || '').trim()
     if (
       !validAssetDesign(role, design) ||
@@ -986,11 +1028,11 @@ async function searchAssets() {
         const version = await window.electron.cloud.searchAssetImage(
           mediaStore.runId,
           asset.id,
-          asset.searchQuery!,
+          assetReferenceSearchQuery(asset.searchQuery!, asset.role, mediaStore.styleId),
           [...(asset.rejectedReferencePinIds || [])].map(String),
         )
         asset.versions.push(version)
-        asset.pendingVersionId = version.id
+        asset.referenceRevision = (asset.referenceRevision || 0) + 1
         asset.status = 'ready'
       } catch (error) {
         failures.push(`${asset.label}：${error instanceof Error ? error.message : String(error)}`)
@@ -1000,30 +1042,37 @@ async function searchAssets() {
   })
 }
 
+async function uploadAssetReference(assetId: string) {
+  const asset = mediaStore.referenceAssets.find((item) => item.id === assetId)
+  if (!asset) return
+  const version = await window.electron.cloud.selectAssetImage(mediaStore.runId, asset.id)
+  if (!version) return
+  asset.versions.push(version)
+  asset.referenceRevision = (asset.referenceRevision || 0) + 1
+  asset.status = 'ready'
+}
+
 async function generateAssetVersion(asset: ReferenceAsset) {
   const runId = mediaStore.runId
+  asset.design = currentProjectDesign(asset.design)
   asset.status = 'generating'
   try {
-    const source = asset.versions.find(
-      (version) => version.id === (asset.pendingVersionId || asset.activeVersionId),
-    )
+    const references = asset.versions.filter((version) => version.source !== 'generated')
     const relativePath = await window.electron.cloud.generateAsset({
       runId,
       assetId: asset.id,
       assetLabel: asset.label,
+      role: asset.role,
       design: JSON.parse(JSON.stringify(asset.design)),
-      referencePath:
-        source?.source === 'upload' || source?.source === 'search'
-          ? source.relativePath
-          : undefined,
+      referencePaths: references.map((version) => version.relativePath),
     })
     const version: AssetVersion = {
       id: `version-${crypto.randomUUID()}`,
       source: 'generated',
       relativePath,
       designFingerprint: designFingerprint(asset),
-      derivedFromVersionId:
-        source?.source === 'upload' || source?.source === 'search' ? source.id : undefined,
+      referenceRevision: asset.referenceRevision || 0,
+      derivedFromVersionId: references[0]?.id,
       createdAt: new Date().toISOString(),
     }
     if (mediaStore.runId !== runId) return
@@ -1040,14 +1089,9 @@ async function generateAssets() {
     const pending = mediaStore.referenceAssets.filter(
       (asset) =>
         asset.design &&
-        !asset.versions.some(
-          (version) =>
-            version.source === 'generated' &&
-            version.designFingerprint === designFingerprint(asset),
-        ),
+        !asset.versions.some((version) => assetVersionMatches(asset, version)),
     )
     if (!pending.length) throw new Error('没有待生成资产')
-    if (!window.confirm(`将生成 ${pending.length} 张资产图，是否继续？`)) return
     await pool(pending, 2, generateAssetVersion)
     if (mediaStore.allRequiredAssetsApproved) mediaStore.stage = 'assets-ready'
   } catch (error) {
@@ -1059,7 +1103,6 @@ async function generateAssets() {
 
 async function generateStoryboards() {
   try {
-    await reloadStoryboardMarkdown()
     if (!mediaStore.segments.length) throw new Error(t('workflow.messages.shotPlanFirst'))
     validateShotPlan()
     if (!mediaStore.allRequiredAssetsApproved) throw new Error('请先确认全部必需资产')
@@ -1072,7 +1115,10 @@ async function generateStoryboards() {
     )
       return
     await pool(pendingImages, 2, generateImage)
-    if (!mediaStore.allImagesReady) throw new Error(t('workflow.messages.imagePartial'))
+    if (!mediaStore.allImagesReady) {
+      const errors = [...new Set(pendingImages.map((item) => item.error).filter(Boolean))]
+      throw new Error(errors.join('\n') || t('workflow.messages.imagePartial'))
+    }
     mediaStore.stage = 'storyboards-ready'
     mediaStore.mediaFilter = 'storyboards'
     mediaStore.selectView('media')
@@ -1085,7 +1131,6 @@ async function generateStoryboards() {
 
 async function generateVideos() {
   try {
-    await reloadStoryboardMarkdown()
     validateShotPlan()
     const pendingVideos = unfinishedSegments(mediaStore.segments, 'video')
     if (
@@ -1096,7 +1141,10 @@ async function generateVideos() {
     )
       return
     await pool(pendingVideos, 2, generateVideo)
-    if (!mediaStore.allVideosReady) throw new Error(t('workflow.messages.videoPartial'))
+    if (!mediaStore.allVideosReady) {
+      const errors = [...new Set(pendingVideos.map((item) => item.error).filter(Boolean))]
+      throw new Error(errors.join('\n') || t('workflow.messages.videoPartial'))
+    }
     mediaStore.stage = 'videos-ready'
     mediaStore.mediaFilter = 'videos'
     mediaStore.selectView('media')
@@ -1150,8 +1198,7 @@ async function generateImage(segment: StoryboardSegment) {
   segment.error = ''
   try {
     const referencePaths = segment.referenceAssetIds.map((assetId) => {
-      const asset = mediaStore.referenceAssets.find((item) => item.id === assetId)
-      return asset?.versions.find((version) => version.id === asset.activeVersionId)?.relativePath
+      return mediaStore.currentGeneratedAssetVersion(assetId)?.relativePath
     })
     if (referencePaths.some((item) => !item)) throw new Error('镜头绑定资产缺少当前版本')
     segment.imagePath = await window.electron.cloud.generateStoryboard({
@@ -1323,6 +1370,7 @@ async function requestRevision(
           : await window.electron.cloud.generateVideo({
               runId: mediaStore.runId,
               index: revisionIndex,
+              model: mediaStore.videoModel,
               prompt,
               ratio: mediaStore.ratio,
               generationDuration: segment.generationDuration,
@@ -1522,6 +1570,7 @@ async function generateVideo(segment: StoryboardSegment) {
     segment.videoPath = await window.electron.cloud.generateVideo({
       runId,
       index: segment.index,
+      model: mediaStore.videoModel,
       prompt: segment.videoPrompt,
       ratio: mediaStore.ratio,
       generationDuration: segment.generationDuration,

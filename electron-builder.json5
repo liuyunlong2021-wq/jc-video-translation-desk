@@ -1,7 +1,7 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   $schema: 'https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json',
-  productName: '短视频工厂',
+  productName: '点一点',
   appId: 'com.yils.short-video-factory',
   asar: true,
   directories: {
@@ -17,7 +17,7 @@
         arch: ['universal'],
       },
     ],
-    artifactName: '${name}-${version}-mac-${arch}-installer.${ext}',
+    artifactName: '点一点-${version}-mac-${arch}-installer.${ext}',
     icon: './public/icon.png',
   },
   win: {
@@ -26,7 +26,7 @@
         target: 'nsis',
       },
     ],
-    artifactName: '${name}-${version}-win-${arch}-setup.${ext}',
+    artifactName: '点一点-${version}-win-${arch}-setup.${ext}',
     icon: './public/icon.png',
   },
   nsis: {
@@ -38,7 +38,7 @@
   },
   linux: {
     target: ['AppImage'],
-    artifactName: '${name}-${version}-linux-${arch}.${ext}',
+    artifactName: '点一点-${version}-linux-${arch}.${ext}',
     icon: './public/icon.png',
   },
   publish: null, // disable auto publish 防止重复发版
