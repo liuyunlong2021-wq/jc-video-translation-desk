@@ -599,7 +599,7 @@ async function generateVoice() {
     const result = await window.electron.cloud.generateVoice(
       mediaStore.runId,
       mediaStore.voicePlan.text,
-      mediaStore.voicePlan.voicePrompt,
+      episodeVoicePrompt(),
       mediaStore.voiceEngine,
     )
     mediaStore.voicePath = result.path
@@ -607,6 +607,15 @@ async function generateVoice() {
     mediaStore.stage = 'voice-ready'
     mediaStore.selectView('script')
   })
+}
+
+function episodeVoicePrompt() {
+  if (!mediaStore.segments.length || !mediaStore.voicePlan) return mediaStore.voicePlan?.voicePrompt || ''
+  const timeline = mediaStore.segments.map((segment) => {
+    const type = segment.timelineType === 'dialogue' ? '对白' : '无对白动作'
+    return `镜头${segment.index}｜${type}｜角色：${segment.dialogueCharacter || '无'}｜情绪：${segment.dialogueEmotion || '无'}｜强度：${segment.emotionIntensity || '无'}｜语速：${segment.speechRate || '无'}｜停顿/重音：${segment.pauseEmphasis || '无'}｜时长：${segment.playDuration}秒｜台词：${segment.dialogueText || '无'}`
+  }).join('\n')
+  return `${mediaStore.voicePlan.voicePrompt}\n\n【本集镜头声音时间轴】\n${timeline}\n\n严格遵守：无对白动作镜头不朗读、不补旁白；对白只按对应角色和镜头情绪表达。`
 }
 
 async function generateShotPlan() {
