@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import os from 'os'
+import path from 'node:path'
 import { spawn } from 'child_process'
-import type { ComposeGeneratedVideoParams, ExecuteFFmpegResult } from './types.ts'
+import type { ComposeGeneratedVideoParams, ExecuteFFmpegResult, SubtitleCue } from './types.ts'
 import { generateUniqueFileName } from '../lib/tools.ts'
 import { isDev } from '../lib/is-dev.ts'
 import { assertRunAsset, ensureRunDir, getRunAssetPath, mediaDuration } from '../media-workspace.ts'
@@ -39,9 +40,11 @@ export async function composeGeneratedVideo(
   await ensureRunDir(params.runId)
   const outputPath = generateUniqueFileName(getRunAssetPath(params.runId, 'final'))
   const [width, height] = OUTPUT_SIZES[params.ratio]
-  const totalDuration = await mediaDuration(voiceFile)
-  durations[durations.length - 1] +=
-    totalDuration - durations.reduce((total, duration) => total + duration, 0)
+  const timelineDuration = durations.reduce((total, duration) => total + duration, 0)
+  const voiceDuration = await mediaDuration(voiceFile)
+  if (voiceDuration > timelineDuration + 0.1)
+    throw new Error('正式配音超过分镜时间轴，请调整对白时长或镜头时长')
+  const totalDuration = timelineDuration
   const args: string[] = []
   videoFiles.forEach((file) => args.push('-i', file))
   args.push('-i', voiceFile)
@@ -53,14 +56,25 @@ export async function composeGeneratedVideo(
   })
   filters.push(`[${streams.join('][')}]concat=n=${streams.length}:v=1:a=0[vout]`)
   filters.push(
-    `[${videoFiles.length}:a]loudnorm=I=-16:TP=-1.5:LRA=11,atrim=0:${totalDuration},asetpts=PTS-STARTPTS[aout]`,
+    `[${videoFiles.length}:a]loudnorm=I=-16:TP=-1.5:LRA=11,apad=pad_dur=${totalDuration},atrim=0:${totalDuration},asetpts=PTS-STARTPTS[aout]`,
   )
+
+  let videoOutput = '[vout]'
+  if (params.subtitleCues?.length) {
+    const subtitlePath = path.join(path.dirname(outputPath), `subtitles-${Date.now()}.srt`)
+    await fs.promises.writeFile(subtitlePath, formatSrt(params.subtitleCues), 'utf8')
+    const escapedPath = subtitlePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\\\''")
+    filters.push(
+      `[vout]subtitles='${escapedPath}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=90'[vsub]`,
+    )
+    videoOutput = '[vsub]'
+  }
 
   args.push(
     '-filter_complex',
     filters.join(';'),
     '-map',
-    '[vout]',
+    videoOutput,
     '-map',
     '[aout]',
     '-c:v',
@@ -82,6 +96,22 @@ export async function composeGeneratedVideo(
   )
   await executeFFmpeg(args, params)
   return outputPath
+}
+
+function formatSrt(cues: SubtitleCue[]) {
+  return cues
+    .filter((cue) => cue.text.trim() && cue.end > cue.start)
+    .map((cue, index) => `${index + 1}\n${formatSrtTime(cue.start)} --> ${formatSrtTime(cue.end)}\n${cue.text.trim()}\n`)
+    .join('\n')
+}
+
+function formatSrtTime(value: number) {
+  const milliseconds = Math.max(0, Math.round(value * 1000))
+  const hours = Math.floor(milliseconds / 3_600_000)
+  const minutes = Math.floor((milliseconds % 3_600_000) / 60_000)
+  const seconds = Math.floor((milliseconds % 60_000) / 1000)
+  const millis = milliseconds % 1000
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`
 }
 
 export async function executeFFmpeg(

@@ -150,6 +150,16 @@ export interface StoryboardSegment {
   playDuration: number
   generationDuration: 4 | 6 | 8
   script: string
+  timelineType?: 'dialogue' | 'action'
+  dialogueCharacter?: string
+  dialogueText?: string
+  dialogueEmotion?: string
+  emotionIntensity?: string
+  speechRate?: string
+  pauseEmphasis?: string
+  dialogueDuration?: number
+  lipSyncRequired?: boolean
+  soundDesign?: string
   coreReferenceVisible: boolean
   referenceAssetIds: string[]
   shotSize: string
@@ -171,6 +181,7 @@ export interface StoryboardSegment {
 
 export interface StoryboardPlan {
   actualDuration: number
+  timelineDuration: number
   creativeIdentity: string
   sceneReference: string
   rhythmArchive: string
@@ -337,7 +348,7 @@ export function parseVoiceDesign(value: any, approvedScript: string): VoiceDesig
 export function parseStoryboardPlan(
   value: any,
   approvedScript: string,
-  actualDuration: number,
+  timelineDuration: number,
   selectedPace: ShotPace,
 ): StoryboardPlan {
   const segments = Array.isArray(value?.segments) ? value.segments : []
@@ -395,6 +406,18 @@ export function parseStoryboardPlan(
         playDuration,
         generationDuration: generationDuration as 4 | 6 | 8,
         script,
+        timelineType: segment?.timelineType === 'dialogue' ? 'dialogue' : 'action',
+        dialogueCharacter: String(segment?.dialogueCharacter || '无').trim(),
+        dialogueText: String(segment?.dialogueText || '').trim(),
+        dialogueEmotion: String(segment?.dialogueEmotion || '无').trim(),
+        emotionIntensity: String(segment?.emotionIntensity || '无').trim(),
+        speechRate: String(segment?.speechRate || '无').trim(),
+        pauseEmphasis: String(segment?.pauseEmphasis || '无').trim(),
+        dialogueDuration: Number.isFinite(Number(segment?.dialogueDuration))
+          ? Math.max(0, Number(segment.dialogueDuration))
+          : 0,
+        lipSyncRequired: Boolean(segment?.lipSyncRequired),
+        soundDesign: String(segment?.soundDesign || '无').trim(),
         coreReferenceVisible: Boolean(segment.coreReferenceVisible),
         referenceAssetIds: Array.isArray(segment?.referenceAssetIds)
           ? segment.referenceAssetIds.map(String)
@@ -417,7 +440,7 @@ export function parseStoryboardPlan(
 
   const restored = restoreApprovedScript(normalized, approvedScript)
   const total = restored.reduce((sum, segment) => sum + segment.playDuration, 0)
-  if (Math.abs(total - actualDuration) > 0.1) throw new Error('分镜总时长与配音不一致')
+  if (Math.abs(total - timelineDuration) > 0.1) throw new Error('分镜总时长与时间轴不一致')
 
   const visualAnchor = String(value?.visualAnchor || '').trim()
   if (!visualAnchor) throw new Error('分镜方案缺少全局一致性锚点')
@@ -429,7 +452,8 @@ export function parseStoryboardPlan(
   if (finalShotCount !== restored.length) throw new Error('最终镜头数与实际镜头数组不一致')
   const referenceShotCount = Number(value?.referenceShotCount)
   return {
-    actualDuration,
+    actualDuration: value?.actualDuration ? Number(value.actualDuration) : 0,
+    timelineDuration,
     creativeIdentity: String(value?.creativeIdentity || '历史分镜（未记录导演身份）').trim(),
     sceneReference: String(value?.sceneReference || '历史分镜未记录参考场景').trim(),
     rhythmArchive: String(value?.rhythmArchive || '历史分镜未记录节奏档案').trim(),

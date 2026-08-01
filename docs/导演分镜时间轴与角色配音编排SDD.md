@@ -1,7 +1,7 @@
 # 导演分镜时间轴与角色配音编排 SDD
 
 > 日期：2026-08-01  
-> 状态：待执行  
+> 状态：实施中（时间轴、后置配音入口、字幕与合成基座已执行）
 > 目标版本：2.8  
 > 适用范围：本集声音时间轴、导演分镜、角色配音、分镜视频和字幕合成  
 > 上位文档：`docs/资产图工作区与Markdown双链创作图谱升级SDD.md`、`docs/并行创作分支与Markdown阅读导航优化SDD.md`  
@@ -267,3 +267,11 @@ FFmpeg 按镜头顺序拼接视频，丢弃视频原声，加入正式配音、�
 - 不在本阶段加入口型同步算法；只记录口型/动作配合要求，为后续视频模型适配保留字段；
 - 不引入第二套项目状态机或独立数据库；
 - 不修改 `/Users/by3/Documents/jiucaihezi-app` 或 `/Users/by3/Documents/peiyin-pyvideotrans`。
+
+## 14. 当前执行记录
+
+- 已完成：`jc-script-storyboard` 输出声音与时间轴字段；支持 `dialogue/action`；无配音时按 `targetDuration` 生成分镜。
+- 已完成：正式配音入口后移到导演分镜之后；保留现有 VoiceDesign 引擎作为兼容路径。
+- 已完成：镜头时间轴作为 FFmpeg 合成总时长；不足部分补静音，超出预算明确报错。
+- 已完成：根据对白镜头生成项目字幕 Markdown，并在合成时烧录默认字幕样式。
+- 待执行：按 `voiceProfileId` 逐角色、逐台词调用 Qwen Base/IndexTTS2，并将每句音频按镜头时间轴拼接；这需要模型适配和角色声音绑定 UI，不能由当前单一 VoiceDesign 接口伪装完成。

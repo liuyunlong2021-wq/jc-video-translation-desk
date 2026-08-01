@@ -212,8 +212,6 @@ const primaryAction = computed(() => {
   if (mediaStore.workflowStep === 'voice') {
     if (!mediaStore.voicePlan)
       return { key: 'voice-plan', label: '生成声音方案', icon: 'mdi-account-voice', enabled: idle && mediaStore.apiConfigured }
-    if (!mediaStore.voicePath)
-      return { key: 'voice', label: '生成配音', icon: 'mdi-waveform', enabled: idle && (mediaStore.voiceEngine === 'local' || mediaStore.apiConfigured) }
     return { key: 'next-assets', label: '进入资产', icon: 'mdi-arrow-right-circle-outline', enabled: idle }
   }
   if (!mediaStore.script)
@@ -249,8 +247,6 @@ const primaryAction = computed(() => {
         icon: 'mdi-image-multiple-outline',
         enabled: idle && mediaStore.apiConfigured,
       }
-    if (!mediaStore.voicePath)
-      return { key: 'voice-waiting', label: '资产已就绪，请先完成配音', icon: 'mdi-waveform', enabled: false }
     if (!mediaStore.segments.length)
       return { key: 'shot-plan', label: '转分镜', icon: 'mdi-movie-edit-outline', enabled: idle && mediaStore.apiConfigured }
   }
@@ -261,11 +257,9 @@ const primaryAction = computed(() => {
         ? '请先准备资产'
         : !mediaStore.allRequiredAssetsApproved
           ? '请先生成资产图'
-          : !mediaStore.voicePath
-            ? '请先完成配音'
-            : '转分镜',
+          : '转分镜',
       icon: 'mdi-movie-edit-outline',
-      enabled: idle && mediaStore.apiConfigured && Boolean(mediaStore.voicePath) && mediaStore.assetPlanningComplete && mediaStore.allRequiredAssetsApproved,
+      enabled: idle && mediaStore.apiConfigured && mediaStore.assetPlanningComplete && mediaStore.allRequiredAssetsApproved,
     }
   if (!mediaStore.voicePlan)
     return {
@@ -353,7 +347,7 @@ const stages = computed(
         label: '分镜',
         view: 'storyboard',
         done: Boolean(mediaStore.segments.length),
-        enabled: Boolean(mediaStore.voicePath) && mediaStore.assetPlanningComplete && mediaStore.allRequiredAssetsApproved,
+        enabled: mediaStore.assetPlanningComplete && mediaStore.allRequiredAssetsApproved,
         current: mediaStore.workflowStep === 'shots',
       },
       {
@@ -361,7 +355,7 @@ const stages = computed(
         label: '分镜图',
         view: 'media',
         done: mediaStore.allImagesReady,
-        enabled: mediaStore.allRequiredAssetsApproved,
+        enabled: Boolean(mediaStore.voicePath) && mediaStore.allRequiredAssetsApproved,
         current: mediaStore.workflowStep === 'images',
       },
       {

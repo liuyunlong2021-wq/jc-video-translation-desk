@@ -77,7 +77,13 @@ function migrateRun(run: any) {
     ].includes(run.textModel)
   )
     run.textModel = 'gemini-3.6-flash'
-  if (!['veo-3.1-generate-preview', 'rh-grok-image-video'].includes(run.videoModel))
+  if (
+    ![
+      'veo-3.1-generate-preview',
+      'veo-3.0-generate-001',
+      'rh-grok-image-video',
+    ].includes(run.videoModel)
+  )
     run.videoModel = 'veo-3.1-generate-preview'
   if (!['script', 'voice', 'shots', 'assets', 'images', 'videos', 'final'].includes(run.workflowStep))
     run.workflowStep = run.workspaceView === 'script' ? 'script' : run.workspaceView || 'script'
@@ -125,6 +131,16 @@ function migrateRun(run: any) {
     segment.referenceAssetIds = segment.referenceAssetIds.filter((id: string) => id !== legacyCoreId)
     segment.coreReferenceVisible = false
     segment.storyBeat ||= segment.script || '历史镜头'
+    segment.timelineType = segment.timelineType === 'dialogue' ? 'dialogue' : 'action'
+    segment.dialogueCharacter ||= '无'
+    segment.dialogueText ||= ''
+    segment.dialogueEmotion ||= '无'
+    segment.emotionIntensity ||= '无'
+    segment.speechRate ||= '无'
+    segment.pauseEmphasis ||= '无'
+    if (!Number.isFinite(Number(segment.dialogueDuration))) segment.dialogueDuration = 0
+    segment.lipSyncRequired = Boolean(segment.lipSyncRequired)
+    segment.soundDesign ||= '无'
     segment.shotRole ||=
       segment.index === 1
         ? 'hook'

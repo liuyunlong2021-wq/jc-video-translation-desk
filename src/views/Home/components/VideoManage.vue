@@ -80,7 +80,7 @@
         />
         <div v-else class="empty-state">
           <v-icon size="42">mdi-movie-edit-outline</v-icon>
-          <span>配音完成后点击“转分镜”，导演文档会显示在这里。</span>
+          <span>资产准备完成后点击“转分镜”，导演文档会显示在这里；本集配音在分镜完成后生成。</span>
         </div>
       </section>
 
@@ -196,9 +196,7 @@
             :key="asset.id"
             type="button"
             class="asset-tile"
-            :class="{ selected: mediaStore.selectedAssetId === asset.id }"
-            @click="selectAsset(asset)"
-            @dblclick="previewAsset = asset"
+            @click="previewMediaAsset(asset)"
           >
             <img
               v-if="asset.path && ['reference', 'storyboard'].includes(asset.kind)"
@@ -229,7 +227,7 @@
             v-if="mediaStore.finalPath && mediaStore.mediaFilter === 'all'"
             type="button"
             class="asset-tile"
-            @click="mediaStore.selectView('final')"
+            @click="previewAsset = finalAsset"
           >
             <video :src="fileUrl(mediaStore.finalPath)" muted preload="metadata" />
             <div class="asset-meta"><strong>最终成片</strong><small>打开成片视图</small></div>
@@ -241,7 +239,7 @@
         <template v-if="mediaStore.finalPath">
           <video :src="fileUrl(mediaStore.finalPath)" controls preload="metadata" />
           <div class="final-meta">
-            {{ mediaStore.ratio }} · {{ mediaStore.voiceDuration.toFixed(1) }}s · Veo 3.1
+            {{ mediaStore.ratio }} · {{ mediaStore.voiceDuration.toFixed(1) }}s · {{ videoModelLabel }}
           </div>
         </template>
         <div v-else class="empty-state">
@@ -343,6 +341,18 @@ const assets = computed<Asset[]>(() => {
       path: mediaStore.coreReference.relativePath,
       status: 'success',
     })
+  for (const asset of mediaStore.referenceAssets) {
+    const version = generatedVersions(asset).find((item) => item.id === asset.activeVersionId)
+      || generatedVersions(asset).at(-1)
+    if (version)
+      items.push({
+        id: `asset-${asset.id}`,
+        kind: 'reference',
+        title: asset.label,
+        path: version.relativePath,
+        status: 'success',
+      })
+  }
   if (mediaStore.voicePath)
     items.push({
       id: 'voice',
@@ -372,6 +382,18 @@ const assets = computed<Asset[]>(() => {
   }
   return items
 })
+const finalAsset = computed<Asset>(() => ({
+  id: 'final',
+  kind: 'video',
+  title: '最终成片',
+  path: mediaStore.finalPath,
+  status: 'success',
+}))
+const videoModelLabel = computed(() => ({
+  'veo-3.1-generate-preview': 'Veo 3.1',
+  'veo-3.0-generate-001': 'Veo 3.0',
+  'rh-grok-image-video': 'Grok Video',
+}[mediaStore.videoModel]))
 const visibleAssets = computed(() => {
   if (mediaStore.mediaFilter === 'all') return assets.value
   const kind = {
@@ -467,8 +489,9 @@ function openWikiLink(path: string) {
   const asset = mediaStore.referenceAssets.find((item) => path.endsWith(`/${item.id}.md`))
   if (asset) mediaStore.selectAsset(asset.id)
 }
-function selectAsset(asset: Asset) {
-  mediaStore.selectAsset(asset.id)
+function previewMediaAsset(asset: Asset) {
+  mediaStore.selectedAssetId = asset.id
+  previewAsset.value = asset
 }
 </script>
 

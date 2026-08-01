@@ -10,4 +10,11 @@ export interface ComposeGeneratedVideoParams {
   playDurations: number[]
   voiceFile: string
   ratio: import('../types').VideoRatio
+  subtitleCues?: SubtitleCue[]
+}
+
+export interface SubtitleCue {
+  start: number
+  end: number
+  text: string
 }

@@ -90,6 +90,16 @@ test('composes only the unified voice and matches its real duration', async () =
   assert.equal((probe.match(/Stream #0:\d+.*Video:/g) || []).length, 1)
   assert.equal((probe.match(/Stream #0:\d+.*Audio:/g) || []).length, 1)
 
+  const subtitled = await composeGeneratedVideo({
+    runId,
+    videoFiles: [clip1, clip2],
+    playDurations: [0.3, 0.3],
+    voiceFile: voice,
+    ratio: '1:1',
+    subtitleCues: [{ start: 0, end: 0.3, text: '对白' }],
+  })
+  assert.ok(fs.existsSync(subtitled))
+
   const pcm = spawnSync(ffmpegPath, [
     '-hide_banner',
     '-loglevel',

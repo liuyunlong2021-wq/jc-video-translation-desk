@@ -108,6 +108,11 @@ function field(markdown: string, label: string) {
   return match?.[1]?.trim() || ''
 }
 
+function bullet(markdown: string, label: string) {
+  const match = markdown.match(new RegExp(`^- ${label}：\\s*(.+)$`, 'm'))
+  return match?.[1]?.trim() || ''
+}
+
 function frontmatter(markdown: string, key: string) {
   const match = markdown.match(new RegExp(`^${key}:\\s*["']?([^\\n"']+)["']?$`, 'm'))
   return match?.[1]?.trim() || ''
@@ -130,7 +135,7 @@ export function parseStoryboardMarkdown(
   shots: MarkdownSource[],
   assets: MarkdownSource[],
   approvedScript: string,
-  actualDuration: number,
+  timelineDuration: number,
   selectedPace: 'auto' | 'slow' | 'medium' | 'fast',
 ) {
   if (!shots.length) throw new Error('导演没有写入单镜 Markdown')
@@ -173,7 +178,17 @@ export function parseStoryboardMarkdown(
         editTreatment: field(content, '剪辑处理'),
         playDuration,
         generationDuration: Number.parseFloat(field(content, '生成时长')) || generationDurationFor(playDuration),
-        script: section(content, '对应台词'),
+        script: section(content, '对应原文') || section(content, '对应台词'),
+        timelineType: bullet(section(content, '声音与时间轴'), '类型') === '对白' ? 'dialogue' : 'action',
+        dialogueCharacter: bullet(section(content, '声音与时间轴'), '对白角色') || '无',
+        dialogueText: bullet(section(content, '声音与时间轴'), '对应台词'),
+        dialogueEmotion: bullet(section(content, '声音与时间轴'), '声音情绪') || '无',
+        emotionIntensity: bullet(section(content, '声音与时间轴'), '情绪强度') || '无',
+        speechRate: bullet(section(content, '声音与时间轴'), '语速') || '无',
+        pauseEmphasis: bullet(section(content, '声音与时间轴'), '停顿/重音') || '无',
+        dialogueDuration: Number.parseFloat(bullet(section(content, '声音与时间轴'), '对白时长')) || 0,
+        lipSyncRequired: /需要口型/.test(bullet(section(content, '声音与时间轴'), '口型/动作配合')),
+        soundDesign: bullet(section(content, '声音与时间轴'), '环境音/动作音') || '无',
         referenceAssetIds: linkedAssetIds,
         shotSize: field(content, '景别'),
         cameraAngle: field(content, '机位'),
@@ -200,7 +215,7 @@ export function parseStoryboardMarkdown(
       segments,
     },
     approvedScript,
-    actualDuration,
+    timelineDuration,
     selectedPace,
   )
   return { plan: plan as StoryboardPlan, assets: [...assetsById.values()] }

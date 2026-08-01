@@ -39,7 +39,11 @@ test('locks the API and selectable text and video models to the SDD values', () 
     assert.match(textUi, new RegExp(model))
   }
   assert.match(cloud, /model: 'gpt-image-2'/)
-  for (const model of ['veo-3.1-generate-preview', 'rh-grok-image-video']) {
+  for (const model of [
+    'veo-3.1-generate-preview',
+    'veo-3.0-generate-001',
+    'rh-grok-image-video',
+  ]) {
     assert.match(cloud, new RegExp(model.replace(/\./g, '\\.')))
     assert.match(textUi, new RegExp(model.replace(/\./g, '\\.')))
   }
@@ -234,6 +238,9 @@ test('keeps every paid stage explicit and every result visible in the media libr
   assert.match(mediaUi, /mediaStore\.finalPath/)
   assert.match(mediaUi, /v-tabs|v-btn-toggle/)
   assert.match(mediaUi, /v-dialog/)
+  assert.match(mediaUi, /@click="previewMediaAsset\(asset\)"/)
+  assert.match(mediaUi, /previewAsset\.value = asset/)
+  assert.match(mediaUi, /mediaStore\.referenceAssets/)
   assert.match(renderUi, /重新生成本图/)
   assert.match(renderUi, /重新生成本镜/)
   assert.doesNotMatch(renderUi, /Veo 3\.1|声音方案已生成/)
@@ -307,7 +314,9 @@ test('keeps style, duration, branding, and legacy-data contracts explicit', () =
 test('discards source audio and preserves old generated files', () => {
   assert.match(ffmpeg, /concat=n=\$\{streams\.length\}:v=1:a=0/)
   assert.match(ffmpeg, /\[\$\{videoFiles\.length\}:a\]loudnorm/)
-  assert.match(ffmpeg, /const totalDuration = await mediaDuration\(voiceFile\)/)
+  assert.match(ffmpeg, /const timelineDuration = durations\.reduce/)
+  assert.match(ffmpeg, /apad=pad_dur=\$\{totalDuration\}/)
+  assert.match(ffmpeg, /subtitleCues/)
   assert.match(ffmpeg, /generateUniqueFileName\(getRunAssetPath\(params\.runId, 'final'\)\)/)
   assert.match(cloud, /generateUniqueFileName\(getRunAssetPath/)
 })

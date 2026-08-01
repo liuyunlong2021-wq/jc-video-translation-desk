@@ -21,6 +21,7 @@ const WIKI_DIRS = [
   'wiki/文稿',
   'wiki/声音',
   'wiki/分镜/镜头',
+  'wiki/字幕',
   'wiki/资产/角色',
   'wiki/资产/场景',
   'wiki/资产/道具',

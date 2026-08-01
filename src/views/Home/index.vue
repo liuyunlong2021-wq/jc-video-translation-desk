@@ -592,7 +592,8 @@ async function generateVoicePlan() {
 async function generateVoice() {
   await runAction('voice', async () => {
     if (!mediaStore.voicePlan) throw new Error(t('workflow.messages.voicePlanFirst'))
-    mediaStore.invalidateFrom('voice')
+    if (mediaStore.segments.length) mediaStore.finalPath = ''
+    else mediaStore.invalidateFrom('voice')
     mediaStore.voicePath = ''
     mediaStore.voiceDuration = 0
     const result = await window.electron.cloud.generateVoice(
@@ -610,16 +611,16 @@ async function generateVoice() {
 
 async function generateShotPlan() {
   await runAction('shot-plan', async () => {
-    if (!mediaStore.voiceDuration) throw new Error(t('workflow.messages.voiceFirst'))
     if (!mediaStore.assetPlanningComplete) throw new Error('请先准备角色、场景和道具资产提示词')
     if (!mediaStore.allRequiredAssetsApproved) throw new Error('请先确认全部必需资产')
     const referenceShotCount =
       mediaStore.shotPace === 'auto'
         ? undefined
-        : expectedShotCount(mediaStore.voiceDuration, mediaStore.shotPace)
+        : expectedShotCount(mediaStore.voiceDuration || mediaStore.targetDuration, mediaStore.shotPace)
     const skillInput = {
       script: mediaStore.approvedScript,
-      actualDuration: mediaStore.voiceDuration,
+      targetDuration: mediaStore.targetDuration,
+      ...(mediaStore.voiceDuration ? { actualDuration: mediaStore.voiceDuration } : {}),
       shotPace: mediaStore.shotPace,
       ratio: mediaStore.ratio,
       style: VISUAL_STYLES.find((style) => style.id === mediaStore.styleId),
@@ -712,7 +713,7 @@ async function reloadStoryboardMarkdown(runPaths?: string[]) {
       documents.filter((document) => document.path.startsWith('wiki/分镜/镜头/')),
       documents.filter((document) => document.path.startsWith('wiki/资产/')),
       mediaStore.approvedScript,
-      mediaStore.voiceDuration,
+      mediaStore.voiceDuration || mediaStore.targetDuration,
       mediaStore.shotPace,
     )
     const plan = parsed.plan
@@ -1104,6 +1105,7 @@ async function generateAssets() {
 async function generateStoryboards() {
   try {
     if (!mediaStore.segments.length) throw new Error(t('workflow.messages.shotPlanFirst'))
+    if (!mediaStore.voicePath) throw new Error('请先完成本集配音')
     validateShotPlan()
     if (!mediaStore.allRequiredAssetsApproved) throw new Error('请先确认全部必需资产')
     const pendingImages = unfinishedSegments(mediaStore.segments, 'image')
@@ -1170,8 +1172,8 @@ function validateShotPlan() {
       segments: mediaStore.segments,
     },
     mediaStore.approvedScript,
-    mediaStore.voiceDuration,
-    mediaStore.shotPace,
+      mediaStore.voiceDuration || mediaStore.targetDuration,
+      mediaStore.shotPace,
   )
 }
 
@@ -1179,16 +1181,39 @@ async function composeVideo() {
   await runAction('compose', async () => {
     if (!mediaStore.voicePath || !mediaStore.allVideosReady)
       throw new Error(t('workflow.messages.assetsIncomplete'))
+    const subtitleCues = buildSubtitleCues()
+    const subtitleMarkdown = `# 本集字幕\n\n${subtitleCues.length ? subtitleCues.map((cue, index) => `${index + 1}. ${cue.text}（${cue.start.toFixed(2)}-${cue.end.toFixed(2)} 秒）`).join('\\n') : '本集无对白字幕。'}`
+    await window.electron.cloud.writeMarkdown(
+      mediaStore.runId,
+      'wiki/字幕/episode-001.srt.md',
+      subtitleMarkdown,
+      (await window.electron.cloud.readMarkdown(mediaStore.runId, 'wiki/字幕/episode-001.srt.md').catch(() => null))?.revision,
+    )
     mediaStore.finalPath = await window.electron.cloud.composeVideo({
       runId: mediaStore.runId,
       videoFiles: mediaStore.segments.map((segment) => segment.videoPath!),
       playDurations: mediaStore.segments.map((segment) => segment.playDuration),
       voiceFile: mediaStore.voicePath,
       ratio: mediaStore.ratio,
+      subtitleCues,
     })
     mediaStore.stage = 'completed'
     mediaStore.selectView('final')
     toast.success(t('workflow.messages.composed'))
+  })
+}
+
+function buildSubtitleCues() {
+  let cursor = 0
+  return mediaStore.segments.flatMap((segment) => {
+    const start = cursor
+    cursor += segment.playDuration
+    const text = segment.dialogueText?.trim() || (segment.timelineType === 'dialogue' ? segment.script.trim() : '')
+    if (!text) return []
+    const duration = segment.dialogueDuration && segment.dialogueDuration > 0
+      ? Math.min(segment.dialogueDuration, segment.playDuration)
+      : segment.playDuration
+    return [{ start, end: start + duration, text }]
   })
 }
 
@@ -1427,7 +1452,7 @@ function validateShotRevision(current: StoryboardSegment, revised: any) {
       segments: candidate,
     },
     mediaStore.approvedScript,
-    mediaStore.voiceDuration,
+    mediaStore.voiceDuration || mediaStore.targetDuration,
     mediaStore.shotPace,
   )
 }
@@ -1460,9 +1485,23 @@ managedBy: short-video-factory
 - 运镜：${segment.cameraMovement}
 - 资产：${assetLinks.join('、') || '无'}
 
-## 对应台词
+## 对应原文
 
 ${segment.script}
+
+## 声音与时间轴
+
+- 类型：${segment.timelineType === 'dialogue' ? '对白' : '无对白动作'}
+- 对白角色：${segment.dialogueCharacter}
+- 对应台词：${segment.timelineType === 'dialogue' ? segment.dialogueText || segment.script : '无'}
+- 声音情绪：${segment.dialogueEmotion}
+- 情绪强度：${segment.emotionIntensity}
+- 语速：${segment.speechRate}
+- 停顿/重音：${segment.pauseEmphasis}
+- 对白时长：${segment.dialogueDuration || 0} 秒
+- 动作节拍：${segment.startState} → ${segment.actionProgression} → ${segment.endState}
+- 环境音/动作音：${segment.soundDesign}
+- 口型/动作配合：${segment.lipSyncRequired ? '需要口型同步' : '不适用'}
 
 ## 起始状态
 
