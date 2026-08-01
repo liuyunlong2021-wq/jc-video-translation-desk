@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { EventEmitter } from 'node:events'
+import { Readable } from 'node:stream'
 import test, * as nodeTest from 'node:test'
 
 const { after, mock } = nodeTest as any
@@ -12,11 +14,24 @@ let downloadCount = 0
 let downloadMode: 'success' | 'fail-once' | 'abort' | 'unsafe-redirect' = 'fail-once'
 const requests: any[] = []
 const downloads: any[] = []
-const chatOutputs: string[] = []
+const chatOutputs: any[] = []
+let omitChatDone = false
 let encryptionAvailable = true
 let selectedFile = ''
+let splitUtf8 = false
 
 class MockAxiosError extends Error {}
+
+mock.module('../../electron/pinterest-reference.ts', {
+  namedExports: {
+    capturePinterestReference: async () => ({
+      pinId: '12345',
+      sourceUrl: 'https://i.pinimg.com/originals/orc.jpg',
+      sourcePageUrl: 'https://jp.pinterest.com/pin/12345/',
+      png: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    }),
+  },
+})
 
 const axios = {
   isCancel: (error: any) => error?.code === 'ERR_CANCELED',
@@ -34,7 +49,16 @@ const axios = {
       return { data: { url: 'https://media.example/video.mp4' } }
     }
     if (options.url.endsWith('/v1/chat/completions')) {
-      return { data: { choices: [{ message: { content: chatOutputs.shift() } }] } }
+      const output = chatOutputs.shift()
+      const delta = typeof output === 'string' ? { content: output } : output
+      const payload = Buffer.from(
+        [
+          `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`,
+          omitChatDone ? '' : 'data: [DONE]\n\n',
+        ].filter(Boolean).join(''),
+      )
+      const splitAt = payload.indexOf(Buffer.from('你')) + 1
+      return { data: Readable.from(splitUtf8 && splitAt > 0 ? [payload.subarray(0, splitAt), payload.subarray(splitAt)] : [payload]) }
     }
     throw new Error(`unexpected request: ${options.url}`)
   },
@@ -55,7 +79,11 @@ const axios = {
         })
       })
     }
-    return { data: new Uint8Array([1, 2, 3]).buffer }
+    return {
+      data: new Uint8Array(
+        url === 'https://i.pinimg.com/originals/orc.jpg' ? [0xff, 0xd8, 0xff, 0xd9] : [1, 2, 3],
+      ).buffer,
+    }
   },
   async postForm(url: string, data: any, options: any) {
     requests.push({ method: 'POST', url, data, headers: options.headers })
@@ -78,12 +106,45 @@ mock.module('electron', {
   namedExports: {
     app: { getPath: () => userData },
     dialog: {
-      showOpenDialog: async () => ({ canceled: !selectedFile, filePaths: selectedFile ? [selectedFile] : [] }),
+      showOpenDialog: async () => ({
+        canceled: !selectedFile,
+        filePaths: selectedFile ? [selectedFile] : [],
+      }),
     },
     safeStorage: {
       isEncryptionAvailable: () => encryptionAvailable,
       encryptString: (value: string) => Buffer.from(`encrypted:${value}`),
       decryptString: (value: Buffer) => value.toString().replace(/^encrypted:/, ''),
+    },
+    net: {
+      request: ({ url }: { url: string }) => {
+        const request = new EventEmitter() as any
+        const headers: Record<string, string> = {}
+        request.setHeader = (key: string, value: string) => (headers[key] = value)
+        request.followRedirect = () => undefined
+        request.abort = () => undefined
+        request.end = () => {
+          downloads.push({ url, headers })
+          downloadCount++
+          queueMicrotask(() => {
+            if (downloadMode === 'unsafe-redirect') {
+              request.emit('redirect', 302, 'GET', 'http://media.example/file.png')
+              return
+            }
+            if (downloadMode === 'fail-once' && downloadCount === 1) {
+              request.emit('error', new Error('download failed'))
+              return
+            }
+            if (downloadMode === 'abort') return
+            const response = Readable.from([
+              url.includes('i.pinimg.com') ? Buffer.from([0xff, 0xd8, 0xff, 0xd9]) : Buffer.from([1, 2, 3]),
+            ]) as any
+            response.statusCode = 200
+            request.emit('response', response)
+          })
+        }
+        return request
+      },
     },
   },
 })
@@ -103,7 +164,7 @@ test('retries a failed download without resubmitting the paid image task', async
   await assert.rejects(cloud.generateStoryboardImage(runId, 1, 'prompt', '9:16'), /download failed/)
 
   const pendingPath = path.join(userData, 'media-runs', runId, 'run.json')
-  const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf8')).pending[0]
+  const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf8')).tasks[0]
   assert.equal(pending.outputPath, 'storyboards/001.png')
   assert.equal(pending.resultUrl, 'https://media.example/storyboard.png')
   assert.doesNotMatch(fs.readFileSync(pendingPath, 'utf8'), /test-key/)
@@ -115,7 +176,7 @@ test('retries a failed download without resubmitting the paid image task', async
   assert.equal(requests[0].data.size, '1152x2048')
   assert.equal(downloadCount, 2)
   assert.equal(fs.readFileSync(output).byteLength, 3)
-  assert.deepEqual(JSON.parse(fs.readFileSync(pendingPath, 'utf8')).pending, [])
+  assert.equal(JSON.parse(fs.readFileSync(pendingPath, 'utf8')).tasks[0].status, 'success')
 })
 
 test('uses an in-memory API key when secure storage is unavailable', async () => {
@@ -140,11 +201,232 @@ test('uses an in-memory API key when secure storage is unavailable', async () =>
 })
 
 test('recovers the latest workflow state from its media run', async () => {
-  await workspace.saveMediaState('older-run', JSON.stringify({ runId: 'older-run', stage: 'voice-ready' }))
-  await workspace.saveMediaState('latest-run', JSON.stringify({ runId: 'latest-run', stage: 'storyboards-ready' }))
+  await workspace.saveMediaState(
+    'older-run',
+    JSON.stringify({ runId: 'older-run', stage: 'voice-ready' }),
+  )
+  await workspace.saveMediaState(
+    'latest-run',
+    JSON.stringify({ runId: 'latest-run', stage: 'storyboards-ready' }),
+  )
   const recovered = JSON.parse((await workspace.loadLatestMediaState())!)
   assert.equal(recovered.runId, 'latest-run')
   assert.equal(recovered.stage, 'storyboards-ready')
+})
+
+test('creates a project wiki, preserves Raw, and restores an explicit project', async () => {
+  const projectId = 'wiki-project'
+  const state = {
+    runId: projectId,
+    stage: 'script-approved',
+    approvedScript: '确认后的文稿',
+    ratio: '9:16',
+    targetDuration: 15,
+    segments: [],
+  }
+  await workspace.createProject(projectId, JSON.stringify(state))
+  const rawPath = await workspace.saveRawSubmission(projectId, '用户的原始需求')
+  assert.equal(rawPath, '.raw/提交记录/0001-原始需求.md')
+
+  const source = path.join(userData, '外部资料.md')
+  fs.writeFileSync(source, '# 外部原稿\n')
+  selectedFile = source
+  const imported = await workspace.importMarkdown(projectId)
+  selectedFile = ''
+  assert.equal(imported?.content, '# 外部原稿\n')
+  await workspace.saveMediaState(projectId, JSON.stringify(state))
+
+  const projectDir = path.join(userData, 'media-runs', projectId)
+  assert.equal(fs.existsSync(path.join(projectDir, 'project.json')), true)
+  assert.equal(fs.existsSync(path.join(projectDir, 'wiki/文稿/确认文稿.md')), true)
+  assert.match(fs.readFileSync(path.join(projectDir, 'wiki/index.md'), 'utf8'), /确认文稿/)
+  const sourceIndex = fs.readFileSync(path.join(projectDir, 'wiki/来源索引.md'), 'utf8')
+  assert.match(sourceIndex, /0001-原始需求/)
+  assert.doesNotMatch(sourceIndex, new RegExp(userData.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+
+  const projects = await workspace.listProjects()
+  assert.equal(
+    projects.some((project) => project.projectId === projectId),
+    true,
+  )
+  await workspace.setLastOpenedProject(projectId)
+  assert.equal(await workspace.getLastOpenedProject(), projectId)
+  assert.deepEqual(JSON.parse(await workspace.loadProjectState(projectId)), state)
+})
+
+test('state persistence never overwrites an edited creative Markdown document', async () => {
+  const projectId = 'markdown-truth'
+  const state = {
+    runId: projectId,
+    stage: 'script-approved',
+    approvedScript: '状态中的旧文稿',
+    voicePlan: { voicePrompt: '旧配音设计', text: '状态中的旧文稿' },
+    segments: [],
+  }
+  await workspace.createProject(projectId, JSON.stringify(state))
+  for (const relativePath of ['wiki/文稿/确认文稿.md', 'wiki/声音/配音设计.md']) {
+    const current = await workspace.readProjectMarkdown(projectId, relativePath)
+    await workspace.writeProjectMarkdown(
+      projectId,
+      relativePath,
+      relativePath.includes('确认文稿') ? '# 确认文稿\n\n用户的新文稿' : '# 配音设计\n\n用户的新配音',
+      current.revision,
+    )
+  }
+  await workspace.saveMediaState(projectId, JSON.stringify(state))
+  assert.match(
+    (await workspace.readProjectMarkdown(projectId, 'wiki/文稿/确认文稿.md')).content,
+    /用户的新文稿/,
+  )
+  assert.match(
+    (await workspace.readProjectMarkdown(projectId, 'wiki/声音/配音设计.md')).content,
+    /用户的新配音/,
+  )
+})
+
+test('rejects an empty confirmed script without changing the saved document', async () => {
+  const projectId = 'nonempty-confirmed-script'
+  await workspace.ensureRunDir(projectId)
+  const created = await workspace.writeProjectMarkdown(
+    projectId,
+    'wiki/文稿/确认文稿.md',
+    '# 确认文稿\n\n保留正文',
+  )
+  await assert.rejects(
+    workspace.writeProjectMarkdown(
+      projectId,
+      'wiki/文稿/确认文稿.md',
+      '# 确认文稿\n',
+      created.revision,
+    ),
+    /确认文稿不能为空/,
+  )
+  assert.match(
+    (await workspace.readProjectMarkdown(projectId, 'wiki/文稿/确认文稿.md')).content,
+    /保留正文/,
+  )
+})
+
+test('requires a revision before replacing an existing Markdown file', async () => {
+  const projectId = 'revision-project'
+  await workspace.ensureRunDir(projectId)
+  await workspace.writeProjectMarkdown(projectId, 'wiki/空白.md', '')
+  await assert.rejects(
+    workspace.writeProjectMarkdown(projectId, 'wiki/空白.md', '覆盖'),
+    /先读取后使用 edit/,
+  )
+  const current = await workspace.readProjectMarkdown(projectId, 'wiki/空白.md')
+  const saved = await workspace.writeProjectMarkdown(
+    projectId,
+    'wiki/空白.md',
+    '按版本修改',
+    current.revision,
+  )
+  assert.equal(saved.content, '按版本修改\n')
+})
+
+test('rolls back a partial storyboard update and preserves confirmed assets', async () => {
+  const projectId = 'storyboard-transaction'
+  await workspace.ensureRunDir(projectId)
+  await workspace.writeProjectMarkdown(projectId, 'wiki/分镜/导演总览.md', '旧导演')
+  await workspace.writeProjectMarkdown(projectId, 'wiki/分镜/镜头/shot-001.md', '旧镜头')
+  await workspace.writeProjectMarkdown(projectId, 'wiki/资产/角色/old.md', '旧资产')
+
+  const rollbackId = await workspace.beginStoryboardMarkdownUpdate(projectId)
+  const director = await workspace.readProjectMarkdown(projectId, 'wiki/分镜/导演总览.md')
+  await workspace.writeProjectMarkdown(
+    projectId,
+    director.path,
+    '半写导演',
+    director.revision,
+  )
+  await workspace.writeProjectMarkdown(projectId, 'wiki/分镜/镜头/shot-002.md', '半写镜头')
+  await workspace.rollbackStoryboardMarkdownUpdate(projectId, rollbackId)
+  assert.equal(
+    (await workspace.readProjectMarkdown(projectId, director.path)).content,
+    '旧导演\n',
+  )
+  assert.equal(
+    (await workspace.listProjectMarkdown(projectId)).includes('wiki/分镜/镜头/shot-002.md'),
+    false,
+  )
+
+  const commitId = await workspace.beginStoryboardMarkdownUpdate(projectId)
+  const currentDirector = await workspace.readProjectMarkdown(projectId, director.path)
+  await workspace.writeProjectMarkdown(
+    projectId,
+    director.path,
+    '新导演',
+    currentDirector.revision,
+  )
+  const shot = await workspace.readProjectMarkdown(projectId, 'wiki/分镜/镜头/shot-001.md')
+  await workspace.writeProjectMarkdown(projectId, shot.path, '新镜头', shot.revision)
+  await workspace.commitStoryboardMarkdownUpdate(projectId, commitId, [director.path, shot.path])
+  assert.equal(
+    (await workspace.listProjectMarkdown(projectId)).includes('wiki/资产/角色/old.md'),
+    true,
+  )
+})
+
+test('rejects a Wiki model stream that ends without a completion marker', async () => {
+  omitChatDone = true
+  chatOutputs.push('未完成')
+  await assert.rejects(
+    cloud.runWikiSkill('jc-script-storyboard', '测试', 'interrupted-wiki-run'),
+    /提前中断/,
+  )
+  omitChatDone = false
+})
+
+test('accepts only successful Wiki writes as the current director result', async () => {
+  const projectId = 'wiki-tool-result'
+  await workspace.ensureRunDir(projectId)
+  await workspace.writeProjectMarkdown(projectId, 'wiki/分镜/导演总览.md', '旧导演')
+  chatOutputs.push(
+    {
+      tool_calls: [
+        {
+          index: 0,
+          id: 'call-batch',
+          function: {
+            name: 'write_batch',
+            arguments: JSON.stringify({
+              files: [
+                { path: 'wiki/分镜/导演总览.md', content: '导演总览' },
+                { path: 'wiki/分镜/镜头/shot-001.md', content: '镜头一' },
+              ],
+            }),
+          },
+        },
+      ],
+    },
+  )
+  const result = await cloud.runWikiSkill('jc-script-storyboard', '测试', projectId)
+  const request = requests.at(-1)
+  assert.deepEqual(request.data.tool_choice, {
+    type: 'function',
+    function: { name: 'write_batch' },
+  })
+  assert.equal(request.data.tools.length, 1)
+  assert.equal(request.data.max_tokens, 32_000)
+  assert.deepEqual(result.writtenPaths, [
+    'wiki/分镜/导演总览.md',
+    'wiki/分镜/镜头/shot-001.md',
+  ])
+  assert.equal(
+    (await workspace.readProjectMarkdown(projectId, 'wiki/分镜/镜头/shot-001.md')).content,
+    '镜头一\n',
+  )
+  assert.equal(
+    (await workspace.readProjectMarkdown(projectId, 'wiki/分镜/导演总览.md')).content,
+    '导演总览\n',
+  )
+
+  chatOutputs.push('没有调用工具')
+  await assert.rejects(
+    cloud.runWikiSkill('jc-script-storyboard', '测试', 'wiki-no-write'),
+    /没有一次性提交/,
+  )
 })
 
 test('rejects a media redirect that downgrades from HTTPS', async () => {
@@ -164,20 +446,23 @@ test('resumes persisted work and cancellation stops local download recovery', as
   downloadCount = 0
   const runId = 'resume-run'
   await assert.rejects(cloud.generateStoryboardImage(runId, 1, 'prompt', '9:16'))
+  const submittedPostCount = postCount
   const [resumed] = await cloud.resumePendingTasks(runId)
   assert.equal(resumed.status, 'success')
-  assert.equal(postCount, 2)
+  assert.equal(postCount, submittedPostCount)
 
   downloadMode = 'abort'
   const cancelRunId = 'cancel-run'
   const running = cloud.generateStoryboardImage(cancelRunId, 1, 'prompt', '9:16')
-  while (postCount < 3) await new Promise((resolve) => setTimeout(resolve, 0))
-  await cloud.cancelRun(cancelRunId)
-  await assert.rejects(running, /cancel/)
+  while (postCount < submittedPostCount + 1) await new Promise((resolve) => setTimeout(resolve, 0))
+  await cloud.stopCloudTask(cancelRunId, 'storyboard:1')
+  await assert.rejects(running, /停止/)
+  downloadMode = 'success'
+  await cloud.resumeCloudTask(cancelRunId, 'storyboard:1')
   const runState = JSON.parse(
     fs.readFileSync(path.join(userData, 'media-runs', cancelRunId, 'run.json'), 'utf8'),
   )
-  assert.deepEqual(runState.pending, [])
+  assert.equal(runState.tasks.find((task: any) => task.id === 'storyboard:1').status, 'success')
 })
 
 test('submits the fixed voice and Veo contracts through controlled run assets', async () => {
@@ -199,7 +484,10 @@ test('submits the fixed voice and Veo contracts through controlled run assets', 
 
   const imagePath = await cloud.generateStoryboardImage(runId, 1, 'prompt', '9:16')
   await cloud.generateSegmentVideo(runId, 1, '无背景音乐', '9:16', 8, imagePath)
-  assert.equal(requests.some((request) => request.url.includes('/api/creations/uploads')), false)
+  assert.equal(
+    requests.some((request) => request.url.includes('/api/creations/uploads')),
+    false,
+  )
   const videoRequest = requests.find((request) => request.url.endsWith('/v1/videos'))
   assert.equal(videoRequest.data.model, 'veo-3.1-generate-preview')
   assert.equal(videoRequest.data.prompt, '无背景音乐')
@@ -208,7 +496,9 @@ test('submits the fixed voice and Veo contracts through controlled run assets', 
   assert.equal(videoRequest.data.resolution, '720p')
   assert.equal(videoRequest.data.aspectRatio, '9:16')
   assert.equal(typeof videoRequest.data.input_reference.pipe, 'function')
-  const videoDownload = downloads.find((download) => download.url.includes('/v1/videos/task_test/content'))
+  const videoDownload = downloads.find((download) =>
+    download.url.includes('/v1/videos/task_test/content'),
+  )
   assert.equal(videoDownload.headers.Authorization, 'Bearer test-key')
   assert.throws(() => workspace.assertRunAsset(runId, '../outside.mp4'), /素材不属于当前任务/)
   await assert.rejects(
@@ -217,24 +507,83 @@ test('submits the fixed voice and Veo contracts through controlled run assets', 
   )
 })
 
-test('uses Gemini for scripts and retries one malformed Skill JSON response', async () => {
-  chatOutputs.push('{"text":"正文"}', 'not-json', '{"text":"文稿","voicePrompt":"提示"}')
+test('uses the selected text model and retries one malformed Skill JSON response', async () => {
+  const initialRequestCount = requests.length
+  chatOutputs.push('{"text":"正文"}', '{"items":[1,]}', '{"text":"文稿","voicePrompt":"提示"}')
   assert.equal(
     await cloud.generateScript({
       request: '诉求',
       targetDuration: 15,
       ratio: '9:16',
-      styleId: 'live-action',
+      styleId: 'cinematic-contrast',
       hasCoreReference: false,
+      textModel: 'claude-fable-5',
     }),
     '正文',
   )
-  const scriptRequest = requests.find((request) => request.url.endsWith('/v1/chat/completions'))
-  assert.equal(scriptRequest.data.model, 'gemini-3.6-flash')
+  const scriptRequest = requests
+    .slice(initialRequestCount)
+    .find((request) => request.url.endsWith('/v1/chat/completions'))
+  assert.equal(scriptRequest.data.model, 'claude-fable-5')
+  assert.equal(scriptRequest.data.stream, true)
+  assert.equal(scriptRequest.responseType, 'stream')
+  assert.deepEqual(scriptRequest.data.response_format, { type: 'json_object' })
+  assert.equal(scriptRequest.data.max_tokens, 16_000)
 
-  const result = await cloud.runSkill('jc-voice-design', '{"text":"文稿"}', 'skill-run')
+  const result = await cloud.runSkill('jc-voice-design', '{"text":"文稿"}', 'skill-run', 'deepseek-v4-pro')
   assert.deepEqual(result, { text: '文稿', voicePrompt: '提示' })
-  assert.equal(requests.filter((request) => request.url.endsWith('/v1/chat/completions')).length, 3)
+  assert.equal(requests.at(-1).data.model, 'deepseek-v4-pro')
+  assert.equal(
+    requests.slice(initialRequestCount).filter((request) => request.url.endsWith('/v1/chat/completions')).length,
+    3,
+  )
+})
+
+test('loads the complete prop template and downloads one searched reference', async () => {
+  const initialRequestCount = requests.length
+  chatOutputs.push(
+    JSON.stringify({
+      assets: [
+        {
+          role: 'prop',
+          label: '兽人',
+          description: '主道具',
+          required: true,
+          design: {
+            project: { visualStyle: '冷暖电影感', aspectRatio: '9:16' },
+            prop: { name: '兽人' }, shape: {}, material: {}, views: {},
+          },
+          searchQuery: 'rusty sickle prop design',
+        },
+      ],
+    }),
+  )
+  await cloud.runSkill('jc-prop-prompt', '{"mode":"app-plan"}', 'prop-skill-run')
+  const request = requests
+    .slice(initialRequestCount)
+    .find((item) => item.url.endsWith('/v1/chat/completions'))
+  assert.match(request.data.messages[0].content, /wearAndTear/)
+  assert.match(request.data.messages[0].content, /detailCloseup/)
+
+  downloadMode = 'success'
+  const version = await cloud.runReferenceSearchSkill('prop-search-run', 'asset-prop-1', 'rusty sickle prop design')
+  assert.equal(version.source, 'search')
+  assert.equal(version.searchQuery, 'rusty sickle prop design')
+  assert.equal(version.generatedBySkill, 'jc-asset-reference-search')
+  assert.equal(version.sourceUrl, 'https://i.pinimg.com/originals/orc.jpg')
+  assert.equal(version.sourcePageUrl, 'https://jp.pinterest.com/pin/12345/')
+  assert.equal(
+    fs.existsSync(path.join(userData, 'media-runs', 'prop-search-run', version.relativePath)),
+    true,
+  )
+})
+
+test('keeps UTF-8 characters intact when an SSE chunk splits mid-character', async () => {
+  splitUtf8 = true
+  chatOutputs.push(JSON.stringify({ text: '你好' }))
+  const result = await cloud.runSkill('jc-media-script', '测试', 'utf8-sse-run', 'gemini-3.6-flash')
+  splitUtf8 = false
+  assert.equal(result.text, '你好')
 })
 
 test('imports one managed core reference and uses GPT Image edits multipart', async () => {
@@ -258,5 +607,26 @@ test('imports one managed core reference and uses GPT Image edits multipart', as
   assert.equal(editRequest.data.model, 'gpt-image-2')
   assert.equal(editRequest.data.size, '1152x2048')
   assert.equal(typeof editRequest.data.image.pipe, 'function')
+
+  const secondSource = path.join(userData, 'source-2.png')
+  fs.writeFileSync(secondSource, new Uint8Array([4, 5, 6]))
+  const secondPath = path.join(userData, 'media-runs', 'reference-run', 'inputs', 'second.png')
+  fs.copyFileSync(secondSource, secondPath)
+  await cloud.generateStoryboardImage('reference-run', 2, '保持两个资产一致', '9:16', [
+    reference.relativePath,
+    'inputs/second.png',
+  ])
+  const multiEdit = requests.filter((request) => request.url.endsWith('/v1/images/edits')).at(-1)
+  assert.equal(Array.isArray(multiEdit.data.image), true)
+  assert.equal(multiEdit.data.image.length, 2)
+
+  const design = {
+    project: { visualStyle: '冷暖电影感', aspectRatio: '9:16' },
+    prop: { name: '展示手机' },
+    shape: { silhouette: '完整手机' },
+  }
+  await cloud.generateAssetImage('reference-run', 'asset-phone', design)
+  const assetRequest = requests.filter((request) => request.url.endsWith('/v1/images/generations')).at(-1)
+  assert.deepEqual(JSON.parse(assetRequest.data.prompt), design)
   selectedFile = ''
 })
