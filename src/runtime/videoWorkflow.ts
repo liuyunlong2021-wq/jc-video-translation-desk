@@ -151,6 +151,8 @@ export interface StoryboardSegment {
   generationDuration: 4 | 6 | 8
   script: string
   timelineType?: 'dialogue' | 'action'
+  soundType?: 'onscreen' | 'voiceover' | 'none'
+  speakerId?: string
   dialogueCharacter?: string
   dialogueText?: string
   dialogueEmotion?: string
@@ -406,7 +408,13 @@ export function parseStoryboardPlan(
         playDuration,
         generationDuration: generationDuration as 4 | 6 | 8,
         script,
-        timelineType: segment?.timelineType === 'dialogue' ? 'dialogue' : 'action',
+        timelineType: segment?.soundType === 'none' || segment?.timelineType !== 'dialogue' ? 'action' : 'dialogue',
+        soundType: ['onscreen', 'voiceover', 'none'].includes(segment?.soundType)
+          ? segment.soundType
+          : segment?.timelineType === 'dialogue'
+            ? segment?.lipSyncRequired ? 'onscreen' : 'voiceover'
+            : 'none',
+        speakerId: String(segment?.speakerId || '').trim() || undefined,
         dialogueCharacter: String(segment?.dialogueCharacter || '无').trim(),
         dialogueText: String(segment?.dialogueText || '').trim(),
         dialogueEmotion: String(segment?.dialogueEmotion || '无').trim(),

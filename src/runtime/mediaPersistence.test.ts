@@ -175,3 +175,27 @@ test('defaults an unknown or missing project video model to Veo', () => {
     assert.equal(state.videoModel, 'veo-3.1-generate-preview')
   }
 })
+
+test('keeps every supported project video model', () => {
+  for (const videoModel of [
+    'veo-3.1-generate-preview',
+    'veo-3.0-generate-001',
+    'rh-grok-image-video',
+  ]) {
+    const state = deserializeMediaTask(JSON.stringify({
+      runId: 'run-video-model',
+      styleId: 'cinematic-contrast',
+      targetDuration: 15,
+      shotPace: 'auto',
+      voiceEngine: 'cloud',
+      textModel: 'gemini-3.6-flash',
+      videoModel,
+      workflowStep: 'videos',
+      workspaceView: 'media',
+      mediaFilter: 'videos',
+      referenceAssets: [],
+      segments: [],
+    }))
+    assert.equal(state.videoModel, videoModel)
+  }
+})

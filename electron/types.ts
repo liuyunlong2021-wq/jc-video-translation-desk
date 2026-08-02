@@ -17,7 +17,10 @@ export type VisualStyleId =
 export type ShotPace = 'auto' | 'slow' | 'medium' | 'fast'
 export type ResolvedShotPace = Exclude<ShotPace, 'auto'>
 export type VoiceEngine = 'cloud' | 'local'
-export type VideoModel = 'veo-3.1-generate-preview' | 'rh-grok-image-video'
+export type VideoModel =
+  | 'veo-3.1-generate-preview'
+  | 'veo-3.0-generate-001'
+  | 'rh-grok-image-video'
 export type TextModel =
   | 'gemini-3.6-flash'
   | 'claude-fable-5'

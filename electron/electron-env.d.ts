@@ -90,6 +90,25 @@ interface Window {
         rejectedPinIds?: string[],
       ) => Promise<import('./types').AssetVersion>
       loadLatestState: () => Promise<string | null>
+      scanVoiceLibrary: (sourceRoot: string) => Promise<{
+        sourceFileCount: number
+        profileCount: number
+        duplicateGroups: string[][]
+        generatedAt: string
+      }>
+      voiceLibraryPath: () => Promise<string>
+      listVoiceProfiles: (query?: Record<string, unknown>) => Promise<import('./voice-library').VoiceProfile[]>
+      reviewVoiceProfile: (
+        voiceProfileId: string,
+        patch: import('./voice-library').VoiceProfile,
+      ) => Promise<import('./voice-library').VoiceProfile>
+      standardizeVoiceProfile: (voiceProfileId: string) => Promise<string>
+      bindProjectVoice: (
+        projectId: string,
+        speakerId: string,
+        voiceProfileId: string,
+        taskId?: string,
+      ) => Promise<{ voicePath: string; libraryPath: string }>
       createProject: (
         projectId: string,
         state: string,

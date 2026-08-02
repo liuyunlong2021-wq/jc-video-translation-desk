@@ -1094,7 +1094,13 @@ export async function generateSegmentVideo(
   generationDuration: number,
   imagePath: string,
 ) {
-  if (!['veo-3.1-generate-preview', 'rh-grok-image-video'].includes(model))
+  if (
+    ![
+      'veo-3.1-generate-preview',
+      'veo-3.0-generate-001',
+      'rh-grok-image-video',
+    ].includes(model)
+  )
     throw new Error('不支持的视频模型')
   const pendingId = `video:${index}`
   return withTaskAbort(runId, pendingId, async (signal) => {
@@ -1109,7 +1115,12 @@ export async function generateSegmentVideo(
     imageSize(ratio)
     if (![4, 6, 8].includes(generationDuration)) throw new Error('视频生成时长只能为 4、6 或 8 秒')
     if (ratio !== '9:16' && ratio !== '16:9') throw new Error('视频模型仅支持 9:16 或 16:9')
-    const seconds = model === 'rh-grok-image-video' ? Math.max(6, generationDuration) : generationDuration
+    const runningHub = model === 'rh-grok-image-video'
+    const seconds = model === 'veo-3.0-generate-001'
+      ? 8
+      : model === 'rh-grok-image-video'
+        ? Math.max(6, generationDuration)
+        : generationDuration
     const localImage = assertRunAsset(runId, imagePath)
     const outputPath = generateUniqueFileName(getRunAssetPath(runId, 'clip', index))
     await putPending(
@@ -1118,7 +1129,7 @@ export async function generateSegmentVideo(
     )
     let data: any
     try {
-      if (model === 'rh-grok-image-video') {
+      if (runningHub) {
         const extension = path.extname(localImage).toLowerCase()
         const mimeType = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.webp' ? 'image/webp' : 'image/png'
         const image = `data:${mimeType};base64,${await fs.promises.readFile(localImage, 'base64')}`

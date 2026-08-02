@@ -68,6 +68,14 @@ contextBridge.exposeInMainWorld('electron', {
     searchAssetImage: (runId: string, assetId: string, searchQuery: string, rejectedPinIds?: string[]) =>
       ipcRenderer.invoke('project-search-asset-image', runId, assetId, searchQuery, rejectedPinIds),
     loadLatestState: () => ipcRenderer.invoke('cloud-load-latest-state'),
+    scanVoiceLibrary: (sourceRoot: string) => ipcRenderer.invoke('voice-library-scan', sourceRoot),
+    voiceLibraryPath: () => ipcRenderer.invoke('voice-library-path'),
+    listVoiceProfiles: (query?: Record<string, unknown>) => ipcRenderer.invoke('voice-library-list', query),
+    reviewVoiceProfile: (voiceProfileId: string, patch: import('./voice-library').VoiceProfile) =>
+      ipcRenderer.invoke('voice-library-review', voiceProfileId, patch),
+    standardizeVoiceProfile: (voiceProfileId: string) => ipcRenderer.invoke('voice-library-standardize', voiceProfileId),
+    bindProjectVoice: (projectId: string, speakerId: string, voiceProfileId: string, taskId?: string) =>
+      ipcRenderer.invoke('project-bind-voice', projectId, speakerId, voiceProfileId, taskId),
     createProject: (projectId: string, state: string) =>
       ipcRenderer.invoke('project-create', projectId, state),
     listProjects: () => ipcRenderer.invoke('project-list'),

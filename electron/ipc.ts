@@ -50,6 +50,7 @@ import {
   setLastOpenedProject,
   writeProjectMarkdown,
 } from './media-workspace'
+import { bindProjectVoice, getVoiceLibraryDir, listVoiceProfiles, reviewVoiceProfile, scanVoiceLibrary, standardizeVoiceProfile } from './voice-library'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let windowMaximizedByApp = false
@@ -237,6 +238,16 @@ export default function initIPC() {
       runReferenceSearchSkill(runId, assetId, searchQuery, rejectedPinIds),
   )
   ipcMain.handle('cloud-load-latest-state', () => loadLatestMediaState())
+  ipcMain.handle('voice-library-scan', (_event, sourceRoot: string) => scanVoiceLibrary(sourceRoot))
+  ipcMain.handle('voice-library-path', () => getVoiceLibraryDir())
+  ipcMain.handle('voice-library-list', (_event, query) => listVoiceProfiles(query))
+  ipcMain.handle('voice-library-review', (_event, voiceProfileId, patch) => reviewVoiceProfile(voiceProfileId, patch))
+  ipcMain.handle('voice-library-standardize', (_event, voiceProfileId: string) => standardizeVoiceProfile(voiceProfileId))
+  ipcMain.handle(
+    'project-bind-voice',
+    (_event, projectId: string, speakerId: string, voiceProfileId: string, taskId?: string) =>
+      bindProjectVoice(projectId, speakerId, voiceProfileId, taskId),
+  )
   ipcMain.handle('project-create', (_event, projectId: string, state: string) =>
     createProject(projectId, state),
   )

@@ -141,9 +141,10 @@ export const useMediaTaskStore = defineStore(
     )
     const assetPlanningComplete = computed(
       () =>
-        assetPlanCompletedRoles.value.includes('character') &&
-        assetPlanCompletedRoles.value.includes('scene') &&
-        assetPlanCompletedRoles.value.includes('prop'),
+        (assetPlanCompletedRoles.value.includes('character') &&
+          assetPlanCompletedRoles.value.includes('scene') &&
+          assetPlanCompletedRoles.value.includes('prop')) ||
+        (referenceAssets.value.length > 0 && referenceAssets.value.every((asset) => Boolean(asset.design))),
     )
 
     function invalidateFrom(level: 'script' | 'voice' | 'images' | 'videos') {

@@ -179,7 +179,13 @@ export function parseStoryboardMarkdown(
         playDuration,
         generationDuration: Number.parseFloat(field(content, '生成时长')) || generationDurationFor(playDuration),
         script: section(content, '对应原文') || section(content, '对应台词'),
-        timelineType: bullet(section(content, '声音与时间轴'), '类型') === '对白' ? 'dialogue' : 'action',
+        timelineType: /对白|旁白|画外音/.test(bullet(section(content, '声音与时间轴'), '类型')) ? 'dialogue' : 'action',
+        soundType: bullet(section(content, '声音与时间轴'), '类型').includes('画面内')
+          ? 'onscreen'
+          : /旁白|画外音/.test(bullet(section(content, '声音与时间轴'), '类型'))
+            ? 'voiceover'
+            : 'none',
+        speakerId: bullet(section(content, '声音与时间轴'), '说话者ID') || undefined,
         dialogueCharacter: bullet(section(content, '声音与时间轴'), '对白角色') || '无',
         dialogueText: bullet(section(content, '声音与时间轴'), '对应台词'),
         dialogueEmotion: bullet(section(content, '声音与时间轴'), '声音情绪') || '无',

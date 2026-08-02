@@ -568,6 +568,24 @@ test('submits the fixed voice and selectable video contracts through controlled 
   assert.equal(grokRequest.data.images.length, 1)
   assert.match(grokRequest.data.images[0], /^data:image\/png;base64,/)
   assert.equal('input_reference' in grokRequest.data, false)
+
+  const veo3ImagePath = await cloud.generateStoryboardImage(runId, 3, 'prompt', '9:16')
+  const veo3RequestStart = requests.length
+  await cloud.generateSegmentVideo(
+    runId,
+    3,
+    'veo-3.0-generate-001',
+    '单一连续镜头',
+    '9:16',
+    4,
+    veo3ImagePath,
+  )
+  const veo3Request = requests
+    .slice(veo3RequestStart)
+    .find((request) => request.url.endsWith('/v1/videos'))
+  assert.equal(veo3Request.data.model, 'veo-3.0-generate-001')
+  assert.equal(veo3Request.data.seconds, '8')
+  assert.equal(typeof veo3Request.data.input_reference.pipe, 'function')
 })
 
 test('uses the selected text model and retries one malformed Skill JSON response', async () => {

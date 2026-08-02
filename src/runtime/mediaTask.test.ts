@@ -87,6 +87,24 @@ test('requires all three asset skills before storyboard planning', () => {
   assert.equal(store.assetPlanningComplete, true)
 })
 
+test('recognizes complete legacy asset designs when role markers were not saved', () => {
+  const store = populatedStore()
+  store.referenceAssets = [{
+    id: 'scene-1',
+    role: 'scene',
+    label: '书房',
+    description: '场景',
+    identityTraits: [],
+    styleRequirements: [],
+    required: true,
+    status: 'approved',
+    design: { project: { visualStyle: '电影感', aspectRatio: '9:16' }, scene: { name: '书房' } },
+    versions: [{ id: 'generated-1', source: 'generated', relativePath: 'assets/scene.png', createdAt: '' }],
+  }]
+  assert.deepEqual(store.assetPlanCompletedRoles, [])
+  assert.equal(store.assetPlanningComplete, true)
+})
+
 test('adopting an asset version invalidates only referencing shots', () => {
   const store = populatedStore()
   store.referenceAssets = [
