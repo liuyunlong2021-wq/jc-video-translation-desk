@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assetGenerationChanged, assetVersionMatches, mergeStoryboardMedia, parseStoryboardMarkdown, sameJsonValue, withProjectDesign } from './storyboardMarkdown.ts'
+import { assetGenerationChanged, assetVersionMatches, mergeStoryboardMedia, parseStoryboardMarkdown, resolveSpeakerEntityId, sameJsonValue, withProjectDesign } from './storyboardMarkdown.ts'
+
+test('resolves role performance labels to the stable character entityId', () => {
+  const character = { id: 'character-chen', role: 'character', label: '陈大发', aliases: ['老陈'] } as any
+  assert.equal(resolveSpeakerEntityId('陈大发（OS）', [character]), 'character-chen')
+  assert.equal(resolveSpeakerEntityId('老陈（自言自语）', [character]), 'character-chen')
+  assert.equal(resolveSpeakerEntityId('我（心声）', [character]), 'character-chen')
+  assert.throws(
+    () => resolveSpeakerEntityId('陈大发', [character, { ...character, id: 'character-other' }]),
+    /多个角色匹配/,
+  )
+})
 
 test('parses director, shot and linked asset Markdown into the media contract', () => {
   const director = {
@@ -50,7 +61,7 @@ live action host full body cast portrait`,
 - 景别：近景
 - 机位：平视
 - 运镜：推近
-- 资产：[[资产/角色/character-host|主持人]]
+- 资产：[[资产/角色/character-host|主持人]]、[[资产/道具/stale-prop|无身份道具]]
 ## 对应台词
 你好
 ## 起始状态

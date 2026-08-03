@@ -8,6 +8,7 @@
       @update:model-value="mediaStore.selectView($event)"
     >
       <v-tab value="script">文稿/配音</v-tab>
+      <v-tab v-if="mediaStore.approvedScript" value="director">项目总监</v-tab>
       <v-tab value="assets">资产</v-tab>
       <v-tab value="storyboard">分镜</v-tab>
       <v-tab value="media">分镜图/视频</v-tab>
@@ -49,22 +50,39 @@
           @update:model-value="$emit('editScript', $event)"
         />
         </template>
-        <div class="voice-section">
-          <div class="document-heading">
-            <div>
-              <h2>配音</h2>
-              <p>{{ mediaStore.voicePlan ? '声音方案已生成' : '等待确认文稿' }}</p>
-            </div>
-            <v-chip size="small" :color="mediaStore.voicePath ? 'success' : 'grey'" variant="tonal">
-              {{ mediaStore.voicePath ? '已生成' : '待生成' }}
-            </v-chip>
-          </div>
-          <div v-if="mediaStore.voicePlan" class="voice-plan-copy">{{ mediaStore.voicePlan.voicePrompt }}</div>
-          <div v-if="mediaStore.voicePath" class="voice-player">
-            <v-icon size="20">mdi-waveform</v-icon>
-            <audio controls :src="fileUrl(mediaStore.voicePath)" />
-            <span>{{ mediaStore.voiceDuration.toFixed(1) }}s</span>
-          </div>
+        <div v-if="mediaStore.approvedScript" class="voice-section">
+          <span>声音来源</span>
+          <v-btn-toggle
+            :model-value="mediaStore.voiceSource"
+            mandatory
+            density="compact"
+            color="primary"
+            @update:model-value="mediaStore.setVoiceSource($event)"
+          >
+            <v-btn value="design" size="small">设计声音</v-btn>
+            <v-btn value="clone" size="small">克隆音色包</v-btn>
+          </v-btn-toggle>
+          <small>正式配音在分镜时间轴确定后生成。</small>
+        </div>
+      </section>
+
+      <section v-else-if="mediaStore.workspaceView === 'director'" class="document-view">
+        <article
+          v-if="mediaStore.projectDirectorDraft"
+          class="director-draft markdown-body"
+          @click="openDraftLink"
+          v-html="directorDraftHtml"
+        />
+        <WikiDocument
+          v-else-if="mediaStore.projectDirectorPlan"
+          :project-id="mediaStore.runId"
+          path="wiki/项目/项目总监.md"
+          @navigate="openWikiLink"
+          @saved="$emit('markdownSaved')"
+        />
+        <div v-else class="empty-state">
+          <v-icon size="42">mdi-account-tie-outline</v-icon>
+          <span>确认文稿后，在右栏生成项目总监方案。</span>
         </div>
       </section>
 
@@ -91,6 +109,27 @@
         <div v-else class="asset-document-layout">
           <div class="planned-assets">
           <article
+            v-for="speakerId in narratorIds"
+            :key="speakerId"
+            class="planned-asset narrator-asset"
+            :class="{ selected: mediaStore.selectedAssetId === speakerId }"
+            @click="mediaStore.selectAsset(speakerId)"
+          >
+            <div class="asset-placeholder"><v-icon size="28">mdi-microphone-outline</v-icon></div>
+            <div class="planned-asset-copy">
+              <div class="asset-title">
+                <strong>旁白声音</strong>
+                <v-icon
+                  size="17"
+                  :color="voiceBindings[speakerId] ? 'success' : 'grey'"
+                  :title="voiceBindings[speakerId] ? '已绑定声音' : '未绑定声音'"
+                >mdi-account-voice</v-icon>
+                <v-chip size="x-small" variant="tonal">{{ speakerId }}</v-chip>
+              </div>
+              <small>{{ voiceBindings[speakerId] ? '音色包已绑定' : '等待绑定音色包' }}</small>
+            </div>
+          </article>
+          <article
             v-for="asset in mediaStore.referenceAssets"
             :key="asset.id"
             class="planned-asset"
@@ -108,6 +147,12 @@
             <div class="planned-asset-copy">
               <div class="asset-title">
                 <strong>{{ asset.label }}</strong>
+                <v-icon
+                  v-if="asset.role === 'character'"
+                  size="17"
+                  :color="voiceBindings[asset.id] ? 'success' : 'grey'"
+                  :title="voiceBindings[asset.id] ? '已绑定声音' : '未绑定声音'"
+                >mdi-account-voice</v-icon>
                 <v-chip size="x-small" variant="tonal">{{ roleLabelAsset(asset.role) }}</v-chip>
                 <v-chip
                   size="x-small"
@@ -163,17 +208,42 @@
                   label="当前版本"
                   @update:model-value="selectAssetVersion(asset, $event)"
                 />
+                <v-btn
+                  icon="mdi-delete-outline"
+                  size="small"
+                  variant="text"
+                  color="error"
+                  title="删除当前资产图"
+                  aria-label="删除当前资产图"
+                  @click="removeGeneratedVersion(asset)"
+                />
               </div>
             </div>
           </article>
           </div>
-          <WikiDocument
-            v-if="selectedAssetWikiPath"
-            :project-id="mediaStore.runId"
-            :path="selectedAssetWikiPath"
-            @navigate="openWikiLink"
-            @saved="$emit('markdownSaved')"
-          />
+          <div class="asset-inspector">
+            <div v-if="selectedSpeakerId" class="voice-binding">
+              <strong>{{ selectedSpeakerLabel }} · {{ boundVoiceName || '未绑定音色包' }}</strong>
+              <v-select
+                v-model="selectedVoiceProfileId"
+                :items="voiceProfiles"
+                item-title="displayName"
+                item-value="voiceProfileId"
+                density="compact"
+                hide-details
+                label="音色包"
+              />
+              <v-btn size="small" variant="tonal" :disabled="!boundVoiceId" @click="openBoundVoice">打开文件夹</v-btn>
+              <v-btn size="small" color="primary" :disabled="!selectedVoiceProfileId" @click="bindSelectedVoice">更换</v-btn>
+            </div>
+            <WikiDocument
+              v-if="selectedAssetWikiPath"
+              :project-id="mediaStore.runId"
+              :path="selectedAssetWikiPath"
+              @navigate="openWikiLink"
+              @saved="$emit('markdownSaved')"
+            />
+          </div>
         </div>
       </section>
 
@@ -198,6 +268,18 @@
             class="asset-tile"
             @click="previewMediaAsset(asset)"
           >
+            <v-icon
+              v-if="asset.path && (asset.kind === 'storyboard' || asset.kind === 'video')"
+              class="media-remove"
+              size="18"
+              role="button"
+              tabindex="0"
+              title="删除当前结果"
+              aria-label="删除当前结果"
+              @click.stop="removeGeneratedMedia(asset)"
+              @keydown.enter.prevent.stop="removeGeneratedMedia(asset)"
+              >mdi-delete-outline</v-icon
+            >
             <img
               v-if="asset.path && ['reference', 'storyboard'].includes(asset.kind)"
               :src="fileUrl(asset.path)"
@@ -220,7 +302,7 @@
             </div>
             <div class="asset-meta">
               <strong>{{ asset.title }}</strong
-              ><small>{{ statusText(asset.status) }}</small>
+              ><small>{{ asset.detail || statusText(asset.status) }}</small>
             </div>
           </button>
           <button
@@ -236,10 +318,24 @@
       </section>
 
       <section v-else class="final-view">
-        <template v-if="mediaStore.finalPath">
-          <video :src="fileUrl(mediaStore.finalPath)" controls preload="metadata" />
+        <div v-if="mediaStore.workflowStep === 'voice'" class="voice-timeline">
+          <div class="document-heading">
+            <div><h2>本集配音</h2><p>{{ voiceTasks.length }} 条声音任务</p></div>
+            <v-chip size="small" :color="mediaStore.voiceReady ? 'success' : 'warning'" variant="tonal">
+              {{ mediaStore.voiceReady ? '已就绪' : '待处理' }}
+            </v-chip>
+          </div>
+          <article v-for="task in voiceTasks" :key="task.index" class="voice-task">
+            <strong>镜头 {{ task.index }} · {{ task.speakerId }}</strong>
+            <span>{{ task.dialogueText }}</span>
+            <small>{{ task.dialogueEmotion || '自然' }} · {{ voiceTaskWindow(task) }}</small>
+          </article>
+          <div v-if="!voiceTasks.length" class="empty-state">本集没有对白或旁白，无需生成配音。</div>
+        </div>
+        <template v-if="mediaStore.finalPath || mediaStore.pictureMasterPath">
+          <video :src="fileUrl(mediaStore.finalPath || mediaStore.pictureMasterPath)" controls preload="metadata" />
           <div class="final-meta">
-            {{ mediaStore.ratio }} · {{ mediaStore.voiceDuration.toFixed(1) }}s · {{ videoModelLabel }}
+            {{ mediaStore.finalPath ? '最终成片' : '画面母版' }} · {{ mediaStore.ratio }} · {{ videoModelLabel }}
           </div>
         </template>
         <div v-else class="empty-state">
@@ -270,12 +366,6 @@
             controls
             autoplay
           />
-          <audio
-            v-else-if="previewAsset.path && previewAsset.kind === 'audio'"
-            :src="fileUrl(previewAsset.path)"
-            controls
-            autoplay
-          />
         </v-card-text>
       </v-card>
     </v-dialog>
@@ -283,9 +373,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useMediaTaskStore } from '@/store'
-import type { StoryboardSegment } from '@/runtime/videoWorkflow'
+import { buildGrokSequences, type StoryboardSegment } from '@/runtime/videoWorkflow'
 import type {
   AssetRole,
   AssetStatus as ReferenceAssetStatus,
@@ -293,7 +383,10 @@ import type {
   ReferenceAsset,
 } from '~/electron/types'
 import { managedMediaUrl } from '@/runtime/managedMediaUrl'
+import { renderMarkdown, resolveWikiLink } from '@/runtime/markdown'
+import { projectDirectorMarkdown } from '@/runtime/projectDirector'
 import WikiDocument from './WikiDocument.vue'
+import type { VoiceProfile } from '~/electron/voice-library'
 
 type AssetStatus = StoryboardSegment['imageStatus'] | StoryboardSegment['videoStatus'] | 'success'
 type Asset = {
@@ -302,6 +395,7 @@ type Asset = {
   title: string
   path?: string
   status: AssetStatus
+  detail?: string
   index?: number
 }
 
@@ -313,6 +407,15 @@ defineEmits<{
 const mediaStore = useMediaTaskStore()
 const previewAsset = ref<Asset | null>(null)
 const wikiPath = ref('wiki/分镜/导演总览.md')
+const voiceProfiles = ref<VoiceProfile[]>([])
+const voiceBindings = ref<Record<string, string>>({})
+const selectedVoiceProfileId = ref('')
+const narratorIds = computed(() => mediaStore.requiredSpeakerIds.filter((id) => id.startsWith('narrator-')))
+const selectedCharacter = computed(() => mediaStore.referenceAssets.find((asset) => asset.id === mediaStore.selectedAssetId && asset.role === 'character'))
+const selectedSpeakerId = computed(() => selectedCharacter.value?.id || narratorIds.value.find((id) => id === mediaStore.selectedAssetId) || '')
+const selectedSpeakerLabel = computed(() => selectedCharacter.value?.label || (selectedSpeakerId.value ? '旁白声音' : ''))
+const boundVoiceId = computed(() => selectedSpeakerId.value ? voiceBindings.value[selectedSpeakerId.value] : '')
+const boundVoiceName = computed(() => voiceProfiles.value.find((profile) => profile.voiceProfileId === boundVoiceId.value)?.displayName || '')
 const selectedAssetWikiPath = computed(() => {
   const asset = mediaStore.referenceAssets.find((item) => item.id === mediaStore.selectedAssetId)
   if (!asset) return ''
@@ -327,12 +430,63 @@ const filters = [
   { value: 'storyboards', title: '分镜图' },
   { value: 'videos', title: '视频' },
 ]
+onMounted(async () => {
+  voiceProfiles.value = await window.electron.cloud.listVoiceProfiles()
+  await loadVoiceBindings()
+})
+watch(() => mediaStore.runId, loadVoiceBindings)
+watch(() => mediaStore.referenceAssets.map((asset) => asset.id).join(','), loadVoiceBindings)
+watch(() => mediaStore.requiredSpeakerIds.join(','), loadVoiceBindings)
+watch(boundVoiceId, (value) => { selectedVoiceProfileId.value = value || '' }, { immediate: true })
+
+async function loadVoiceBindings() {
+  const bindings: Record<string, string> = {}
+  const speakerIds = [...new Set([
+    ...mediaStore.referenceAssets.filter((asset) => asset.role === 'character').map((asset) => asset.id),
+    ...narratorIds.value,
+  ])]
+  await Promise.all(speakerIds.map(async (speakerId) => {
+    const document = await window.electron.cloud.readMarkdown(mediaStore.runId, `wiki/声音/角色/${speakerId}.md`).catch(() => null)
+    const id = document?.content.match(/^voiceProfileId:\s*([^\s]+)$/m)?.[1]
+    if (id) bindings[speakerId] = id
+  }))
+  voiceBindings.value = bindings
+}
+
+async function bindSelectedVoice() {
+  if (!selectedSpeakerId.value || !selectedVoiceProfileId.value) return
+  await window.electron.cloud.bindProjectVoice(mediaStore.runId, selectedSpeakerId.value, selectedVoiceProfileId.value)
+  voiceBindings.value = { ...voiceBindings.value, [selectedSpeakerId.value]: selectedVoiceProfileId.value }
+}
+
+function openBoundVoice() {
+  if (boundVoiceId.value) void window.electron.cloud.openVoicePack(boundVoiceId.value)
+}
 const scriptMeta = computed(
   () =>
     `${mediaStore.script.replace(/\s/g, '').length} 字 · 目标 ${mediaStore.targetDuration} 秒${mediaStore.voiceDuration ? ` · 配音 ${mediaStore.voiceDuration.toFixed(1)} 秒` : ''}`,
 )
+const voiceTasks = computed(() => mediaStore.segments.filter((segment) => segment.soundType && segment.soundType !== 'none'))
+function voiceTaskWindow(segment: StoryboardSegment) {
+  const dialogue = segment.editingAnalysis?.dialogue
+  if (dialogue) return `${(dialogue.outputStartMs / 1000).toFixed(1)}-${(dialogue.outputEndMs / 1000).toFixed(1)} 秒`
+  return `预计 ${segment.dialogueDuration || segment.playDuration} 秒`
+}
+const directorDraftHtml = computed(() =>
+  mediaStore.projectDirectorDraft
+    ? renderMarkdown(
+        projectDirectorMarkdown(mediaStore.projectDirectorDraft),
+        mediaStore.runId,
+        'wiki/项目/项目总监.md',
+      )
+    : '',
+)
 const assets = computed<Asset[]>(() => {
   const items: Asset[] = []
+  const grokSequences = mediaStore.videoModel === 'rh-grok-image-video'
+    ? buildGrokSequences(mediaStore.segments)
+    : []
+  const grokByLeader = new Map(grokSequences.map((sequence) => [sequence.segments[0].index, sequence]))
   if (mediaStore.coreReference)
     items.push({
       id: mediaStore.coreReference.id,
@@ -362,26 +516,51 @@ const assets = computed<Asset[]>(() => {
       status: 'success',
     })
   for (const segment of mediaStore.segments) {
+    const sequence = grokByLeader.get(segment.index)
+    if (mediaStore.videoModel === 'rh-grok-image-video' && !sequence) continue
+    const range = sequence && sequence.segments.length > 1
+      ? `${sequence.segments[0].index}-${sequence.segments.at(-1)!.index}`
+      : String(segment.index)
     items.push({
       id: `image-${segment.index}`,
       kind: 'storyboard',
-      title: `分镜图 ${segment.index}`,
+      title: `分镜图 ${range}`,
       path: segment.imagePath,
       status: segment.imageStatus,
+      detail: sequence ? `包含 ${sequence.segments.length} 个镜头` : undefined,
       index: segment.index,
     })
     if (segment.videoPath || segment.videoStatus)
       items.push({
         id: `video-${segment.index}`,
         kind: 'video',
-        title: `视频 ${segment.index} · ${segment.playDuration.toFixed(1)}s`,
+        title: `视频 ${range} · ${(sequence ? sequence.segments.reduce((sum, item) => sum + item.playDuration, 0) : segment.playDuration).toFixed(1)}s`,
         path: segment.videoPath,
-        status: segment.videoStatus,
+        status:
+          segment.videoStatus !== 'success'
+            ? segment.videoStatus
+            : segment.editingStatus === 'ready'
+              ? 'success'
+              : segment.editingStatus === 'running'
+                ? 'running'
+                : segment.editingStatus === 'failed'
+                  ? 'failed'
+                  : 'pending',
+        detail: editingLabel(segment),
         index: segment.index,
       })
   }
   return items
 })
+function editingLabel(segment: StoryboardSegment) {
+  if (segment.videoStatus !== 'success') return statusText(segment.videoStatus)
+  if (segment.editingStatus === 'running') return 'Gemini 分析中'
+  if (segment.editingStatus === 'failed') return '剪辑分析失败'
+  const analysis = segment.editingAnalysis
+  if (!analysis) return '等待剪辑分析'
+  if (analysis.needsReview) return '完整保留 · 需检查'
+  return `采用 ${(analysis.trimStartMs / 1000).toFixed(1)}-${(analysis.trimEndMs / 1000).toFixed(1)} 秒`
+}
 const finalAsset = computed<Asset>(() => ({
   id: 'final',
   kind: 'video',
@@ -459,6 +638,16 @@ function selectAssetVersion(asset: ReferenceAsset, versionId: string) {
 function removeReferenceVersion(asset: ReferenceAsset, versionId: string) {
   mediaStore.removeAssetReferenceVersion(asset.id, versionId)
 }
+function removeGeneratedVersion(asset: ReferenceAsset) {
+  const version = generatedVersions(asset).find((item) => item.id === asset.activeVersionId)
+    || generatedVersions(asset).at(-1)
+  if (version) mediaStore.removeGeneratedAssetVersion(asset.id, version.id)
+}
+function removeGeneratedMedia(asset: Asset) {
+  if (!asset.index || (asset.kind !== 'storyboard' && asset.kind !== 'video')) return
+  mediaStore.invalidateShot(asset.index, asset.kind === 'storyboard' ? 'image' : 'video')
+  previewAsset.value = null
+}
 function assetShotNumbers(assetId: string) {
   return mediaStore.segments
     .filter((shot) => shot.referenceAssetIds.includes(assetId))
@@ -479,6 +668,10 @@ function roleLabelAsset(role: AssetRole) {
   return { character: '角色', scene: '场景', prop: '道具' }[role]
 }
 function openWikiLink(path: string) {
+  if (path === 'wiki/项目/项目总监.md') {
+    mediaStore.selectView('director')
+    return
+  }
   const shot = path.match(/shot-(\d+)\.md$/)
   if (shot) {
     mediaStore.selectView('storyboard')
@@ -488,6 +681,13 @@ function openWikiLink(path: string) {
   }
   const asset = mediaStore.referenceAssets.find((item) => path.endsWith(`/${item.id}.md`))
   if (asset) mediaStore.selectAsset(asset.id)
+}
+function openDraftLink(event: MouseEvent) {
+  const anchor = (event.target as HTMLElement).closest('a')
+  const href = anchor?.getAttribute('href') || ''
+  if (!href.startsWith('wiki:')) return
+  event.preventDefault()
+  openWikiLink(resolveWikiLink('wiki/项目/项目总监.md', href.slice(5)))
 }
 function previewMediaAsset(asset: Asset) {
   mediaStore.selectedAssetId = asset.id
@@ -510,6 +710,15 @@ function previewMediaAsset(asset: Asset) {
 }
 .asset-document-layout { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(260px, 38%) minmax(0, 1fr); }
 .asset-document-layout .planned-assets { overflow: auto; border-right: 1px solid rgba(0,0,0,.1); }
+.asset-inspector { min-width: 0; min-height: 0; overflow: auto; }
+.voice-binding { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 10px; border-bottom: 1px solid rgba(0,0,0,.1); }
+.voice-binding strong { grid-column: 1 / -1; }
+.voice-section { display: flex; align-items: center; gap: 10px; padding-top: 8px; border-top: 1px solid rgba(0,0,0,.1); }
+.voice-section > span { font-weight: 600; }
+.voice-section small { color: rgba(0,0,0,.55); }
+.voice-timeline { display: grid; gap: 8px; margin-bottom: 14px; }
+.voice-task { display: grid; gap: 3px; padding: 9px 10px; border: 1px solid rgba(0,0,0,.12); border-radius: 6px; }
+.voice-task small { color: rgba(0,0,0,.55); }
 .document-view,
 .asset-workspace,
 .media-view,
@@ -524,6 +733,9 @@ function previewMediaAsset(asset: Asset) {
   flex-direction: column;
   gap: 12px;
 }
+.director-draft { min-height: 0; overflow: auto; padding: 6px 10px 36px; line-height: 1.75; }
+.director-draft :deep(h1) { font-size: 24px; margin: 0 0 20px; }
+.director-draft :deep(h2) { font-size: 18px; margin: 28px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #dfe5e0; }
 .asset-workspace {
   height: 100%;
   overflow: hidden;
@@ -581,7 +793,10 @@ function previewMediaAsset(asset: Asset) {
   line-height: 1.45;
 }
 .asset-version-row {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 4px;
+  align-items: center;
 }
 .asset-reference-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .asset-reference { position: relative; width: 38px; height: 38px; padding: 0; border: 1px solid rgba(0,0,0,.12); border-radius: 4px; overflow: visible; background: #fff; }
@@ -752,6 +967,7 @@ p {
   gap: 8px;
 }
 .asset-tile {
+  position: relative;
   min-width: 0;
   padding: 0;
   overflow: hidden;
@@ -760,6 +976,7 @@ p {
   background: transparent;
   text-align: left;
 }
+.media-remove { position: absolute; top: 5px; right: 5px; z-index: 1; padding: 4px; box-sizing: content-box; color: #fff; background: rgba(0,0,0,.58); border-radius: 50%; }
 .asset-tile.selected {
   border-color: #157a35;
   box-shadow: 0 0 0 1px #157a35;

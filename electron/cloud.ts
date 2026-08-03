@@ -5,7 +5,13 @@ import axios, { AxiosError } from 'axios'
 import { app, safeStorage } from 'electron'
 import { generateUniqueFileName } from './lib/tools.ts'
 import type { PendingCloudTask, ResumedCloudTask } from './types.ts'
-import type { MediaScriptBrief, TextModel, VideoModel } from './types.ts'
+import type {
+  AnalyzeShotVideoParams,
+  MediaScriptBrief,
+  ShotVideoAnalysisResult,
+  TextModel,
+  VideoModel,
+} from './types.ts'
 import {
   assertRunAsset,
   downloadMedia,
@@ -39,6 +45,7 @@ const SKILLS = new Set([
   'jc-gpt-image',
   'jc-voice-design',
   'jc-context-revision',
+  'jc-film-style',
   'jc-character-prompt',
   'jc-scene-prompt',
   'jc-prop-prompt',
@@ -190,6 +197,28 @@ export async function generateScript(brief: MediaScriptBrief) {
       'ink-wash',
       'cel-cinematic',
       'gongbi-color',
+      'shonen-action-cel',
+      'monochrome-shonen-manga',
+      'modern-anime-key-visual',
+      'hand-painted-watercolor-animation',
+      'dunhuang-mural-animation',
+      'paper-cut-shadow-animation',
+      'chinese-puppet-stop-motion',
+      'origami-animation',
+      'comic-minimalism',
+      'ink-paper-cut-animation',
+      'anime-open-world-3d',
+      'dark-chinese-mythology-cg',
+      'xianxia-cultivation-animation',
+      'victorian-mysticism',
+      'creature-collection-animation',
+      'cozy-pixel-farm',
+      'pixel-underwater-adventure',
+      'korean-webtoon-color',
+      'korean-webtoon-cinematic',
+      'korean-webtoon-romance',
+      'korean-webtoon-action',
+      'korean-webtoon-dark',
       'eastern-xianxia-cg',
       'realistic-fantasy-cg',
       'handmade-clay',
@@ -244,6 +273,89 @@ export async function runSkill(
   return runId ? withRunAbort(runId, action) : action()
 }
 
+export async function analyzeShotVideo(
+  params: AnalyzeShotVideoParams,
+): Promise<ShotVideoAnalysisResult> {
+  if (!params?.shot?.shotId || !params.shot.script?.trim()) throw new Error('镜头分析参数无效')
+  const videoPath = assertRunAsset(params.runId, params.videoPath)
+  const video = await fs.promises.readFile(videoPath)
+  if (video.byteLength > 90 * 1024 * 1024) throw new Error('单镜视频过大，无法提交分析')
+  const sourceDurationMs = Math.round((await mediaDuration(videoPath)) * 1000)
+  const prompt = `分析这一条独立分镜视频，并严格对照下面的导演分镜，找出完整覆盖目标动作的最小连续区间。时间单位只能是毫秒，范围必须在 0 到 ${sourceDurationMs} 之间。
+
+导演分镜：
+${JSON.stringify(params.shot)}
+
+只返回以下 JSON：
+{
+  "trimStartMs": 0,
+  "trimEndMs": ${sourceDurationMs},
+  "needsReview": false,
+  "dialogue": null
+}
+
+如果 soundType 是 onscreen，dialogue 必须包含 sourceStartMs、sourceEndMs；否则 dialogue 必须是 null。无法可靠定位时返回完整区间并将 needsReview 设为 true。`
+  const output = await withRunAbort(params.runId, (signal) =>
+    generateJsonResponse(
+      '你是短视频剪辑分析器。只根据原始视频和导演分镜判断时间，不改写分镜，不输出解释。',
+      [
+        {
+          type: 'file',
+          file: {
+            filename: path.basename(videoPath),
+            file_data: `data:video/mp4;base64,${video.toString('base64')}`,
+          },
+        },
+        { type: 'text', text: prompt },
+      ],
+      'gemini-3.6-flash',
+      signal,
+      2_000,
+    ),
+  )
+  const value = parseJson(output)
+  const proposedStart = Number(value?.trimStartMs)
+  const proposedEnd = Number(value?.trimEndMs)
+  const validTrim =
+    Number.isFinite(proposedStart) &&
+    Number.isFinite(proposedEnd) &&
+    proposedStart >= 0 &&
+    proposedStart < proposedEnd &&
+    proposedEnd <= sourceDurationMs
+  const trimStartMs = validTrim ? Math.round(proposedStart) : 0
+  const trimEndMs = validTrim ? Math.round(proposedEnd) : sourceDurationMs
+  const dialogueValue = value?.dialogue
+  const dialogueStart = Number(dialogueValue?.sourceStartMs)
+  const dialogueEnd = Number(dialogueValue?.sourceEndMs)
+  const validDialogue =
+    params.shot.soundType === 'onscreen' &&
+    Number.isFinite(dialogueStart) &&
+    Number.isFinite(dialogueEnd) &&
+    dialogueStart >= trimStartMs &&
+    dialogueStart < dialogueEnd &&
+    dialogueEnd <= trimEndMs
+  return {
+    shotId: params.shot.shotId,
+    sourceVideoPath: relativeRunAsset(params.runId, videoPath),
+    sourceDurationMs,
+    trimStartMs,
+    trimEndMs,
+    needsReview:
+      Boolean(value?.needsReview) || !validTrim || (params.shot.soundType === 'onscreen' && !validDialogue),
+    dialogue: validDialogue
+      ? {
+          speakerId: params.shot.speakerId || 'unknown',
+          text: params.shot.dialogueText || params.shot.script,
+          emotion: params.shot.dialogueEmotion || 'neutral',
+          sourceStartMs: Math.round(dialogueStart),
+          sourceEndMs: Math.round(dialogueEnd),
+          outputStartMs: 0,
+          outputEndMs: 0,
+        }
+      : undefined,
+  }
+}
+
 export async function runReferenceSearchSkill(
   runId: string,
   assetId: string,
@@ -282,7 +394,10 @@ export async function runWikiSkill(
     'utf8',
   )
   const contextPaths = (await listProjectMarkdown(projectId)).filter(
-    (value) => value === 'wiki/文稿/确认文稿.md' || value.startsWith('wiki/资产/'),
+    (value) =>
+      value === 'wiki/项目/项目总监.md' ||
+      value === 'wiki/文稿/确认文稿.md' ||
+      value.startsWith('wiki/资产/'),
   )
   const context = await Promise.all(
     contextPaths.map(async (value) => {
@@ -294,7 +409,7 @@ export async function runWikiSkill(
     { role: 'system', content: system },
     {
       role: 'user',
-      content: `${input}\n\n以下是 App 已读取的确认文稿和已确认资产。只能引用这些资产 Markdown 中现有的 entityId，不得创建或改写资产。完成整套设计后，使用一次 write_batch 提交导演总览和全部镜头 Markdown：\n\n${context.join('\n\n')}`,
+      content: `${input}\n\n以下是 App 已读取的项目总监、确认文稿和已确认资产。必须继承项目总监的导演与参考作品，只能引用资产 Markdown 中现有的 entityId，不得创建或改写资产。完成整套设计后，使用一次 write_batch 提交导演总览和全部镜头 Markdown：\n\n${context.join('\n\n')}`,
     },
   ]
   return withRunAbort(projectId, async (signal) => {
@@ -383,6 +498,16 @@ async function generateText(
   textModel: TextModel,
   signal?: AbortSignal,
 ) {
+  return generateJsonResponse(system, prompt, textModel, signal, 16_000)
+}
+
+async function generateJsonResponse(
+  system: string,
+  userContent: string | Record<string, unknown>[],
+  textModel: TextModel,
+  signal?: AbortSignal,
+  maxTokens = 16_000,
+) {
   try {
     const apiKey = await readApiKey()
     const response = await axios.request({
@@ -392,11 +517,11 @@ async function generateText(
         model: textModel,
         messages: [
           { role: 'system', content: system },
-          { role: 'user', content: prompt },
+          { role: 'user', content: userContent },
         ],
         response_format: { type: 'json_object' },
         temperature: 0.2,
-        max_tokens: 16_000,
+        max_tokens: maxTokens,
         stream: true,
       },
       responseType: 'stream',
@@ -1093,6 +1218,7 @@ export async function generateSegmentVideo(
   ratio: string,
   generationDuration: number,
   imagePath: string,
+  imagePaths: string[] = [],
 ) {
   if (
     ![
@@ -1113,7 +1239,10 @@ export async function generateSegmentVideo(
     )
       return finishPending(runId, existing, signal)
     imageSize(ratio)
-    if (![4, 6, 8].includes(generationDuration)) throw new Error('视频生成时长只能为 4、6 或 8 秒')
+    if (model === 'rh-grok-image-video') {
+      if (!Number.isInteger(generationDuration) || generationDuration < 6 || generationDuration > 30)
+        throw new Error('Grok 视频生成时长只能为 6 到 30 秒的整数')
+    } else if (![4, 6, 8].includes(generationDuration)) throw new Error('视频生成时长只能为 4、6 或 8 秒')
     if (ratio !== '9:16' && ratio !== '16:9') throw new Error('视频模型仅支持 9:16 或 16:9')
     const runningHub = model === 'rh-grok-image-video'
     const seconds = model === 'veo-3.0-generate-001'
@@ -1121,7 +1250,8 @@ export async function generateSegmentVideo(
       : model === 'rh-grok-image-video'
         ? Math.max(6, generationDuration)
         : generationDuration
-    const localImage = assertRunAsset(runId, imagePath)
+    const localImages = [imagePath, ...imagePaths].filter(Boolean).slice(0, 7).map((item) => assertRunAsset(runId, item))
+    const localImage = localImages[0]
     const outputPath = generateUniqueFileName(getRunAssetPath(runId, 'clip', index))
     await putPending(
       runId,
@@ -1130,9 +1260,11 @@ export async function generateSegmentVideo(
     let data: any
     try {
       if (runningHub) {
-        const extension = path.extname(localImage).toLowerCase()
-        const mimeType = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.webp' ? 'image/webp' : 'image/png'
-        const image = `data:${mimeType};base64,${await fs.promises.readFile(localImage, 'base64')}`
+        const images = await Promise.all(localImages.map(async (file) => {
+          const extension = path.extname(file).toLowerCase()
+          const mimeType = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.webp' ? 'image/webp' : 'image/png'
+          return `data:${mimeType};base64,${await fs.promises.readFile(file, 'base64')}`
+        }))
         data = await request(
           'POST',
           '/v1/videos',
@@ -1142,7 +1274,7 @@ export async function generateSegmentVideo(
             duration: seconds,
             aspectRatio: ratio,
             resolution: '720p',
-            images: [image],
+            images,
           },
           signal,
         )

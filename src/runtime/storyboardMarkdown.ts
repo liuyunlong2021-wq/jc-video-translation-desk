@@ -62,8 +62,21 @@ export function mergeStoryboardMedia(
         ? { imagePath: old.imagePath, imageStatus: old.imageStatus }
         : { imagePath: '', imageStatus: 'pending' as const }),
       ...(videoUnchanged
-        ? { videoPath: old.videoPath, videoStatus: old.videoStatus, error: old.error }
-        : { videoPath: '', videoStatus: 'pending' as const }),
+        ? {
+            videoPath: old.videoPath,
+            videoStatus: old.videoStatus,
+            editingStatus: old.editingStatus,
+            editingAnalysis: old.editingAnalysis,
+            editingError: old.editingError,
+            error: old.error,
+          }
+        : {
+            videoPath: '',
+            videoStatus: 'pending' as const,
+            editingStatus: 'pending' as const,
+            editingAnalysis: undefined,
+            editingError: '',
+          }),
     }
   })
 }
@@ -130,6 +143,25 @@ function roleFromPath(value: string): AssetRole | null {
   return null
 }
 
+function speakerName(value: string) {
+  return value.replace(/[（(](?:OS|心声|内心|自言自语|旁白)[）)]/gi, '').trim()
+}
+
+export function resolveSpeakerEntityId(value: string, assets: ReferenceAsset[]) {
+  const raw = speakerName(value)
+  if (!raw || /^无$/.test(raw)) return undefined
+  if (/^narrator-[A-Za-z0-9_-]+$/.test(raw)) return raw
+  const characters = assets.filter((asset) => asset.role === 'character')
+  if (raw === '我' && characters.length === 1) return characters[0].id
+  const matches = assets.filter((asset) => {
+    const aliases = [asset.label, ...(asset.aliases || [])]
+    return asset.id === raw || aliases.some((name) => speakerName(name) === raw)
+  })
+  if (matches.length > 1) throw new Error(`说话者“${value}”存在多个角色匹配，请选择角色 entityId`)
+  if (!matches.length) throw new Error(`说话者“${value}”未匹配到角色 entityId`)
+  return matches[0].id
+}
+
 export function parseStoryboardMarkdown(
   director: MarkdownSource,
   shots: MarkdownSource[],
@@ -150,6 +182,7 @@ export function parseStoryboardMarkdown(
       planKey: id,
       role,
       label,
+      aliases: section(source.content, '别名').split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter(Boolean),
       description: section(source.content, '说明') || label,
       identityTraits: section(source.content, '身份特征').split('\n').map((line) => line.replace(/^-\s*/, '').trim()).filter(Boolean),
       styleRequirements: section(source.content, '风格要求').split('\n').map((line) => line.replace(/^-\s*/, '').trim()).filter(Boolean),
@@ -168,9 +201,17 @@ export function parseStoryboardMarkdown(
       const playDuration = Number.parseFloat(field(content, '播放时长'))
       const linkedAssetIds = wikiLinks(field(content, '资产'))
         .map((link) => link.split('/').pop() || '')
-        .filter(Boolean)
-      if (linkedAssetIds.some((id) => !assetsById.has(id)))
-        throw new Error(`${source.path} 引用了不存在的资产`)
+        .filter((id) => id && assetsById.has(id))
+      const soundSection = section(content, '声音与时间轴')
+      const soundType = bullet(soundSection, '类型').includes('画面内')
+        ? 'onscreen'
+        : /旁白|画外音/.test(bullet(soundSection, '类型'))
+          ? 'voiceover'
+          : 'none'
+      const namedSpeaker = bullet(soundSection, '说话者ID') || bullet(soundSection, '对白角色')
+      const speakerId = soundType === 'voiceover' && !namedSpeaker
+        ? 'narrator-001'
+        : resolveSpeakerEntityId(namedSpeaker, [...assetsById.values()])
       return {
         index: offset + 1,
         storyBeat: field(content, '叙事作用'),
@@ -179,22 +220,18 @@ export function parseStoryboardMarkdown(
         playDuration,
         generationDuration: Number.parseFloat(field(content, '生成时长')) || generationDurationFor(playDuration),
         script: section(content, '对应原文') || section(content, '对应台词'),
-        timelineType: /对白|旁白|画外音/.test(bullet(section(content, '声音与时间轴'), '类型')) ? 'dialogue' : 'action',
-        soundType: bullet(section(content, '声音与时间轴'), '类型').includes('画面内')
-          ? 'onscreen'
-          : /旁白|画外音/.test(bullet(section(content, '声音与时间轴'), '类型'))
-            ? 'voiceover'
-            : 'none',
-        speakerId: bullet(section(content, '声音与时间轴'), '说话者ID') || undefined,
-        dialogueCharacter: bullet(section(content, '声音与时间轴'), '对白角色') || '无',
-        dialogueText: bullet(section(content, '声音与时间轴'), '对应台词'),
-        dialogueEmotion: bullet(section(content, '声音与时间轴'), '声音情绪') || '无',
-        emotionIntensity: bullet(section(content, '声音与时间轴'), '情绪强度') || '无',
-        speechRate: bullet(section(content, '声音与时间轴'), '语速') || '无',
-        pauseEmphasis: bullet(section(content, '声音与时间轴'), '停顿/重音') || '无',
-        dialogueDuration: Number.parseFloat(bullet(section(content, '声音与时间轴'), '对白时长')) || 0,
-        lipSyncRequired: /需要口型/.test(bullet(section(content, '声音与时间轴'), '口型/动作配合')),
-        soundDesign: bullet(section(content, '声音与时间轴'), '环境音/动作音') || '无',
+        timelineType: soundType === 'none' ? 'action' : 'dialogue',
+        soundType,
+        speakerId,
+        dialogueCharacter: namedSpeaker || (speakerId?.startsWith('narrator-') ? '旁白' : '无'),
+        dialogueText: bullet(soundSection, '对应台词'),
+        dialogueEmotion: bullet(soundSection, '声音情绪') || '无',
+        emotionIntensity: bullet(soundSection, '情绪强度') || '无',
+        speechRate: bullet(soundSection, '语速') || '无',
+        pauseEmphasis: bullet(soundSection, '停顿/重音') || '无',
+        dialogueDuration: Number.parseFloat(bullet(soundSection, '对白时长')) || 0,
+        lipSyncRequired: /需要口型/.test(bullet(soundSection, '口型/动作配合')),
+        soundDesign: bullet(soundSection, '环境音/动作音') || '无',
         referenceAssetIds: linkedAssetIds,
         shotSize: field(content, '景别'),
         cameraAngle: field(content, '机位'),

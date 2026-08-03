@@ -3,6 +3,35 @@ import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 import { useMediaTaskStore } from '../store/mediaTask.ts'
 
+function projectDirectorPlan() {
+  return {
+    project: {
+      title: '测试项目',
+      format: '短片',
+      genre: '剧情',
+      countryRegion: '中国',
+      era: '当代',
+      medium: '真人电影',
+      aspectRatio: '9:16' as const,
+      visualStyle: '电影感',
+    },
+    direction: {
+      director: '测试导演',
+      referenceWork: '测试作品',
+      rationale: '匹配项目',
+      visualAnchor: '写实光影',
+      colorLanguage: '冷暖对比',
+      cameraLanguage: '稳定推进',
+    },
+    assets: [],
+    completeness: {
+      narrativeSubjectRequired: false,
+      noCharacterReason: '产品展示项目',
+      warnings: [],
+    },
+  }
+}
+
 function populatedStore() {
   setActivePinia(createPinia())
   const store = useMediaTaskStore()
@@ -15,6 +44,7 @@ function populatedStore() {
   store.shotPace = 'fast'
   store.resolvedPace = 'fast'
   store.styleId = 'cinematic-contrast'
+  store.projectDirectorPlan = projectDirectorPlan()
   store.coreReference = {
     id: 'core-1',
     label: '产品图',
@@ -87,7 +117,7 @@ test('requires all three asset skills before storyboard planning', () => {
   assert.equal(store.assetPlanningComplete, true)
 })
 
-test('recognizes complete legacy asset designs when role markers were not saved', () => {
+test('recognizes complete asset designs when role markers were not saved', () => {
   const store = populatedStore()
   store.referenceAssets = [{
     id: 'scene-1',
@@ -103,6 +133,35 @@ test('recognizes complete legacy asset designs when role markers were not saved'
   }]
   assert.deepEqual(store.assetPlanCompletedRoles, [])
   assert.equal(store.assetPlanningComplete, true)
+})
+
+test('routes assets through the project director gate and relocks on a replacement draft', () => {
+  const store = populatedStore()
+  store.projectDirectorPlan = null
+  store.selectStep('assets')
+  assert.equal(store.workspaceView, 'director')
+  assert.equal(store.assetPlanningComplete, false)
+
+  store.confirmProjectDirector(projectDirectorPlan(), [])
+  store.assetPlanCompletedRoles = ['character', 'scene', 'prop']
+  store.selectStep('assets')
+  assert.equal(store.workspaceView, 'assets')
+  assert.equal(store.assetPlanningComplete, true)
+
+  store.projectDirectorDraft = projectDirectorPlan()
+  store.selectStep('assets')
+  assert.equal(store.workspaceView, 'director')
+  assert.equal(store.assetPlanningComplete, false)
+})
+
+test('script and visual invalidation clear the project director plan', () => {
+  let store = populatedStore()
+  store.invalidateFrom('script')
+  assert.equal(store.projectDirectorPlan, null)
+
+  store = populatedStore()
+  store.invalidateVisuals()
+  assert.equal(store.projectDirectorPlan, null)
 })
 
 test('adopting an asset version invalidates only referencing shots', () => {
@@ -129,6 +188,36 @@ test('adopting an asset version invalidates only referencing shots', () => {
   assert.equal(store.segments[0].imagePath, '')
   assert.equal(store.segments[0].videoPath, '')
   assert.equal(store.referenceAssets[0].status, 'approved')
+})
+
+test('deleting the current generated asset falls back or makes only that asset pending', () => {
+  const store = populatedStore()
+  store.referenceAssets = [{
+    id: 'core-1',
+    role: 'prop',
+    label: '产品',
+    description: '产品',
+    identityTraits: [],
+    styleRequirements: [],
+    required: true,
+    status: 'approved',
+    design: { project: { visualStyle: '电影感', aspectRatio: '9:16' } },
+    versions: [
+      { id: 'v1', source: 'generated', relativePath: 'assets/v1.png', createdAt: '' },
+      { id: 'v2', source: 'generated', relativePath: 'assets/v2.png', createdAt: '' },
+    ],
+    activeVersionId: 'v2',
+  }]
+
+  store.removeGeneratedAssetVersion('core-1', 'v2')
+  assert.equal(store.referenceAssets[0].activeVersionId, 'v1')
+  assert.equal(store.referenceAssets[0].status, 'approved')
+  assert.equal(store.segments[0].imagePath, '')
+
+  store.removeGeneratedAssetVersion('core-1', 'v1')
+  assert.equal(store.referenceAssets[0].activeVersionId, undefined)
+  assert.equal(store.referenceAssets[0].status, 'design-ready')
+  assert.equal(store.allRequiredAssetsApproved, false)
 })
 
 test('uploaded images remain references until an AI version is approved', () => {

@@ -148,15 +148,16 @@
         <VideoRender
           @generate-script="generateScript"
           @approve-script="approveScript"
+          @generate-project-director="generateProjectDirector"
+          @confirm-project-director="confirmProjectDirector"
           @edit-script-mode="mediaStore.scriptEditing = true"
-          @generate-voice-plan="generateVoicePlan"
-          @generate-voice="generateVoice"
           @generate-shot-plan="generateShotPlan"
           @prepare-assets="prepareAssetPrompts"
           @search-assets="searchAssets"
           @generate-assets="generateAssets"
           @generate-storyboards="generateStoryboards"
           @generate-videos="generateVideos"
+          @generate-voice="generateEpisodeVoice"
           @compose="composeVideo"
           @cancel="cancelWorkflow"
           @retry-image="retryImage"
@@ -189,12 +190,25 @@ import {
   parseVoiceDesign,
   expectedShotCount,
   unfinishedSegments,
+  buildGrokSequences,
+  grokReferenceGuide,
+  grokStoryboardBoardInstruction,
+  videoSoundInstruction,
+  videoPromptWithSound,
   VISUAL_STYLES,
   assetReferenceSearchQuery,
+  type GrokSequence,
   type StoryboardSegment,
 } from '@/runtime/videoWorkflow'
+import {
+  confirmProjectDirectorDraft,
+  parseProjectDirectorDraft,
+  projectDirectorAssets,
+  projectDirectorMarkdown,
+} from '@/runtime/projectDirector'
 import { assetGenerationChanged, assetVersionMatches, isLegacyStoryboardMarkdown, mergeStoryboardMedia, parseStoryboardMarkdown, withProjectDesign } from '@/runtime/storyboardMarkdown'
 import { deserializeMediaTask, serializeMediaTask } from '@/runtime/mediaPersistence'
+import { buildEditingTimeline, episodeVoiceTasks } from '@/runtime/editingTimeline'
 import type {
   AssetRole,
   AssetVersion,
@@ -536,8 +550,76 @@ async function approveScript() {
     mediaStore.scriptHash = await hashScript(approved)
     mediaStore.stage = 'script-approved'
     mediaStore.scriptEditing = false
-    mediaStore.selectStep('voice')
+    mediaStore.selectStep('assets')
     toast.success(t('workflow.script.approved'))
+  })
+}
+
+function selectedVisualStyle() {
+  return VISUAL_STYLES.find((style) => style.id === mediaStore.styleId)?.prompt || ''
+}
+
+async function buildProjectDirectorDraft(instruction = '') {
+  const raw = await window.electron.cloud.runSkill(
+    'jc-film-style',
+    JSON.stringify({
+      mode: 'app-director',
+      rawRequest: mediaStore.request,
+      approvedScript: mediaStore.approvedScript,
+      project: {
+        styleId: mediaStore.styleId,
+        visualStyle: selectedVisualStyle(),
+        aspectRatio: mediaStore.ratio,
+        targetDuration: mediaStore.targetDuration,
+      },
+      currentPlan: mediaStore.projectDirectorDraft || mediaStore.projectDirectorPlan,
+      instruction,
+    }),
+    mediaStore.runId,
+    mediaStore.textModel,
+  )
+  return parseProjectDirectorDraft(raw, mediaStore.ratio, selectedVisualStyle())
+}
+
+async function generateProjectDirector() {
+  await runAction('project-director', async () => {
+    if (!mediaStore.approvedScript) throw new Error('请先确认文稿')
+    mediaStore.projectDirectorDraft = await buildProjectDirectorDraft()
+    mediaStore.selectView('director')
+  })
+}
+
+async function confirmProjectDirector() {
+  await runAction('project-director-confirm', async () => {
+    const draft = mediaStore.projectDirectorDraft
+    if (!draft) throw new Error('请先生成项目总监方案')
+    if (
+      mediaStore.projectDirectorPlan &&
+      !window.confirm('确认新方案会清空现有资产设计及后续分镜、媒体和成片，是否继续？')
+    ) return
+    const previousState = JSON.parse(JSON.stringify(mediaStore.$state))
+    const confirmed = confirmProjectDirectorDraft(
+      draft,
+      mediaStore.projectDirectorPlan ? [] : mediaStore.referenceAssets,
+    )
+    try {
+      captureUndo('project-director')
+      const path = 'wiki/项目/项目总监.md'
+      const current = await window.electron.cloud.readMarkdown(mediaStore.runId, path).catch(() => null)
+      await window.electron.cloud.writeMarkdown(
+        mediaStore.runId,
+        path,
+        `---\nentityType: project-director\nentityId: project-director\nstatus: confirmed\nmanagedBy: short-video-factory\ngeneratedBySkill: jc-film-style\nsourceDocument: wiki/文稿/确认文稿.md\n---\n\n${projectDirectorMarkdown(confirmed.plan)}`,
+        current?.revision,
+      )
+      await writeAssetDocuments(confirmed.assets)
+      mediaStore.confirmProjectDirector(confirmed.plan, confirmed.assets)
+      mediaStore.selectView('director')
+      toast.success('项目总监方案已确认')
+    } catch (error) {
+      mediaStore.$patch(previousState)
+      throw error
+    }
   })
 }
 
@@ -564,62 +646,10 @@ async function runAction(name: string, action: () => Promise<void>) {
   }
 }
 
-async function generateVoicePlan() {
-  await runAction('voice-plan', async () => {
-    mediaStore.invalidateFrom('script')
-    const raw = await window.electron.cloud.runSkill(
-      'jc-voice-design',
-      JSON.stringify({ text: mediaStore.approvedScript }),
-      mediaStore.runId,
-      mediaStore.textModel,
-    )
-    mediaStore.voicePlan = parseVoiceDesign(raw, mediaStore.approvedScript)
-    const current = await window.electron.cloud.readMarkdown(
-      mediaStore.runId,
-      'wiki/声音/配音设计.md',
-    ).catch(() => null)
-    await window.electron.cloud.writeMarkdown(
-      mediaStore.runId,
-      'wiki/声音/配音设计.md',
-      `# 配音设计\n\n${mediaStore.voicePlan.voicePrompt}\n\n## 配音正文\n\n${mediaStore.voicePlan.text}`,
-      current?.revision,
-    )
-    mediaStore.stage = 'voice-plan-ready'
-    mediaStore.selectView('script')
-  })
-}
-
-async function generateVoice() {
-  await runAction('voice', async () => {
-    if (!mediaStore.voicePlan) throw new Error(t('workflow.messages.voicePlanFirst'))
-    if (mediaStore.segments.length) mediaStore.finalPath = ''
-    else mediaStore.invalidateFrom('voice')
-    mediaStore.voicePath = ''
-    mediaStore.voiceDuration = 0
-    const result = await window.electron.cloud.generateVoice(
-      mediaStore.runId,
-      mediaStore.voicePlan.text,
-      episodeVoicePrompt(),
-      mediaStore.voiceEngine,
-    )
-    mediaStore.voicePath = result.path
-    mediaStore.voiceDuration = result.duration
-    mediaStore.stage = 'voice-ready'
-    mediaStore.selectView('script')
-  })
-}
-
-function episodeVoicePrompt() {
-  if (!mediaStore.segments.length || !mediaStore.voicePlan) return mediaStore.voicePlan?.voicePrompt || ''
-  const timeline = mediaStore.segments.map((segment) => {
-    const type = segment.timelineType === 'dialogue' ? '对白' : '无对白动作'
-    return `镜头${segment.index}｜${type}｜角色：${segment.dialogueCharacter || '无'}｜情绪：${segment.dialogueEmotion || '无'}｜强度：${segment.emotionIntensity || '无'}｜语速：${segment.speechRate || '无'}｜停顿/重音：${segment.pauseEmphasis || '无'}｜时长：${segment.playDuration}秒｜台词：${segment.dialogueText || '无'}`
-  }).join('\n')
-  return `${mediaStore.voicePlan.voicePrompt}\n\n【本集镜头声音时间轴】\n${timeline}\n\n严格遵守：无对白动作镜头不朗读、不补旁白；对白只按对应角色和镜头情绪表达。`
-}
-
 async function generateShotPlan() {
   await runAction('shot-plan', async () => {
+    if (!mediaStore.projectDirectorPlan || mediaStore.projectDirectorDraft)
+      throw new Error('请先确认项目总监方案')
     if (!mediaStore.assetPlanningComplete) throw new Error('请先准备角色、场景和道具资产提示词')
     if (!mediaStore.allRequiredAssetsApproved) throw new Error('请先确认全部必需资产')
     const referenceShotCount =
@@ -633,13 +663,14 @@ async function generateShotPlan() {
       shotPace: mediaStore.shotPace,
       ratio: mediaStore.ratio,
       style: VISUAL_STYLES.find((style) => style.id === mediaStore.styleId),
+      projectDirector: mediaStore.projectDirectorPlan,
     }
     const previousState = JSON.parse(JSON.stringify(mediaStore.$state))
     const transactionId = await window.electron.cloud.beginStoryboardUpdate(mediaStore.runId)
     try {
       const result = await window.electron.cloud.runWikiSkill(
         'jc-script-storyboard',
-        `${JSON.stringify({ ...skillInput, referenceShotCount }, null, 2)}\n\n读取 wiki/文稿/确认文稿.md 和已确认资产页面。严格按 Skill 的 Markdown 合同写入导演总览和每个单镜；只能绑定现有资产 ID，不得创建或修改资产。`,
+        `${JSON.stringify({ ...skillInput, referenceShotCount }, null, 2)}\n\n读取 wiki/项目/项目总监.md、wiki/文稿/确认文稿.md 和已确认资产页面。严格继承项目总监确定的导演与作品，按 Skill 的 Markdown 合同写入导演总览和每个单镜；只能绑定现有资产 ID，不得创建或修改资产。`,
         mediaStore.runId,
         mediaStore.textModel,
       )
@@ -682,33 +713,14 @@ async function reloadStoryboardMarkdown(runPaths?: string[]) {
         mediaStore.approvedScript = body
       }
     }
-    const voiceDocument = await window.electron.cloud.readMarkdown(
-      mediaStore.runId,
-      'wiki/声音/配音设计.md',
-    ).catch(() => null)
-    if (voiceDocument) {
-      const content = voiceDocument.content.replace(/^---\n[\s\S]*?\n---\n?/, '')
-      const match = content.match(/^# 配音设计\s*\n([\s\S]*?)^## 配音正文\s*\n([\s\S]*)$/m)
-      if (match) {
-        const next = parseVoiceDesign(
-          { voicePrompt: match[1].trim(), text: match[2].trim() },
-          mediaStore.approvedScript,
-        )
-        if (JSON.stringify(next) !== JSON.stringify(mediaStore.voicePlan)) {
-          mediaStore.invalidateFrom('voice')
-          mediaStore.voicePlan = next
-          mediaStore.stage = 'voice-plan-ready'
-          upstreamChanged = true
-        }
-      }
-    }
     if (upstreamChanged) return
     const paths = await window.electron.cloud.listMarkdown(mediaStore.runId)
     const selectedPaths = runPaths ? new Set(runPaths) : null
+    const directorAssetIds = new Set(mediaStore.projectDirectorPlan?.assets.map((asset) => asset.id) || [])
     const documents = await Promise.all(
       paths
         .filter((value) =>
-          value.startsWith('wiki/资产/') ||
+          (value.startsWith('wiki/资产/') && directorAssetIds.has(value.split('/').pop()!.replace(/\.md$/, ''))) ||
           ((!selectedPaths || selectedPaths.has(value)) &&
             (value === 'wiki/分镜/导演总览.md' || value.startsWith('wiki/分镜/镜头/'))),
         )
@@ -726,10 +738,20 @@ async function reloadStoryboardMarkdown(runPaths?: string[]) {
       mediaStore.shotPace,
     )
     const plan = parsed.plan
+    const directorPlan = mediaStore.projectDirectorPlan
+    if (
+      directorPlan &&
+      ![directorPlan.direction.director, directorPlan.direction.referenceWork].every((value) =>
+        plan.creativeIdentity.includes(value),
+      )
+    ) throw new Error('导演分镜没有继承项目总监确定的导演与参考作品')
     const oldVisualAnchor = mediaStore.visualAnchor
     const existingById = new Map(mediaStore.referenceAssets.map((asset) => [asset.id, asset]))
     const changedAssetIds = new Set<string>()
-    const referenceAssets: ReferenceAsset[] = parsed.assets.map((asset) => {
+    const referenceAssets: ReferenceAsset[] = projectDirectorAssets(
+      mediaStore.projectDirectorPlan,
+      parsed.assets,
+    ).map((asset) => {
       const existing = existingById.get(asset.id)
       if (!existing) return asset
       if (assetGenerationChanged(asset, existing)) {
@@ -777,8 +799,12 @@ async function reloadStoryboardMarkdown(runPaths?: string[]) {
         segment.imageStatus = 'pending'
         segment.videoPath = ''
         segment.videoStatus = 'pending'
+        segment.editingStatus = 'pending'
+        segment.editingAnalysis = undefined
+        segment.editingError = ''
         segment.error = ''
       })
+      mediaStore.pictureMasterPath = ''
       mediaStore.finalPath = ''
     }
     mediaStore.referenceAssets = referenceAssets.map((asset) => {
@@ -806,12 +832,6 @@ function assetSkill(asset: ReferenceAsset) {
       : 'jc-prop-prompt'
 }
 
-const ASSET_PLAN_SKILLS: Record<AssetRole, string> = {
-  character: 'jc-character-prompt',
-  scene: 'jc-scene-prompt',
-  prop: 'jc-prop-prompt',
-}
-
 function assetFolder(role: AssetRole) {
   return { character: '角色', scene: '场景', prop: '道具' }[role]
 }
@@ -824,14 +844,20 @@ assetRole: ${asset.role}
 status: ${asset.status}
 managedBy: short-video-factory
 generatedBySkill: ${asset.generatedBySkill}
-sourceDocument: wiki/文稿/确认文稿.md
+sourceDocument: wiki/项目/项目总监.md
 ---
 
 # ${asset.label}
 
+- 项目总监：[[../../项目/项目总监]]
+
 ## 说明
 
 ${asset.description}
+
+叙事职责：${asset.storyFunction || '未记录'}
+
+来源依据：${asset.evidence || '[[../../文稿/确认文稿]]'}
 
 ## 身份特征
 
@@ -864,47 +890,59 @@ function currentProjectDesign(design: ReferenceAsset['design']) {
   )
 }
 
-function parsePlannedAssets(value: any, role: AssetRole, skill: string): ReferenceAsset[] {
-  if (!Array.isArray(value?.assets)) throw new Error(`${assetFolder(role)} Skill 没有返回 assets`)
-  const existing = new Map(
-    mediaStore.referenceAssets
-      .filter((asset) => asset.role === role)
-      .map((asset) => [asset.label.trim().toLocaleLowerCase(), asset]),
+function completeAssetDesign(role: AssetRole, input: Record<string, any>, label: string, description: string) {
+  const design = JSON.parse(JSON.stringify(input || {})) as Record<string, any>
+  if (role === 'scene') {
+    design.scene = { name: label, episode: '本集', timeOfDay: '未记录', era: '现代', location: '未记录', type: '室内', function: description, medium: '漫剧', genre: '剧情', visualStyle: '韩漫', ...design.scene }
+    design.space = { shape: '结构清晰、具有纵深的空间', size: '中等', zones: [], furnitureLayout: '功能分区明确', ...design.space }
+    design.surfaces = { walls: '韩漫风格墙面', floor: '整洁地面', ceiling: '标准层高、基础灯具', ...design.surfaces }
+    design.objectDensity ||= '适中'
+    design.landmarks ||= []
+    design.lighting = { naturalLight: [], artificialLight: [], dominantSource: '环境主光', colorPalette: { primary: '冷色', secondary: '中性色', accent: '暗红' }, ...design.lighting }
+    design.onImageText ||= { name: { text: label, position: '左上角', style: '中号字' }, subtitle: { text: '本集场景', position: '名称下方', style: '小号字' }, labels: [] }
+    design.views = { masterShot: '空镜全景、展示空间全貌', alternateAngles: [], ...design.views }
+    design.background ||= '自然环境空场景'
+    design.presentationLighting ||= '均匀柔光、无人物、无戏剧阴影'
+    design.layout ||= '主镜头大图与关键区域特写'
+    design.noHumans = true
+  } else if (role === 'prop') {
+    design.project ||= {}
+    design.prop = { name: label, category: '日常用品', owner: '未指定', era: '现代', medium: '漫剧', genre: '剧情', visualStyle: '韩漫', ...design.prop }
+    design.shape = { silhouette: `${label} 的清晰轮廓`, components: [], proportion: { length: '未记录', width: '未记录', thickness: '未记录' }, ...design.shape }
+    design.material = { primary: '常见材质', secondary: [], surface: '整洁', color: '符合项目风格', texture: '细腻材质纹理', ...design.material }
+    design.wearAndTear = { level: '轻微使用', details: [], ...design.wearAndTear }
+    design.markings ||= []
+    design.decorations ||= []
+    design.onImageText ||= { name: { text: label, position: '左上角', style: '中号字' }, subtitle: { text: '道具设定', position: '名称下方', style: '小号字' }, labels: [] }
+    design.closeups ||= []
+    design.views = { front: '正面展示整体形状', side: '侧面展示厚度', back: '背面展示结构', top: '俯视展示顶部细节', detailCloseup: '关键特征特写', ...design.views }
+    design.background ||= '纯色中性灰'
+    design.lighting ||= '均匀柔光、无戏剧阴影'
+    design.layout ||= '正面大图、多角度小图和特写标注'
+  }
+  return design
+}
+
+function parseRuntimeAsset(asset: ReferenceAsset, value: any): ReferenceAsset {
+  if (String(value?.assetId) !== asset.id) throw new Error(`${asset.label} 的资产 ID 被修改`)
+  const design = completeAssetDesign(
+    asset.role,
+    currentProjectDesign(value?.design),
+    asset.label,
+    asset.description,
   )
-  return value.assets.map((item: any, index: number) => {
-    if (item?.role !== role) throw new Error(`${assetFolder(role)}第 ${index + 1} 项类型错误`)
-    const label = String(item?.label || '').trim()
-    const description = String(item?.description || '').trim()
-    if (!label || !description)
-      throw new Error(`${assetFolder(role)}第 ${index + 1} 项内容不完整`)
-    const design = currentProjectDesign(item?.design)
-    const searchQuery = String(item?.searchQuery || '').trim()
-    if (
-      !validAssetDesign(role, design) ||
-      !searchQuery ||
-      searchQuery.length > 160 ||
-      !validAssetSearchQuery(role, design, searchQuery)
-    )
-      throw new Error(`${assetFolder(role)}第 ${index + 1} 项缺少完整设计，或参考图搜索词无效`)
-    const previous = existing.get(label.toLocaleLowerCase())
-    return {
-      id: previous?.id || `asset-${role}-${crypto.randomUUID().slice(0, 8)}`,
-      role,
-      label,
-      description,
-      identityTraits: Array.isArray(item.identityTraits) ? item.identityTraits.map(String).filter(Boolean) : [],
-      styleRequirements: Array.isArray(item.styleRequirements) ? item.styleRequirements.map(String).filter(Boolean) : [],
-      required: item.required !== false,
-      status: previous?.status === 'approved' ? 'approved' : 'design-ready',
-      design,
-      searchQuery,
-      versions: previous?.versions || [],
-      activeVersionId: previous?.activeVersionId,
-      pendingVersionId: previous?.pendingVersionId,
-      generatedBySkill: skill,
-      sourceDocument: 'wiki/文稿/确认文稿.md',
-    }
-  })
+  const searchQuery = String(value?.searchQuery || '').trim()
+  if (!validAssetDesign(asset.role, design)) throw new Error(`${asset.label} 缺少完整资产设计 JSON`)
+  if (!searchQuery || searchQuery.length > 160 || !validAssetSearchQuery(asset.role, design, searchQuery))
+    throw new Error(`${asset.label} 的参考图搜索词必须使用现实电影、电视剧或广告参考，不得包含项目画风`)
+  return {
+    ...asset,
+    design,
+    searchQuery,
+    status: 'design-ready',
+    generatedBySkill: assetSkill(asset),
+    sourceDocument: 'wiki/项目/项目总监.md',
+  }
 }
 
 async function writeAssetDocuments(assets: ReferenceAsset[]) {
@@ -924,43 +962,43 @@ async function writeAssetDocuments(assets: ReferenceAsset[]) {
 
 async function prepareAssetPrompts() {
   await runAction('asset-prompts', async () => {
-    const roles = ['character', 'scene', 'prop'] as AssetRole[]
+    if (!mediaStore.projectDirectorPlan || mediaStore.projectDirectorDraft)
+      throw new Error('请先确认项目总监方案')
+    const pending = mediaStore.referenceAssets.filter((asset) => !asset.design)
+    if (!pending.length) return
     const results = await Promise.allSettled(
-      roles.map(async (role) => {
-        const skill = ASSET_PLAN_SKILLS[role]
+      pending.map(async (asset) => {
+        const skill = assetSkill(asset)
         const result = await window.electron.cloud.runSkill(
           skill,
           JSON.stringify({
-            mode: 'app-plan',
-            script: mediaStore.approvedScript,
+            mode: 'app-runtime',
+            asset,
             projectStyle: {
               id: mediaStore.styleId,
-              prompt: VISUAL_STYLES.find((style) => style.id === mediaStore.styleId)?.prompt,
+              prompt: selectedVisualStyle(),
               ratio: mediaStore.ratio,
+              projectDirector: mediaStore.projectDirectorPlan,
             },
-            existingAssets: mediaStore.referenceAssets.filter((asset) => asset.role === role),
           }),
           mediaStore.runId,
           mediaStore.textModel,
         )
-        const assets = parsePlannedAssets(result, role, skill)
-        await writeAssetDocuments(assets)
-        return { role, assets }
+        const planned = parseRuntimeAsset(asset, result)
+        await writeAssetDocuments([planned])
+        return planned
       }),
     )
     const failures: string[] = []
     results.forEach((result, index) => {
-      const role = roles[index]
       if (result.status === 'rejected') {
-        failures.push(`${assetFolder(role)}：${result.reason instanceof Error ? result.reason.message : String(result.reason)}`)
+        failures.push(`${pending[index].label}：${result.reason instanceof Error ? result.reason.message : String(result.reason)}`)
         return
       }
-      mediaStore.referenceAssets = [
-        ...mediaStore.referenceAssets.filter((asset) => asset.role !== role),
-        ...result.value.assets,
-      ]
-      if (!mediaStore.assetPlanCompletedRoles.includes(role)) mediaStore.assetPlanCompletedRoles.push(role)
+      const target = mediaStore.referenceAssets.findIndex((asset) => asset.id === result.value.id)
+      if (target >= 0) mediaStore.referenceAssets[target] = result.value
     })
+    if (!failures.length) mediaStore.assetPlanCompletedRoles = ['character', 'scene', 'prop']
     mediaStore.stage = 'script-approved'
     mediaStore.selectView('assets')
     if (failures.length) throw new Error(failures.join('\n'))
@@ -1002,22 +1040,15 @@ function validAssetDesign(role: AssetRole, value: unknown): value is Record<stri
     : keys.every((key) => key in (value as Record<string, unknown>))
 }
 
-function validAssetSearchQuery(role: AssetRole, design: Record<string, any>, query: string) {
-  const medium = String(design[role]?.medium || '').toLowerCase()
+function validAssetSearchQuery(role: AssetRole, _design: Record<string, any>, query: string) {
   const value = query.toLowerCase()
-  const liveAction = medium.includes('真人')
-  const required = liveAction
-    ? {
-        character: ['live action', 'full body'],
-        scene: ['wide', 'establishing shot'],
-        prop: ['isolated', 'reference'],
-      }[role]
-    : {
-        character: ['character', 'full body'],
-        scene: ['background', 'wide'],
-        prop: ['prop', 'reference'],
-      }[role]
-  return required.every((word) => value.includes(word))
+  if (/webtoon|manhwa|manga|anime|animation|concept art|background art|character sheet|key visual/i.test(value))
+    return false
+  return {
+    character: /film character portrait|movie character still|cast portrait|full body/.test(value),
+    scene: /(film|movie|television|tv|commercial) still/.test(value) && /wide|establishing/.test(value),
+    prop: /movie prop|film prop|product commercial|commercial still|product reference|close up/.test(value),
+  }[role]
 }
 
 function designFingerprint(asset: ReferenceAsset) {
@@ -1102,7 +1133,7 @@ async function generateAssets() {
         !asset.versions.some((version) => assetVersionMatches(asset, version)),
     )
     if (!pending.length) throw new Error('没有待生成资产')
-    await pool(pending, 2, generateAssetVersion)
+    await pool(pending, pending.length, generateAssetVersion)
     if (mediaStore.allRequiredAssetsApproved) mediaStore.stage = 'assets-ready'
   } catch (error) {
     toast.error(error instanceof Error ? error.message : String(error))
@@ -1111,13 +1142,29 @@ async function generateAssets() {
   }
 }
 
+function grokSequenceAssets(sequence: GrokSequence) {
+  return sequence.referenceAssetIds.map((assetId) => {
+    const asset = mediaStore.referenceAssets.find((item) => item.id === assetId)
+    const relativePath = mediaStore.currentGeneratedAssetVersion(assetId)?.relativePath
+    if (!asset || !relativePath) throw new Error('Grok 序列绑定资产缺少当前版本')
+    return { asset, relativePath }
+  })
+}
+
 async function generateStoryboards() {
   try {
     if (!mediaStore.segments.length) throw new Error(t('workflow.messages.shotPlanFirst'))
-    if (!mediaStore.voicePath) throw new Error('请先完成本集配音')
     validateShotPlan()
     if (!mediaStore.allRequiredAssetsApproved) throw new Error('请先确认全部必需资产')
-    const pendingImages = unfinishedSegments(mediaStore.segments, 'image')
+    const grokSequences = mediaStore.videoModel === 'rh-grok-image-video' ? buildGrokSequences(mediaStore.segments) : []
+    grokSequences.forEach((sequence) => {
+      const leader = sequence.segments[0]
+      if (leader.imageStatus === 'success' && leader.imagePath)
+        sequence.segments.forEach((segment) => { segment.imagePath = leader.imagePath; segment.imageStatus = 'success' })
+    })
+    const pendingImages: any[] = mediaStore.videoModel === 'rh-grok-image-video'
+      ? grokSequences.filter((sequence) => sequence.segments[0].imageStatus !== 'success')
+      : unfinishedSegments(mediaStore.segments, 'image')
     if (
       pendingImages.length > 20 &&
       !window.confirm(
@@ -1125,9 +1172,21 @@ async function generateStoryboards() {
       )
     )
       return
-    await pool(pendingImages, 2, generateImage)
+    if (mediaStore.videoModel === 'rh-grok-image-video') {
+      await pool(pendingImages, pendingImages.length, async (sequence) => {
+        const leader = sequence.segments[0]
+        const references = grokSequenceAssets(sequence)
+        const prompt = sequence.segments.map((segment: StoryboardSegment) => `第${segment.index}镜（${segment.playDuration.toFixed(1)}秒）：${segment.storyboardImagePrompt}`).join('\n')
+          + `\n\n${grokStoryboardBoardInstruction(sequence.segments.length)}`
+          + `\n\n${grokReferenceGuide(references.map(({ asset }) => asset), false)}`
+          + `\n\n${t('workflow.messages.visualAnchor')}：${mediaStore.visualAnchor}`
+        leader.imageStatus = 'running'
+        leader.imagePath = await window.electron.cloud.generateStoryboard({ runId: mediaStore.runId, index: leader.index, prompt, ratio: mediaStore.ratio, referencePaths: references.map(({ relativePath }) => relativePath) })
+        sequence.segments.forEach((segment: StoryboardSegment) => { segment.imagePath = leader.imagePath; segment.imageStatus = 'success' })
+      })
+    } else await pool(pendingImages, pendingImages.length, generateImage)
     if (!mediaStore.allImagesReady) {
-      const errors = [...new Set(pendingImages.map((item) => item.error).filter(Boolean))]
+      const errors = [...new Set(pendingImages.flatMap((item) => 'error' in item ? [item.error] : []).filter(Boolean))]
       throw new Error(errors.join('\n') || t('workflow.messages.imagePartial'))
     }
     mediaStore.stage = 'storyboards-ready'
@@ -1143,7 +1202,15 @@ async function generateStoryboards() {
 async function generateVideos() {
   try {
     validateShotPlan()
-    const pendingVideos = unfinishedSegments(mediaStore.segments, 'video')
+    const grokSequences = mediaStore.videoModel === 'rh-grok-image-video' ? buildGrokSequences(mediaStore.segments) : []
+    grokSequences.forEach((sequence) => {
+      const leader = sequence.segments[0]
+      if (leader.videoStatus === 'success' && leader.videoPath)
+        sequence.segments.forEach((segment) => { segment.videoPath = leader.videoPath; segment.videoStatus = 'success' })
+    })
+    const pendingVideos: any[] = mediaStore.videoModel === 'rh-grok-image-video'
+      ? grokSequences.filter((sequence) => sequence.segments[0].videoStatus !== 'success' || sequence.segments.some((segment) => segment.editingStatus !== 'ready'))
+      : unfinishedSegments(mediaStore.segments, 'video')
     if (
       pendingVideos.length > 20 &&
       !window.confirm(
@@ -1151,9 +1218,34 @@ async function generateVideos() {
       )
     )
       return
-    await pool(pendingVideos, 2, generateVideo)
+    if (mediaStore.videoModel === 'rh-grok-image-video') {
+      await pool(pendingVideos, pendingVideos.length, async (sequence) => {
+        const leader = sequence.segments[0]
+        if (leader.videoStatus !== 'success' || !leader.videoPath) {
+          const references = grokSequenceAssets(sequence)
+          const timedPrompt = sequence.segments.map((segment: StoryboardSegment, index: number) => {
+            const start = sequence.segments.slice(0, index).reduce((sum: number, item: StoryboardSegment) => sum + item.playDuration, 0)
+            return `[${start.toFixed(1)}-${(start + segment.playDuration).toFixed(1)}秒] ${videoPromptWithSound(segment)}`
+          }).join('\n')
+            + '\n连续完成以上时间段，按导演要求切换景别和机位；保持角色、场景、道具连续，不要输出分镜板、边框、拼贴或分屏。'
+            + `\n\n${grokReferenceGuide(references.map(({ asset }) => asset), true)}`
+          await generateVideo(leader, references.map(({ relativePath }) => relativePath), timedPrompt, sequence.generationDuration)
+          sequence.segments.forEach((segment: StoryboardSegment) => { segment.videoPath = leader.videoPath; segment.videoStatus = 'success' })
+        }
+        for (const segment of sequence.segments) {
+          if (segment === leader && segment.editingStatus === 'ready') continue
+          await analyzeVideo(segment)
+        }
+      })
+    } else await pool(pendingVideos, pendingVideos.length, (segment) =>
+      segment.videoStatus === 'success' && segment.videoPath ? analyzeVideo(segment) : generateVideo(segment),
+    )
     if (!mediaStore.allVideosReady) {
-      const errors = [...new Set(pendingVideos.map((item) => item.error).filter(Boolean))]
+      const errors = [
+        ...new Set(
+          pendingVideos.map((item) => item.editingError || item.error).filter(Boolean),
+        ),
+      ]
       throw new Error(errors.join('\n') || t('workflow.messages.videoPartial'))
     }
     mediaStore.stage = 'videos-ready'
@@ -1186,11 +1278,85 @@ function validateShotPlan() {
   )
 }
 
+function currentEditingTimeline() {
+  return buildEditingTimeline(
+    mediaStore.segments.map((segment) => {
+      if (!segment.editingAnalysis) throw new Error(`镜头 ${segment.index} 尚未完成剪辑分析`)
+      return segment.editingAnalysis
+    }),
+  )
+}
+
+async function ensurePictureMaster() {
+  const timeline = currentEditingTimeline()
+  if (!mediaStore.pictureMasterPath)
+    mediaStore.pictureMasterPath = await window.electron.cloud.composePictureMaster({
+      runId: mediaStore.runId,
+      ratio: mediaStore.ratio,
+      timeline,
+    })
+  return timeline
+}
+
+async function generateEpisodeVoice() {
+  await runAction('voice', async () => {
+    if (!mediaStore.allVideosReady) throw new Error('请先完成全部视频和剪辑分析')
+    if (mediaStore.audioMode === 'keep-original' || !mediaStore.hasSoundSegments) {
+      mediaStore.selectStep('voice')
+      return
+    }
+    const timeline = await ensurePictureMaster()
+    const tasks = episodeVoiceTasks(timeline, mediaStore.segments)
+    if (mediaStore.voiceSource === 'design') {
+      const speakers = new Set(tasks.map((task) => task.speakerId))
+      if (speakers.size !== 1 || mediaStore.segments.some((segment) => segment.soundType === 'onscreen'))
+        throw new Error('设计声音只支持单一旁白；本集包含角色对白或多个说话者，请切换“克隆音色包”')
+      const text = tasks.map((task) => task.text).join('\n')
+      const raw = await window.electron.cloud.runSkill(
+        'jc-voice-design',
+        JSON.stringify({
+          mode: '完整表演模式',
+          role: '本集旁白',
+          script: text,
+          output: { voicePrompt: '按人设、音色特征、基础风格、本场情感、本场节奏依次写成五句自然语言' },
+        }),
+        mediaStore.runId,
+        mediaStore.textModel,
+      )
+      const voicePrompt = String(raw?.voicePrompt || raw?.prompt || Object.values(raw || {}).join('\n')).trim()
+      if (!voicePrompt) throw new Error('声音设计没有返回可用的声音提示词')
+      mediaStore.voicePlan = { text, voicePrompt }
+      const result = await window.electron.cloud.generateVoice(mediaStore.runId, text, voicePrompt, mediaStore.voiceEngine)
+      mediaStore.voicePath = result.path
+      mediaStore.voiceDuration = result.duration
+    } else {
+      const result = await window.electron.cloud.generateEpisodeVoice({ runId: mediaStore.runId, tasks })
+      mediaStore.voicePath = result.path
+      mediaStore.voiceDuration = result.duration
+    }
+    mediaStore.stage = 'voice-ready'
+    mediaStore.selectStep('voice')
+    toast.success('本集配音已生成')
+  })
+}
+
 async function composeVideo() {
   await runAction('compose', async () => {
-    if (!mediaStore.voicePath || !mediaStore.allVideosReady)
+    if (!mediaStore.allVideosReady)
       throw new Error(t('workflow.messages.assetsIncomplete'))
-    const subtitleCues = buildSubtitleCues()
+    const timeline = await ensurePictureMaster()
+    if (mediaStore.workflowStep !== 'final' && !mediaStore.voiceReady) {
+      mediaStore.selectStep('voice')
+      toast.success('画面母版已生成')
+      return
+    }
+    if (mediaStore.audioMode === 'replace-preserve-ambience' && mediaStore.segments.some((segment) => segment.soundType === 'onscreen'))
+      throw new Error('当前人声分离模型尚未安装；含画面内对白时请选择“仅配音”或“保留原声”')
+    const tasks = mediaStore.hasSoundSegments ? episodeVoiceTasks(timeline, mediaStore.segments) : []
+    const subtitleTasks = mediaStore.audioMode === 'keep-original'
+      ? tasks.filter((task) => mediaStore.segments.find((segment) => `shot-${String(segment.index).padStart(3, '0')}` === task.shotId)?.soundType === 'onscreen')
+      : tasks
+    const subtitleCues = subtitleTasks.map((task) => ({ start: task.startMs / 1000, end: task.endMs / 1000, text: task.text }))
     const subtitleMarkdown = `# 本集字幕\n\n${subtitleCues.length ? subtitleCues.map((cue, index) => `${index + 1}. ${cue.text}（${cue.start.toFixed(2)}-${cue.end.toFixed(2)} 秒）`).join('\\n') : '本集无对白字幕。'}`
     await window.electron.cloud.writeMarkdown(
       mediaStore.runId,
@@ -1200,29 +1366,16 @@ async function composeVideo() {
     )
     mediaStore.finalPath = await window.electron.cloud.composeVideo({
       runId: mediaStore.runId,
-      videoFiles: mediaStore.segments.map((segment) => segment.videoPath!),
-      playDurations: mediaStore.segments.map((segment) => segment.playDuration),
-      voiceFile: mediaStore.voicePath,
+      videoFiles: [mediaStore.pictureMasterPath],
+      playDurations: [timeline.shots.at(-1)?.outputEndMs ? timeline.shots.at(-1)!.outputEndMs / 1000 : 0],
+      voiceFile: mediaStore.voicePath || undefined,
+      audioMode: mediaStore.hasSoundSegments ? mediaStore.audioMode : 'keep-original',
       ratio: mediaStore.ratio,
       subtitleCues,
     })
     mediaStore.stage = 'completed'
     mediaStore.selectView('final')
     toast.success(t('workflow.messages.composed'))
-  })
-}
-
-function buildSubtitleCues() {
-  let cursor = 0
-  return mediaStore.segments.flatMap((segment) => {
-    const start = cursor
-    cursor += segment.playDuration
-    const text = segment.dialogueText?.trim() || (segment.timelineType === 'dialogue' ? segment.script.trim() : '')
-    if (!text) return []
-    const duration = segment.dialogueDuration && segment.dialogueDuration > 0
-      ? Math.min(segment.dialogueDuration, segment.playDuration)
-      : segment.playDuration
-    return [{ start, end: start + duration, text }]
   })
 }
 
@@ -1251,11 +1404,16 @@ async function generateImage(segment: StoryboardSegment) {
 }
 
 async function requestRevision(
-  targetType: 'script' | 'voice-plan' | 'asset-prompt' | 'shot' | 'image' | 'video',
+  targetType: 'script' | 'project-director' | 'voice-plan' | 'asset-prompt' | 'shot' | 'image' | 'video',
   targetId: string,
   instruction: string,
 ) {
   await runAction('revision', async () => {
+    if (targetType === 'project-director') {
+      captureUndo('project-director')
+      mediaStore.projectDirectorDraft = await buildProjectDirectorDraft(instruction)
+      return
+    }
     if (targetType === 'asset-prompt') {
       const asset = mediaStore.referenceAssets.find((item) => item.id === targetId)
       if (!asset) throw new Error('当前资产不存在')
@@ -1405,7 +1563,7 @@ async function requestRevision(
               runId: mediaStore.runId,
               index: revisionIndex,
               model: mediaStore.videoModel,
-              prompt,
+              prompt: `${prompt}\n\n${videoSoundInstruction(segment)}`,
               ratio: mediaStore.ratio,
               generationDuration: segment.generationDuration,
               imagePath: segment.imagePath!,
@@ -1577,13 +1735,18 @@ async function applyRevision() {
     segment.videoPrompt = proposal.revised.prompt
     segment.videoPath = proposal.revised.path
     segment.videoStatus = 'success'
+    segment.editingStatus = 'pending'
+    segment.editingAnalysis = undefined
+    segment.editingError = ''
+    mediaStore.pictureMasterPath = ''
     mediaStore.finalPath = ''
+    await analyzeVideo(segment)
     mediaStore.stage = mediaStore.allVideosReady ? 'videos-ready' : 'storyboards-ready'
   }
   mediaStore.revisionProposal = null
 }
 
-function captureUndo(targetType: 'script' | 'voice-plan' | 'asset-prompt' | 'shot') {
+function captureUndo(targetType: 'script' | 'project-director' | 'voice-plan' | 'asset-prompt' | 'shot') {
   const value = JSON.parse(JSON.stringify(mediaStore.$state))
   value.revisionProposal = null
   value.revisionUndo = null
@@ -1598,6 +1761,16 @@ async function undoRevision() {
   if (undo.targetType === 'asset-prompt') {
     const asset = mediaStore.referenceAssets.find((item) => item.id === mediaStore.selectedAssetId)
     if (asset) await writeAssetDocuments([asset])
+  } else if (undo.targetType === 'project-director' && mediaStore.projectDirectorPlan) {
+    const path = 'wiki/项目/项目总监.md'
+    const current = await window.electron.cloud.readMarkdown(mediaStore.runId, path).catch(() => null)
+    await window.electron.cloud.writeMarkdown(
+      mediaStore.runId,
+      path,
+      projectDirectorMarkdown(mediaStore.projectDirectorPlan),
+      current?.revision,
+    )
+    await writeAssetDocuments(mediaStore.referenceAssets)
   }
 }
 
@@ -1609,26 +1782,69 @@ async function exportFinal() {
     await window.electron.cloud.exportMedia(mediaStore.runId, mediaStore.finalPath)
 }
 
-async function generateVideo(segment: StoryboardSegment) {
+async function generateVideo(
+  segment: StoryboardSegment,
+  imagePaths: string[] = [],
+  prompt = videoPromptWithSound(segment),
+  generationDuration = segment.generationDuration,
+) {
   if (!segment.imagePath) return
   const runId = mediaStore.runId
   segment.videoStatus = 'running'
+  segment.editingStatus = 'pending'
+  segment.editingAnalysis = undefined
+  segment.editingError = ''
   segment.error = ''
   try {
     segment.videoPath = await window.electron.cloud.generateVideo({
       runId,
       index: segment.index,
       model: mediaStore.videoModel,
-      prompt: segment.videoPrompt,
+      prompt,
       ratio: mediaStore.ratio,
-      generationDuration: segment.generationDuration,
+      generationDuration,
       imagePath: segment.imagePath,
+      imagePaths,
     })
     if (mediaStore.runId !== runId) return
     segment.videoStatus = 'success'
+    await analyzeVideo(segment)
   } catch (error) {
     segment.videoStatus = 'failed'
     segment.error = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function analyzeVideo(segment: StoryboardSegment) {
+  if (!segment.videoPath) return
+  const runId = mediaStore.runId
+  segment.editingStatus = 'running'
+  segment.editingError = ''
+  try {
+    segment.editingAnalysis = await window.electron.cloud.analyzeShotVideo({
+      runId,
+      videoPath: segment.videoPath,
+      shot: {
+        shotId: `shot-${String(segment.index).padStart(3, '0')}`,
+        script: segment.script,
+        soundType:
+          segment.soundType || (segment.timelineType === 'dialogue' ? 'onscreen' : 'none'),
+        speakerId: segment.speakerId || segment.dialogueCharacter,
+        dialogueText: segment.dialogueText,
+        dialogueEmotion: segment.dialogueEmotion,
+        startState: segment.startState,
+        actionProgression: segment.actionProgression,
+        endState: segment.endState,
+        videoPrompt: segment.videoPrompt,
+      },
+    })
+    if (mediaStore.runId !== runId) return
+    segment.editingStatus = 'ready'
+    mediaStore.pictureMasterPath = ''
+    mediaStore.finalPath = ''
+  } catch (error) {
+    segment.editingStatus = 'failed'
+    segment.editingError = error instanceof Error ? error.message : String(error)
   }
 }
 
@@ -1641,6 +1857,10 @@ async function retryImage(index: number) {
       throw new Error(segment.error || t('workflow.messages.imageFailed'))
     segment.videoPath = ''
     segment.videoStatus = 'pending'
+    segment.editingStatus = 'pending'
+    segment.editingAnalysis = undefined
+    segment.editingError = ''
+    mediaStore.pictureMasterPath = ''
     mediaStore.finalPath = ''
     if (mediaStore.allImagesReady) mediaStore.stage = 'storyboards-ready'
   } finally {
@@ -1652,9 +1872,11 @@ async function retryVideo(index: number) {
   const segment = mediaStore.segments.find((item) => item.index === index)
   if (!segment) return
   try {
-    await generateVideo(segment)
-    if (segment.videoStatus !== 'success')
-      throw new Error(segment.error || t('workflow.messages.videoFailed'))
+    if (segment.videoStatus === 'success' && segment.videoPath) await analyzeVideo(segment)
+    else await generateVideo(segment)
+    if (segment.videoStatus !== 'success' || segment.editingStatus !== 'ready')
+      throw new Error(segment.editingError || segment.error || t('workflow.messages.videoFailed'))
+    mediaStore.pictureMasterPath = ''
     mediaStore.finalPath = ''
     if (mediaStore.allVideosReady) mediaStore.stage = 'videos-ready'
   } finally {

@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { app, dialog, net } from 'electron'
 import { parseBuffer } from 'music-metadata'
 import { generateUniqueFileName } from './lib/tools.ts'
+import { projectDirectorMarkdown } from '../src/runtime/projectDirector.ts'
 import type {
   AssetVersion,
   CoreReferenceAsset,
@@ -19,6 +20,7 @@ const WIKI_DIRS = [
   '.raw/提交记录',
   '.raw/导入资料',
   'wiki/文稿',
+  'wiki/项目',
   'wiki/声音',
   'wiki/分镜/镜头',
   'wiki/字幕',
@@ -244,16 +246,6 @@ export async function createProject(projectId: string, stateValue: string) {
     await writeInitial(
       path.join(getRunDir(projectId), 'wiki/文稿/确认文稿.md'),
       managedPage(projectId, 'script', 'approved-script', `# 确认文稿\n\n${state.approvedScript}`),
-    )
-  if (state.voicePlan)
-    await writeInitial(
-      path.join(getRunDir(projectId), 'wiki/声音/配音设计.md'),
-      managedPage(
-        projectId,
-        'voice-design',
-        'voice-design',
-        `# 配音设计\n\n${state.voicePlan.voicePrompt || ''}\n\n## 配音正文\n\n${state.voicePlan.text || state.approvedScript || ''}`,
-      ),
     )
   await saveMediaState(projectId, stateValue)
   await setLastOpenedProject(projectId)
@@ -497,7 +489,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
     '- [[项目|项目概览]]',
     '- [[来源索引]]',
     state.approvedScript ? '- [[文稿/确认文稿|确认文稿]]' : '',
-    state.voicePlan ? '- [[声音/配音设计|配音设计]]' : '',
+    state.projectDirectorPlan ? '- [[项目/项目总监|项目总监]]' : '',
     state.segments?.length ? '- [[分镜/导演总览|导演分镜]]' : '',
     state.finalPath ? '- [[成片/成片|最终成片]]' : '',
   ].filter(Boolean)
@@ -525,15 +517,28 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
     ),
   )
   const sourceRows = await rawSourceRows(projectId)
+  const directorSource = state.projectDirectorPlan
+    ? '\n\n## 项目事实链\n\n- [[项目/项目总监]] ← [[文稿/确认文稿]] + Raw 原始需求 + `jc-film-style`\n'
+    : ''
   await writeAtomic(
     path.join(dir, 'wiki/来源索引.md'),
     managedPage(
       projectId,
       'index',
       'sources',
-      `# 来源索引\n\n| Raw | 项目快照 | SHA-256 |\n| --- | --- | --- |\n${sourceRows.join('\n') || '| 暂无 | - | - |'}`,
+      `# 来源索引\n\n| Raw | 项目快照 | SHA-256 |\n| --- | --- | --- |\n${sourceRows.join('\n') || '| 暂无 | - | - |'}${directorSource}`,
     ),
   )
+  if (state.projectDirectorPlan)
+    await writeAtomic(
+      path.join(dir, 'wiki/项目/项目总监.md'),
+      managedPage(
+        projectId,
+        'project-director',
+        'project-director',
+        projectDirectorMarkdown(state.projectDirectorPlan),
+      ),
+    )
   const referenceAssets = Array.isArray(state.referenceAssets) ? state.referenceAssets : []
   await Promise.all(
     referenceAssets.map((asset: any) => {
@@ -559,7 +564,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
           projectId,
           'asset',
           asset.id,
-          `# ${asset.label}\n\n- 类型：${roleFolder}\n- 状态：${asset.status}\n\n${asset.description || ''}${image}\n\n## 资产设计 JSON\n\n\`\`\`json\n${JSON.stringify(asset.design || {}, null, 2)}\n\`\`\`\n\n## 参考图搜索词\n\n${asset.searchQuery || ''}\n\n## 被引用\n\n${shots.join('\n') || '无'}`,
+          `# ${asset.label}\n\n- 项目总监：[[../../项目/项目总监]]\n- 类型：${roleFolder}\n- 状态：${asset.status}\n\n${asset.description || ''}${image}\n\n## 资产设计 JSON\n\n\`\`\`json\n${JSON.stringify(asset.design || {}, null, 2)}\n\`\`\`\n\n## 参考图搜索词\n\n${asset.searchQuery || ''}\n\n## 被引用\n\n${shots.join('\n') || '无'}`,
         ),
       )
     }),
@@ -576,7 +581,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
         projectId,
         'storyboard',
         'director-overview',
-        `# 导演分镜\n\n## 全局视觉锚点\n\n${state.visualAnchor || ''}\n\n## 镜头\n\n${shotLinks.join('\n')}`,
+        `# 导演分镜\n\n- 项目总监：[[../项目/项目总监]]\n\n## 全局视觉锚点\n\n${state.visualAnchor || ''}\n\n## 镜头\n\n${shotLinks.join('\n')}`,
       ),
     )
     await Promise.all(
@@ -734,11 +739,12 @@ export async function loadLatestMediaState() {
 
 export function getRunAssetPath(
   runId: string,
-  kind: 'voice' | 'storyboard' | 'clip' | 'final',
+  kind: 'voice' | 'storyboard' | 'clip' | 'picture-master' | 'final',
   index = 0,
 ) {
   const dir = getRunDir(runId)
   if (kind === 'voice') return path.join(dir, 'voice.mp3')
+  if (kind === 'picture-master') return path.join(dir, 'picture-master.mp4')
   if (kind === 'final') return path.join(dir, 'final.mp4')
   if (!Number.isInteger(index) || index < 1) throw new Error('无效的素材序号')
   const name = String(index).padStart(3, '0')

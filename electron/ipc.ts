@@ -4,7 +4,7 @@ import { BrowserWindow, ipcMain, shell } from 'electron'
 import { isDev } from './lib/is-dev'
 import { sqBulkInsertOrUpdate, sqDelete, sqInsert, sqQuery, sqUpdate } from './sqlite'
 import { OpenExternalParams, StatEventParams } from './types'
-import { composeGeneratedVideo } from './ffmpeg'
+import { composeGeneratedVideo, composePictureMaster } from './ffmpeg'
 import { sendStatEvent } from './lib/stat'
 import {
   cancelRun,
@@ -24,9 +24,11 @@ import {
   testApiKey,
   stopCloudTask,
   abandonCloudTask,
+  analyzeShotVideo,
   withRunAbort,
 } from './cloud'
 import { cancelLocalVoice, generateLocalVoice, getLocalVoiceStatus } from './local-tts'
+import { cancelIndexTts, generateEpisodeVoice, getIndexTtsStatus } from './index-tts'
 import {
   assertRunAsset,
   beginStoryboardMarkdownUpdate,
@@ -50,7 +52,7 @@ import {
   setLastOpenedProject,
   writeProjectMarkdown,
 } from './media-workspace'
-import { bindProjectVoice, getVoiceLibraryDir, listVoiceProfiles, reviewVoiceProfile, scanVoiceLibrary, standardizeVoiceProfile } from './voice-library'
+import { bindProjectVoice, getVoiceLibraryDir, getVoicePackDir, listVoiceProfiles, reviewVoiceProfile, scanVoiceLibrary, standardizeVoiceProfile } from './voice-library'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let windowMaximizedByApp = false
@@ -180,6 +182,8 @@ export default function initIPC() {
         : generateCloudVoice(runId, text, voicePrompt),
   )
   ipcMain.handle('local-voice-status', () => getLocalVoiceStatus())
+  ipcMain.handle('index-tts-status', () => getIndexTtsStatus())
+  ipcMain.handle('index-tts-generate-episode', (_event, params) => generateEpisodeVoice(params))
   ipcMain.handle('cloud-generate-storyboard', (_event, params) =>
     generateStoryboardImage(
       params.runId,
@@ -208,6 +212,13 @@ export default function initIPC() {
       params.ratio,
       params.generationDuration,
       params.imagePath,
+      params.imagePaths,
+    ),
+  )
+  ipcMain.handle('cloud-analyze-shot-video', (_event, params) => analyzeShotVideo(params))
+  ipcMain.handle('cloud-compose-picture-master', (_event, params) =>
+    withRunAbort(params.runId, (signal) =>
+      composePictureMaster({ ...params, abortSignal: signal }),
     ),
   )
   ipcMain.handle('cloud-compose-video', (_event, params) =>
@@ -240,6 +251,7 @@ export default function initIPC() {
   ipcMain.handle('cloud-load-latest-state', () => loadLatestMediaState())
   ipcMain.handle('voice-library-scan', (_event, sourceRoot: string) => scanVoiceLibrary(sourceRoot))
   ipcMain.handle('voice-library-path', () => getVoiceLibraryDir())
+  ipcMain.handle('voice-library-open-pack', (_event, voiceProfileId: string) => shell.openPath(getVoicePackDir(voiceProfileId)))
   ipcMain.handle('voice-library-list', (_event, query) => listVoiceProfiles(query))
   ipcMain.handle('voice-library-review', (_event, voiceProfileId, patch) => reviewVoiceProfile(voiceProfileId, patch))
   ipcMain.handle('voice-library-standardize', (_event, voiceProfileId: string) => standardizeVoiceProfile(voiceProfileId))
@@ -298,7 +310,7 @@ export default function initIPC() {
   )
   ipcMain.handle(
     'cloud-cancel-run',
-    async (_event, runId: string) => (await cancelRun(runId)) + cancelLocalVoice(runId),
+    async (_event, runId: string) => (await cancelRun(runId)) + cancelLocalVoice(runId) + cancelIndexTts(runId),
   )
   ipcMain.handle('cloud-export-media', (_event, runId: string, sourcePath: string) =>
     exportMedia(assertRunAsset(runId, sourcePath)),

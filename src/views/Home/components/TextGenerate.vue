@@ -411,7 +411,12 @@ function leaveCustomDuration() {
 }
 
 function invalidateVisuals() {
-  if (!mediaStore.segments.length && !mediaStore.visualAnchor) return
+  if (
+    !mediaStore.segments.length &&
+    !mediaStore.visualAnchor &&
+    !mediaStore.projectDirectorDraft &&
+    !mediaStore.projectDirectorPlan
+  ) return
   mediaStore.invalidateVisuals()
   mediaStore.stage = mediaStore.voicePath
     ? 'voice-ready'

@@ -1,8 +1,8 @@
 import { InitOptions } from 'i18next'
 
 export const i18nLanguages = [
-  { code: 'en', name: 'English' },
   { code: 'zh-CN', name: '简体中文' },
+  { code: 'en', name: 'English' },
 ]
 
 export const i18nCommonOptions: InitOptions = {

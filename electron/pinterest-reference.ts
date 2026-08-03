@@ -46,6 +46,20 @@ function closeAfterBatch() {
   }, 500)
 }
 
+async function loadPinterestUrl(window: BrowserWindow, value: string) {
+  try {
+    await window.loadURL(value)
+  } catch {
+    const fallback = new URL(value)
+    fallback.hostname = fallback.hostname === 'jp.pinterest.com' ? 'www.pinterest.com' : 'jp.pinterest.com'
+    try {
+      await window.loadURL(fallback.href)
+    } catch {
+      throw new Error('Pinterest 页面加载失败；请检查搜索窗口中的登录或网络状态后重试')
+    }
+  }
+}
+
 async function waitForValue<T>(
   window: BrowserWindow,
   script: string,
@@ -71,7 +85,7 @@ export async function capturePinterestReference(
   window.show()
   window.focus()
   const searchUrl = `https://jp.pinterest.com/search/pins/?q=${encodeURIComponent(query)}`
-  await window.loadURL(searchUrl)
+  await loadPinterestUrl(window, searchUrl)
   const rejected = JSON.stringify(rejectedPinIds)
   const pin = await waitForValue<{ id: string; url: string; sourceUrl: string }>(
     window,
@@ -89,7 +103,7 @@ export async function capturePinterestReference(
     'Pinterest 未加载出可用参考图；如窗口要求登录，请完成登录后重试',
   )
   if (!allowedUrl(pin.url)) throw new Error('Pinterest 返回了无效的 Pin 地址')
-  await window.loadURL(pin.url)
+  await loadPinterestUrl(window, pin.url)
   const sourceUrl =
     (await window.webContents.executeJavaScript(
       `(() => {

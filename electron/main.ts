@@ -28,6 +28,7 @@ const legacyUserDataCandidates = ['短视频工厂', 'short-video-factory', 'AI 
   .map((name) => path.join(appDataPath, name))
   .filter((candidate) => fs.existsSync(path.join(candidate, 'media-runs')) || fs.existsSync(path.join(candidate, 'data.db')))
 if (legacyUserDataCandidates[0]) app.setPath('userData', legacyUserDataCandidates[0])
+app.setName('点一点')
 
 // 已构建的目录结构
 //
@@ -211,7 +212,8 @@ app.on('activate', () => {
 // 禁用硬件加速
 // app.disableHardwareAcceleration();
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (process.platform === 'darwin') app.dock.setIcon(path.join(process.env.VITE_PUBLIC, 'icon.png'))
   protocol.registerFileProtocol('short-video-media', (request, callback) => {
     try {
       const url = new URL(request.url)
@@ -222,7 +224,7 @@ app.whenReady().then(() => {
     }
   })
   initSqlite()
-  initI18n()
+  await initI18n()
   initIPC()
   createWindow()
 

@@ -21,7 +21,7 @@ mock.module('electron', {
 })
 ;(globalThis as any).require = require
 process.env.VITE_DEV_SERVER_URL = 'test'
-const { composeGeneratedVideo } = await import('../../electron/ffmpeg/index.ts')
+const { composeGeneratedVideo, composePictureMaster } = await import('../../electron/ffmpeg/index.ts')
 const { ensureRunDir, getRunAssetPath } = await import('../../electron/media-workspace.ts')
 
 after(() => fs.rmSync(userData, { recursive: true, force: true }))
@@ -80,6 +80,7 @@ test('composes only the unified voice and matches its real duration', async () =
     videoFiles: [clip1, clip2],
     playDurations: [0.3, 0.3],
     voiceFile: voice,
+    audioMode: 'replace-all',
     ratio: '1:1',
   })
   const voiceDuration = (await parseBuffer(await fs.promises.readFile(voice))).format.duration!
@@ -95,6 +96,7 @@ test('composes only the unified voice and matches its real duration', async () =
     videoFiles: [clip1, clip2],
     playDurations: [0.3, 0.3],
     voiceFile: voice,
+    audioMode: 'replace-all',
     ratio: '1:1',
     subtitleCues: [{ start: 0, end: 0.3, text: '对白' }],
   })
@@ -122,4 +124,54 @@ test('composes only the unified voice and matches its real duration', async () =
   }
   const frequency = crossings / (pcm.length / 2 / 8000)
   assert.ok(frequency > 820 && frequency < 920, `unexpected audio frequency: ${frequency}`)
+})
+
+test('trims the picture master from the persisted editing timeline', async () => {
+  const runId = 'picture-master-run'
+  await ensureRunDir(runId)
+  const clip = getRunAssetPath(runId, 'clip', 1)
+  ffmpeg([
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc=size=320x180:rate=30:duration=1',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'ultrafast',
+    '-pix_fmt',
+    'yuv420p',
+    '-y',
+    clip,
+  ])
+  const timeline = {
+    schemaVersion: 1 as const,
+    shots: [{
+      shotId: 'shot-001',
+      sourceVideoPath: 'clips/001.mp4',
+      sourceDurationMs: 1_000,
+      trimStartMs: 300,
+      trimEndMs: 800,
+      outputStartMs: 0,
+      outputEndMs: 500,
+      needsReview: false,
+    }],
+  }
+
+  const output = await composePictureMaster({ runId, ratio: '16:9', timeline })
+  const probe = spawnSync(ffmpegPath, ['-hide_banner', '-i', output], { encoding: 'utf8' }).stderr
+  const match = probe.match(/Duration: (\d+):(\d+):(\d+\.\d+)/)
+  assert.ok(match, probe)
+  const duration = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
+  assert.ok(Math.abs(duration - 0.5) <= 1 / 30, `unexpected duration: ${duration}`)
+  const timelinePath = path.join(
+    userData,
+    'media-runs',
+    runId,
+    'wiki',
+    '剪辑',
+    'episode-001',
+    'editing-timeline.json',
+  )
+  assert.deepEqual(JSON.parse(fs.readFileSync(timelinePath, 'utf8')), timeline)
 })

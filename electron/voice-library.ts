@@ -229,10 +229,21 @@ export async function bindProjectVoice(projectId: string, speakerId: string, voi
   if (!profile) throw new Error('不存在的 voiceProfileId')
   if (profile.quality !== 'approved' || profile.rights !== 'commercial-cleared') throw new Error('只能绑定已审核且已授权的声音档案')
   await write(path.join(libraryDir(), '音色', `${profile.voiceProfileId}.md`), await profileMarkdown(profile))
+  const { listProjectMarkdown, readProjectMarkdown, writeProjectMarkdown } = await import('./media-workspace.ts')
+  const narrator = speakerId.startsWith('narrator-')
+  if (narrator) {
+    const shots = (await listProjectMarkdown(projectId)).filter((item) => item.startsWith('wiki/分镜/镜头/'))
+    const confirmed = await Promise.all(shots.map((item) => readProjectMarkdown(projectId, item)))
+    if (!confirmed.some((item) => new RegExp(`说话者ID[：:]?\\s*${speakerId}(?:\\s|$)`).test(item.content)))
+      throw new Error('旁白声音只能绑定当前确认分镜实际使用的 narrator ID')
+  } else {
+    const asset = await readProjectMarkdown(projectId, `wiki/资产/角色/${speakerId}.md`).catch(() => null)
+    if (!asset || !new RegExp(`^entityId:\\s*${speakerId}\\s*$`, 'm').test(asset.content))
+      throw new Error('声音绑定必须引用项目内已确认的角色 entityId')
+  }
   const voicePath = `wiki/声音/角色/${speakerId}.md`
-  const { readProjectMarkdown, writeProjectMarkdown } = await import('./media-workspace.ts')
   const taskLink = taskId ? `\n当前配音任务：[[声音/配音任务/${taskId}]]` : ''
-  const content = `---\nentityType: character-voice\nspeakerId: ${speakerId}\nvoiceProfileId: ${voiceProfileId}\nstatus: approved\n---\n\n# ${speakerId} 的角色声音\n\n声音档案：[[声音库/音色/${voiceProfileId}]]\n角色页面：[[资产/角色/${speakerId}]]${taskLink}\n`
+  const content = `---\nentityType: ${narrator ? 'narrator-voice' : 'character-voice'}\nspeakerId: ${speakerId}\nvoiceProfileId: ${voiceProfileId}\nstatus: approved\n---\n\n# ${speakerId} 的${narrator ? '旁白' : '角色'}声音\n\n声音档案：[[声音库/音色/${voiceProfileId}]]${narrator ? '' : `\n角色页面：[[资产/角色/${speakerId}]]`}${taskLink}\n`
   const current = await readProjectMarkdown(projectId, voicePath).catch(() => null)
   await writeProjectMarkdown(projectId, voicePath, content, current?.revision)
   if (taskId) {
@@ -245,3 +256,7 @@ export async function bindProjectVoice(projectId: string, speakerId: string, voi
 }
 
 export function getVoiceLibraryDir() { return libraryDir() }
+export function getVoicePackDir(voiceProfileId: string) {
+  if (!/^voice-[A-Za-z0-9_-]+$/.test(voiceProfileId)) throw new Error('无效的 voiceProfileId')
+  return path.join(libraryDir(), 'packs', voiceProfileId)
+}

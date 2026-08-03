@@ -10,15 +10,16 @@ description: Open Pinterest in a real browser and capture one traceable referenc
 ## 输入
 
 ```json
-{ "assetId": "asset-prop-1", "searchQuery": "rusty sickle prop design" }
+{ "assetId": "asset-prop-1", "searchQuery": "rusty farm sickle movie prop close up" }
 ```
 
 - `assetId` 必须原样返回；
-- `searchQuery` 必须是专业资产 Skill 已生成的一条精确英文查询，包含媒介、具体对象和制作用途构图，不得删减为单个泛词，也不得扩写为多条查询。
+- `searchQuery` 是寻找现实视觉参考的英文查询，不是寻找与最终资产一模一样的图片。保留身份、空间功能、物件类别和必要结构；不得加入韩漫、日漫、动画、插画、概念图、项目色彩或画风。
+- 角色优先搜索电影角色照、定妆照或全身演员参考；场景优先搜索电影、电视剧或广告截图，并用全景/广角；道具优先搜索电影道具特写或产品广告截图。
 
 ## 执行
 
-1. 使用 App 提供的受控 `search_and_download` 工具，在真实 Electron 浏览器中打开 Pinterest 搜索页。
+1. 使用 App 提供的受控 `search_and_download` 工具，在真实 Electron 浏览器中打开 Pinterest 搜索页。查询目标是“可借鉴的真实参考”，不是复刻项目画风。
 2. 读取已渲染 DOM，按页面顺序进入第一个有效且未被用户删除的 Pin，不调用模型筛选。
 3. 在隐藏的受控窗口打开 Pin 主图地址，只截取页面唯一图片元素并保存到当前项目受控目录；可见 Pinterest 窗口不得跳到原图，截图不得包含导航栏、文字或相关推荐。
 4. 保留搜索词、原图 URL、来源页面 URL 和项目相对路径。
@@ -32,7 +33,7 @@ description: Open Pinterest in a real browser and capture one traceable referenc
 ```json
 {
   "assetId": "asset-prop-1",
-  "searchQuery": "rusty sickle prop design",
+  "searchQuery": "rusty farm sickle movie prop close up",
   "selectedImage": {
     "sourceUrl": "https://i.pinimg.com/...",
     "sourcePageUrl": "https://jp.pinterest.com/pin/.../",

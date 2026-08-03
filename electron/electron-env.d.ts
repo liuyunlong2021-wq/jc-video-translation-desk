@@ -69,11 +69,21 @@ interface Window {
         engine: import('./types').VoiceEngine,
       ) => Promise<{ path: string; duration: number }>
       localVoiceStatus: () => Promise<import('./types').LocalVoiceStatus>
+      indexTtsStatus: () => Promise<import('./types').LocalVoiceStatus>
+      generateEpisodeVoice: (
+        params: import('./types').GenerateEpisodeVoiceParams,
+      ) => Promise<{ path: string; duration: number }>
       generateStoryboard: (
         params: import('./types').GenerateStoryboardImageParams,
       ) => Promise<string>
       generateAsset: (params: import('./types').GenerateAssetImageParams) => Promise<string>
       generateVideo: (params: import('./types').GenerateSegmentVideoParams) => Promise<string>
+      analyzeShotVideo: (
+        params: import('./types').AnalyzeShotVideoParams,
+      ) => Promise<import('./types').ShotVideoAnalysisResult>
+      composePictureMaster: (
+        params: import('./ffmpeg/types').ComposePictureMasterParams,
+      ) => Promise<string>
       composeVideo: (
         params: import('./ffmpeg/types').ComposeGeneratedVideoParams,
       ) => Promise<string>
@@ -97,6 +107,7 @@ interface Window {
         generatedAt: string
       }>
       voiceLibraryPath: () => Promise<string>
+      openVoicePack: (voiceProfileId: string) => Promise<string>
       listVoiceProfiles: (query?: Record<string, unknown>) => Promise<import('./voice-library').VoiceProfile[]>
       reviewVoiceProfile: (
         voiceProfileId: string,

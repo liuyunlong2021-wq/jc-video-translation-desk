@@ -2,7 +2,13 @@ import fs from 'node:fs'
 import os from 'os'
 import path from 'node:path'
 import { spawn } from 'child_process'
-import type { ComposeGeneratedVideoParams, ExecuteFFmpegResult, SubtitleCue } from './types.ts'
+import { parseFile } from 'music-metadata'
+import type {
+  ComposeGeneratedVideoParams,
+  ComposePictureMasterParams,
+  ExecuteFFmpegResult,
+  SubtitleCue,
+} from './types.ts'
 import { generateUniqueFileName } from '../lib/tools.ts'
 import { isDev } from '../lib/is-dev.ts'
 import { assertRunAsset, ensureRunDir, getRunAssetPath, mediaDuration } from '../media-workspace.ts'
@@ -36,18 +42,20 @@ export async function composeGeneratedVideo(
     throw new Error('视频片段时长无效')
   }
   const videoFiles = params.videoFiles.map((file) => assertRunAsset(params.runId, file))
-  const voiceFile = assertRunAsset(params.runId, params.voiceFile)
+  const sourceHasAudio = await Promise.all(videoFiles.map(hasAudioStream))
+  const voiceFile = params.voiceFile ? assertRunAsset(params.runId, params.voiceFile) : ''
+  if (params.audioMode !== 'keep-original' && !voiceFile) throw new Error('生成最终成片前必须先生成本集配音')
   await ensureRunDir(params.runId)
   const outputPath = generateUniqueFileName(getRunAssetPath(params.runId, 'final'))
   const [width, height] = OUTPUT_SIZES[params.ratio]
   const timelineDuration = durations.reduce((total, duration) => total + duration, 0)
-  const voiceDuration = await mediaDuration(voiceFile)
+  const voiceDuration = voiceFile ? await mediaDuration(voiceFile) : 0
   if (voiceDuration > timelineDuration + 0.1)
     throw new Error('正式配音超过分镜时间轴，请调整对白时长或镜头时长')
   const totalDuration = timelineDuration
   const args: string[] = []
   videoFiles.forEach((file) => args.push('-i', file))
-  args.push('-i', voiceFile)
+  if (voiceFile) args.push('-i', voiceFile)
 
   const streams = videoFiles.map((_, index) => `v${index}`)
   const filters = videoFiles.map((_, index) => {
@@ -55,9 +63,24 @@ export async function composeGeneratedVideo(
     return `[${index}:v]setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setsar=1,tpad=stop_mode=clone:stop_duration=${duration},trim=duration=${duration}[v${index}]`
   })
   filters.push(`[${streams.join('][')}]concat=n=${streams.length}:v=1:a=0[vout]`)
-  filters.push(
-    `[${videoFiles.length}:a]loudnorm=I=-16:TP=-1.5:LRA=11,apad=pad_dur=${totalDuration},atrim=0:${totalDuration},asetpts=PTS-STARTPTS[aout]`,
-  )
+  if (params.audioMode === 'keep-original' || params.audioMode === 'replace-preserve-ambience') {
+    const originalAudio = videoFiles.map((_, index) => {
+      const duration = durations[index]
+      filters.push(sourceHasAudio[index]
+        ? `[${index}:a]atrim=duration=${duration},asetpts=PTS-STARTPTS,aresample=48000[a${index}]`
+        : `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${duration}[a${index}]`)
+      return `a${index}`
+    })
+    filters.push(`[${originalAudio.join('][')}]concat=n=${originalAudio.length}:v=0:a=1[original]`)
+  }
+  if (params.audioMode === 'keep-original') {
+    filters.push(`[original]loudnorm=I=-16:TP=-1.5:LRA=11[aout]`)
+  } else {
+    filters.push(`[${videoFiles.length}:a]apad=pad_dur=${totalDuration},atrim=0:${totalDuration},asetpts=PTS-STARTPTS[voice]`)
+    filters.push(params.audioMode === 'replace-preserve-ambience'
+      ? `[original][voice]amix=inputs=2:duration=first:dropout_transition=0,loudnorm=I=-16:TP=-1.5:LRA=11[aout]`
+      : `[voice]loudnorm=I=-16:TP=-1.5:LRA=11[aout]`)
+  }
 
   let videoOutput = '[vout]'
   if (params.subtitleCues?.length) {
@@ -96,6 +119,75 @@ export async function composeGeneratedVideo(
   )
   await executeFFmpeg(args, params)
   return outputPath
+}
+
+export async function composePictureMaster(
+  params: ComposePictureMasterParams & {
+    onProgress?: (progress: number) => void
+    abortSignal?: AbortSignal
+  },
+) {
+  if (!params.timeline?.shots?.length) throw new Error('剪辑时间轴没有镜头')
+  const videoFiles = params.timeline.shots.map((shot) => assertRunAsset(params.runId, shot.sourceVideoPath))
+  const sourceHasAudio = await Promise.all(videoFiles.map(hasAudioStream))
+  const [width, height] = OUTPUT_SIZES[params.ratio]
+  const filters = params.timeline.shots.flatMap((shot, index) => {
+    if (
+      !Number.isFinite(shot.trimStartMs) ||
+      !Number.isFinite(shot.trimEndMs) ||
+      shot.trimStartMs < 0 ||
+      shot.trimStartMs >= shot.trimEndMs ||
+      shot.trimEndMs > shot.sourceDurationMs
+    )
+      throw new Error(`${shot.shotId} 裁切区间无效`)
+    const start = shot.trimStartMs / 1000
+    const end = shot.trimEndMs / 1000
+    return [
+      `[${index}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setsar=1[v${index}]`,
+      sourceHasAudio[index]
+        ? `[${index}:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS,aresample=48000[a${index}]`
+        : `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${end - start}[a${index}]`,
+    ]
+  })
+  filters.push(
+    `${params.timeline.shots.map((_, index) => `[v${index}][a${index}]`).join('')}concat=n=${videoFiles.length}:v=1:a=1[vout][aout]`,
+  )
+  await ensureRunDir(params.runId)
+  const outputPath = generateUniqueFileName(getRunAssetPath(params.runId, 'picture-master'))
+  const timelinePath = path.join(path.dirname(outputPath), 'wiki', '剪辑', 'episode-001', 'editing-timeline.json')
+  await fs.promises.mkdir(path.dirname(timelinePath), { recursive: true })
+  await fs.promises.writeFile(timelinePath, `${JSON.stringify(params.timeline, null, 2)}\n`, 'utf8')
+  const args: string[] = []
+  videoFiles.forEach((file) => args.push('-i', file))
+  args.push(
+    '-filter_complex',
+    filters.join(';'),
+    '-map',
+    '[vout]',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'medium',
+    '-crf',
+    '23',
+    '-r',
+    '30',
+    '-map',
+    '[aout]',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '128k',
+    '-y',
+    outputPath,
+  )
+  await executeFFmpeg(args, params)
+  return outputPath
+}
+
+async function hasAudioStream(file: string) {
+  const metadata = await parseFile(file)
+  return Boolean(metadata.format.sampleRate && metadata.format.numberOfChannels)
 }
 
 function formatSrt(cues: SubtitleCue[]) {

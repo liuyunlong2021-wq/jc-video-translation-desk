@@ -14,6 +14,7 @@ const pinterestAudit = read('electron/pinterest-audit.ts')
 const baseStyle = read('src/assets/base.scss')
 const homeUi = read('src/views/Home/index.vue')
 const main = read('electron/main.ts')
+const rendererI18n = read('src/lib/i18n.ts')
 const textUi = read('src/views/Home/components/TextGenerate.vue')
 const renderUi = read('src/views/Home/components/VideoRender.vue')
 const mediaUi = read('src/views/Home/components/VideoManage.vue')
@@ -23,6 +24,7 @@ const imageSkill = read('skills/jc-gpt-image/SKILL.md')
 const scriptSkill = read('skills/jc-media-script/SKILL.md')
 const revisionSkill = read('skills/jc-context-revision/SKILL.md')
 const referenceSearchSkill = read('skills/jc-asset-reference-search/SKILL.md')
+const projectDirectorSkill = read('skills/jc-film-style/SKILL.md')
 const paceSdd = read('docs/镜头节奏控制SDD.md')
 const brandingSdd = read('docs/创作参数与品牌视觉升级SDD.md')
 const propSdd = read('docs/道具提示词参考搜索与资产生成P0-SDD.md')
@@ -63,10 +65,18 @@ test('locks the API and selectable text and video models to the SDD values', () 
     'jc-gpt-image',
     'jc-voice-design',
     'jc-context-revision',
+    'jc-film-style',
   ]) {
     assert.match(cloud, new RegExp(`'${skill}'`))
   }
   assert.match(scriptSkill, /targetDuration/)
+})
+
+test('bundles translations and uses the branded macOS dock icon', () => {
+  assert.match(rendererI18n, /resources:\s*\{[\s\S]*'zh-CN': \{ common: zhCN \}/)
+  assert.match(main, /app\.setName\('点一点'\)/)
+  assert.match(main, /app\.dock\.setIcon/)
+  assert.match(main, /await initI18n\(\)[\s\S]*initIPC\(\)[\s\S]*createWindow\(\)/)
 })
 
 test('passes all supported ratios through image, video, and final output contracts', () => {
@@ -91,22 +101,31 @@ test('submits exactly the two voice-design business inputs', () => {
   assert.doesNotMatch(voiceBlock, /language|语言/)
 })
 
-test('selects cloud or local VoiceDesign without silent cloud fallback', () => {
+test('keeps VoiceDesign as a post-storyboard single-narrator backend only', () => {
   assert.match(textUi, /mediaStore\.voiceEngine/)
   assert.match(textUi, /value="cloud"/)
   assert.match(textUi, /value="local"/)
-  assert.match(homeUi, /mediaStore\.voiceEngine/)
-  assert.match(renderUi, /mediaStore\.voiceEngine === 'local' \|\| mediaStore\.apiConfigured/)
+  assert.doesNotMatch(homeUi, /generateVoicePlan/)
+  assert.doesNotMatch(renderUi, /生成声音方案|请先完成本集配音/)
   assert.match(preload, /cloud-generate-voice[\s\S]*engine/)
   assert.match(ipc, /engine === 'local'[\s\S]*generateLocalVoice[\s\S]*generateCloudVoice/)
   assert.match(localVoice, /spawn\(/)
   assert.doesNotMatch(localVoice, /shell:\s*true|generateCloudVoice|generateVoice\(/)
 })
 
-test('keeps five center views and one contextual scrolling inspector', () => {
+test('adds the project director gate without changing the seven-stage workflow', () => {
   const renderTemplate = renderUi.slice(0, renderUi.indexOf('<script setup'))
-  for (const view of ['文稿', '分镜', '资产', '分镜图/视频', '成片'])
+  for (const view of ['文稿', '项目总监', '分镜', '资产', '分镜图/视频', '成片'])
     assert.match(mediaUi, new RegExp(view))
+  assert.match(mediaUi, /value="director"/)
+  assert.match(renderUi, /生成项目总监方案/)
+  assert.match(renderUi, /确认项目总监方案/)
+  assert.match(renderUi, /v-if="mediaStore\.workflowStep === 'assets'" class="action-bar asset-actions"/)
+  assert.match(renderUi, /@click="runPrimary"[\s\S]*primaryAction\.label/)
+  assert.match(projectDirectorSkill, /app-director/)
+  assert.match(projectDirectorSkill, /currentPlan/)
+  assert.match(renderUi, /repeat\(7,\s*minmax\(0,\s*1fr\)\)/)
+  assert.doesNotMatch(renderUi, /repeat\(8,\s*minmax\(0,\s*1fr\)\)/)
   assert.match(renderUi, /inspector-scroll/)
   assert.match(renderUi, /action-bar/)
   assert.match(renderUi, /label="修改意见"/)
@@ -126,10 +145,11 @@ test('keeps five center views and one contextual scrolling inspector', () => {
   assert.match(mediaUi, /@click\.stop="previewAssetVersion\(asset\)"/)
   assert.match(homeUi, /adoptAssetVersion\(asset\.id, version\.id\)/)
   assert.doesNotMatch(mediaUi, /搜索下载参考图|生成资产设计 JSON|>生成资产图</)
-  assert.equal((renderTemplate.match(/生成资产设计 JSON/g) || []).length, 1)
+  assert.equal((renderTemplate.match(/>生成资产设计 JSON</g) || []).length, 1)
   assert.equal((renderTemplate.match(/搜索下载参考图/g) || []).length, 1)
   assert.equal((renderTemplate.match(/>生成资产图</g) || []).length, 1)
-  assert.equal((renderTemplate.match(/>进入分镜</g) || []).length, 1)
+  assert.equal((renderTemplate.match(/>转分镜</g) || []).length, 1)
+  assert.doesNotMatch(renderTemplate, />进入分镜</)
   assert.match(mediaUi, /添加参考图/)
   assert.match(mediaUi, /uploadAssetReference/)
   assert.match(homeUi, /searchAssetImage/)
@@ -154,7 +174,9 @@ test('keeps five center views and one contextual scrolling inspector', () => {
   assert.match(homeUi, /searchAssets/)
   assert.match(mediaUi, /removeAssetReferenceVersion/)
   assert.match(mediaUi, /删除参考图/)
-  assert.doesNotMatch(mediaUi, /删除当前资产图/)
+  assert.match(mediaUi, /删除当前资产图/)
+  assert.match(mediaUi, /removeGeneratedAssetVersion/)
+  assert.match(mediaUi, /删除当前结果/)
   assert.match(homeUi, /searchQuery\.length > 160/)
   assert.doesNotMatch(homeUi, /searchWords\.length/)
   assert.match(propSdd, /\[生成资产提示词\].*\[搜索下载参考图（可跳过）\].*\[生成资产图\]/)
@@ -168,7 +190,7 @@ test('keeps five center views and one contextual scrolling inspector', () => {
   assert.match(textUi, /v-model="mediaStore\.videoModel"\s+class="text-model-select"/)
   assert.match(homeUi, /task\.kind === 'video'\) mediaStore\.invalidateShot\(segment\.index, 'video'\)/)
   assert.match(homeUi, /cloudTasks\.every\(\(item\) => item\.status === 'success'\).*taskDrawerOpen\.value = false/)
-  assert.match(homeUi, /new Set\(pendingVideos\.map\(\(item\) => item\.error\)\.filter\(Boolean\)\)/)
+  assert.match(homeUi, /item\.editingError \|\| item\.error/)
 })
 
 test('keeps asset generation recoverable and validates every professional design', () => {
@@ -194,7 +216,9 @@ test('keeps asset generation recoverable and validates every professional design
   assert.match(pinterestReference, /document\.images\[0\]/)
   assert.match(pinterestReference, /i\.pinimg\.com/)
   assert.doesNotMatch(workspace, /BaseSearchResource|get\/|www\.bing\.com\/images\/search|commons\.wikimedia\.org/)
-  assert.match(referenceSearchSkill, /媒介、具体对象和制作用途构图/)
+  assert.match(referenceSearchSkill, /寻找现实视觉参考/)
+  assert.match(referenceSearchSkill, /不得加入韩漫、日漫、动画、插画、概念图/)
+  assert.match(pinterestReference, /www\.pinterest\.com/)
   assert.match(homeUi, /assetReferenceSearchQuery\(asset\.searchQuery!, asset\.role, mediaStore\.styleId\)/)
   assert.doesNotMatch(homeUi, /将生成 \$\{pending\.length\} 张资产图/)
   assert.match(pinterestReference, /show: false/)
@@ -216,15 +240,22 @@ test('writes the confirmed script before mounting its Markdown document', () => 
     homeUi.indexOf('async function runAction'),
   )
   assert.ok(approve.indexOf('writeMarkdown(') < approve.indexOf('mediaStore.approvedScript = approved'))
-  assert.ok(approve.indexOf('writeMarkdown(') < approve.indexOf("mediaStore.selectStep('voice')"))
+  assert.ok(approve.indexOf('writeMarkdown(') < approve.indexOf("mediaStore.selectStep('assets')"))
   assert.match(wikiUi, /<div v-if="loaded">/)
   assert.match(workspace, /确认文稿不能为空/)
 })
 
+test('writes the project director Wiki before exposing its confirmed state', () => {
+  const confirm = homeUi.slice(
+    homeUi.indexOf('async function confirmProjectDirector'),
+    homeUi.indexOf('async function runAction'),
+  )
+  assert.ok(confirm.indexOf('writeMarkdown(') < confirm.indexOf('mediaStore.confirmProjectDirector('))
+  assert.ok(confirm.indexOf('writeAssetDocuments(') < confirm.indexOf('mediaStore.confirmProjectDirector('))
+})
+
 test('keeps every paid stage explicit and every result visible in the media library', () => {
   for (const action of [
-    'generateVoicePlan',
-    'generateVoice',
     'generateShotPlan',
     'generateStoryboards',
     'generateVideos',
@@ -232,7 +263,7 @@ test('keeps every paid stage explicit and every result visible in the media libr
   ]) {
     assert.match(renderUi, new RegExp(action))
   }
-  assert.match(mediaUi, /<audio/)
+  assert.doesNotMatch(mediaUi, /<audio/)
   assert.match(mediaUi, /segment\.imagePath/)
   assert.match(mediaUi, /segment\.videoPath/)
   assert.match(mediaUi, /mediaStore\.finalPath/)
@@ -265,8 +296,8 @@ test('keeps every paid stage explicit and every result visible in the media libr
   assert.match(renderUi, /repeat\(7,\s*minmax\(0,\s*1fr\)\)/)
   assert.match(homeUi, /inspector-toggle[\s\S]*inspector-column\.open/)
   assert.match(shotSkill, /单一连续镜头/)
-  assert.match(shotSkill, /世界知名[\s\S]*具体代表作/)
-  assert.match(shotSkill, /亨利·塞利克《鬼妈妈》/)
+  assert.match(shotSkill, /不得重新推荐、选择或替换导演/)
+  assert.match(shotSkill, /原样继承具体导演、代表作和视觉总纲/)
   assert.match(imageSkill, /禁止多宫格、分屏、拼贴、卷轴/)
 })
 
@@ -311,9 +342,10 @@ test('keeps style, duration, branding, and legacy-data contracts explicit', () =
   assert.match(textUi, /durationInvalid/)
 })
 
-test('discards source audio and preserves old generated files', () => {
+test('preserves trimmed source audio for the selectable final sound policy', () => {
   assert.match(ffmpeg, /concat=n=\$\{streams\.length\}:v=1:a=0/)
-  assert.match(ffmpeg, /\[\$\{videoFiles\.length\}:a\]loudnorm/)
+  assert.match(ffmpeg, /params\.audioMode === 'keep-original'/)
+  assert.match(ffmpeg, /\[original\]\[voice\]amix/)
   assert.match(ffmpeg, /const timelineDuration = durations\.reduce/)
   assert.match(ffmpeg, /apad=pad_dur=\$\{totalDuration\}/)
   assert.match(ffmpeg, /subtitleCues/)

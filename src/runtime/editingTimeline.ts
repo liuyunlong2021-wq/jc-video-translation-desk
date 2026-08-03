@@ -23,6 +23,15 @@ export interface EditingTimelineShot {
 export interface EditingTimeline { schemaVersion: 1; shots: EditingTimelineShot[] }
 export type ShotAnalysis = Omit<EditingTimelineShot, 'outputStartMs' | 'outputEndMs'>
 
+export interface EpisodeVoiceTask {
+  shotId: string
+  speakerId: string
+  text: string
+  emotion: string
+  startMs: number
+  endMs: number
+}
+
 export function buildEditingTimeline(analyses: ShotAnalysis[]): EditingTimeline {
   let cursor = 0
   const shots = analyses.map((analysis) => {
@@ -61,4 +70,38 @@ export function timelineSubtitleCues(timeline: EditingTimeline) {
   return timeline.shots.flatMap((shot) => shot.dialogue?.text.trim()
     ? [{ start: shot.dialogue.outputStartMs / 1000, end: shot.dialogue.outputEndMs / 1000, text: shot.dialogue.text.trim() }]
     : [])
+}
+
+export function episodeVoiceTasks(
+  timeline: EditingTimeline,
+  segments: Array<{
+    index: number
+    soundType?: 'onscreen' | 'voiceover' | 'none'
+    speakerId?: string
+    dialogueText?: string
+    dialogueEmotion?: string
+    dialogueDuration?: number
+  }>,
+): EpisodeVoiceTask[] {
+  return segments.flatMap((segment, index) => {
+    if (!segment.soundType || segment.soundType === 'none') return []
+    const shot = timeline.shots[index]
+    if (!shot) throw new Error(`镜头 ${segment.index} 缺少剪辑时间轴`)
+    const speakerId = String(segment.speakerId || '').trim()
+    const text = String(segment.dialogueText || '').trim()
+    if (!speakerId || !text) throw new Error(`镜头 ${segment.index} 缺少说话者或确认原文`)
+    if (segment.soundType === 'onscreen' && !shot.dialogue)
+      throw new Error(`镜头 ${segment.index} 没有可靠的画面内说话时间窗，请先重试剪辑分析`)
+    const startMs = shot.dialogue?.outputStartMs ?? shot.outputStartMs
+    const budget = Math.max(0, Number(segment.dialogueDuration || 0) * 1000)
+    const endMs = shot.dialogue?.outputEndMs ?? Math.min(shot.outputEndMs, startMs + (budget || shot.outputEndMs - startMs))
+    return [{
+      shotId: shot.shotId,
+      speakerId,
+      text,
+      emotion: segment.dialogueEmotion || 'neutral',
+      startMs,
+      endMs,
+    }]
+  })
 }

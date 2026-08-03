@@ -273,16 +273,15 @@ test('state persistence never overwrites an edited creative Markdown document', 
     runId: projectId,
     stage: 'script-approved',
     approvedScript: '状态中的旧文稿',
-    voicePlan: { voicePrompt: '旧配音设计', text: '状态中的旧文稿' },
     segments: [],
   }
   await workspace.createProject(projectId, JSON.stringify(state))
-  for (const relativePath of ['wiki/文稿/确认文稿.md', 'wiki/声音/配音设计.md']) {
+  for (const relativePath of ['wiki/文稿/确认文稿.md']) {
     const current = await workspace.readProjectMarkdown(projectId, relativePath)
     await workspace.writeProjectMarkdown(
       projectId,
       relativePath,
-      relativePath.includes('确认文稿') ? '# 确认文稿\n\n用户的新文稿' : '# 配音设计\n\n用户的新配音',
+      '# 确认文稿\n\n用户的新文稿',
       current.revision,
     )
   }
@@ -290,10 +289,6 @@ test('state persistence never overwrites an edited creative Markdown document', 
   assert.match(
     (await workspace.readProjectMarkdown(projectId, 'wiki/文稿/确认文稿.md')).content,
     /用户的新文稿/,
-  )
-  assert.match(
-    (await workspace.readProjectMarkdown(projectId, 'wiki/声音/配音设计.md')).content,
-    /用户的新配音/,
   )
 })
 
@@ -555,8 +550,9 @@ test('submits the fixed voice and selectable video contracts through controlled 
     'rh-grok-image-video',
     '单一连续镜头',
     '9:16',
-    4,
+    6,
     grokImagePath,
+    [imagePath],
   )
   const grokRequest = requests
     .slice(grokRequestStart)
@@ -565,7 +561,7 @@ test('submits the fixed voice and selectable video contracts through controlled 
   assert.equal(grokRequest.data.duration, 6)
   assert.equal(grokRequest.data.aspectRatio, '9:16')
   assert.equal(grokRequest.data.resolution, '720p')
-  assert.equal(grokRequest.data.images.length, 1)
+  assert.equal(grokRequest.data.images.length, 2)
   assert.match(grokRequest.data.images[0], /^data:image\/png;base64,/)
   assert.equal('input_reference' in grokRequest.data, false)
 
@@ -586,6 +582,51 @@ test('submits the fixed voice and selectable video contracts through controlled 
   assert.equal(veo3Request.data.model, 'veo-3.0-generate-001')
   assert.equal(veo3Request.data.seconds, '8')
   assert.equal(typeof veo3Request.data.input_reference.pipe, 'function')
+})
+
+test('sends the original shot video directly to Gemini for editing analysis', async () => {
+  const runId = 'shot-analysis-run'
+  await workspace.ensureRunDir(runId)
+  const videoPath = workspace.getRunAssetPath(runId, 'clip', 1)
+  fs.writeFileSync(videoPath, Buffer.from('mock mp4'))
+  chatOutputs.push(JSON.stringify({
+    trimStartMs: 2_000,
+    trimEndMs: 5_000,
+    needsReview: false,
+    dialogue: { sourceStartMs: 2_500, sourceEndMs: 4_000 },
+  }))
+
+  const requestStart = requests.length
+  const result = await cloud.analyzeShotVideo({
+    runId,
+    videoPath,
+    shot: {
+      shotId: 'shot-001',
+      script: '角色举手并说你好',
+      soundType: 'onscreen',
+      speakerId: 'character-1',
+      dialogueText: '你好',
+      dialogueEmotion: 'happy',
+      startState: '手臂放下',
+      actionProgression: '角色举手',
+      endState: '手举过肩',
+      videoPrompt: '单一连续镜头，角色举手',
+    },
+  })
+
+  const analysisRequests = requests
+    .slice(requestStart)
+    .filter((request) => request.url.endsWith('/v1/chat/completions'))
+  assert.equal(analysisRequests.length, 1)
+  assert.equal(analysisRequests[0].data.model, 'gemini-3.6-flash')
+  const content = analysisRequests[0].data.messages[1].content
+  assert.equal(content.filter((part: any) => part.type === 'file').length, 1)
+  assert.match(content.find((part: any) => part.type === 'file').file.file_data, /^data:video\/mp4;base64,/)
+  assert.equal(result.sourceDurationMs, 12_000)
+  assert.equal(result.trimStartMs, 2_000)
+  assert.equal(result.trimEndMs, 5_000)
+  assert.equal(result.dialogue?.sourceStartMs, 2_500)
+  assert.equal(result.dialogue?.sourceEndMs, 4_000)
 })
 
 test('uses the selected text model and retries one malformed Skill JSON response', async () => {

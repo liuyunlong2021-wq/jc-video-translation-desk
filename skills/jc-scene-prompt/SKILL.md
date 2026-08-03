@@ -13,7 +13,7 @@ description: Use when a user asks to create a scene design prompt, scene concept
 { "assets": [{ "role": "scene", "label": "场景名", "description": "空间功能与氛围", "identityTraits": ["固定空间结构"], "styleRequirements": ["项目风格要求"], "required": true, "design": { "严格完整遵守 references/scene-format.md 的 JSON 模板": "不得省略字段" }, "searchQuery": "从 design 派生的一条精确英文 Pinterest 查询" }] }
 ```
 
-`design` 是唯一生图事实源，必须把输入 `projectStyle` 的视觉风格和比例原样写入 `design.project`。不得输出 `generationPrompt`、`prompt` 或另一份自然语言提示词。`searchQuery` 只能从完整 `design` 派生，严格使用“媒介 + 具体空间与关键氛围/结构 + 全景制作用途”的一条英文查询。真人项目必须包含 `live action film set` 或 `cinematic location reference` 以及 `wide establishing shot`；动画项目必须包含具体动画媒介以及 `anime background art` 或 `environment concept art`。例如 `cinematic modern home study wide interior establishing shot`。不得只搜索抽象氛围或泛化空间。不输出多个备选查询。没有主要场景时输出 `{ "assets": [] }`。不得提取角色或道具；设计必须是无人物、无角色剪影、无动物的空环境。不得返回路径、图片或其他字段。
+`design` 是唯一生图事实源，必须把输入 `projectStyle` 的视觉风格和比例原样写入 `design.project`。不得输出 `generationPrompt`、`prompt` 或另一份自然语言提示词。`searchQuery` 只用于寻找现实影视参考，与最终项目画风分离：使用“空间身份/功能 + 必要布局特征 + film still wide shot”的一条英文查询，例如 `screenwriter independent studio workspace film still wide shot`。也可使用 television still 或 commercial still，但一条查询只选一种来源。不得加入 webtoon、anime、animation、illustration、concept art、background art、项目色彩或画风。不输出多个备选查询。没有主要场景时输出 `{ "assets": [] }`。不得提取角色或道具；设计必须是无人物、无角色剪影、无动物的空环境。不得返回路径、图片或其他字段。
 
 输入 `mode: "app-runtime"` 时跳过下方搜图、询问和文件流程。只读取 `asset` 和 `projectStyle`，输出：
 
@@ -22,6 +22,10 @@ description: Use when a user asks to create a scene design prompt, scene concept
 ```
 
 `design` 必须严格完整遵守 `references/scene-format.md`，锁定空间布局、材质、光源、关键物件、项目风格和画面比例，并明确纯环境空镜、无人物、无角色剪影、无动物。不得返回路径、图片、Markdown、`generationPrompt`、`prompt` 或其他字段。
+
+`searchQuery` 必须继续遵守上面的现实影视参考规则，不得从 `projectStyle` 抄入画风词。
+
+APP 主流程中的 `asset` 来自已确认项目总监清单。必须原样保留 `asset.id`、场景身份和叙事职责；不得重新阅读全文决定场景数量，不得新增、删除、合并、拆分或改名场景。
 
 输入 `mode: "app-revise"` 时读取 `asset`、`currentDesign`、`instruction` 和 `projectStyle`，只把用户意见应用到完整设计，并从修改后的 `design` 重新派生 `searchQuery`，返回相同的 `{ "assetId", "design", "searchQuery" }` 合同。不得搜索、下载、生成图片、改变空间身份或加入人物。
 

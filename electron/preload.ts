@@ -52,12 +52,19 @@ contextBridge.exposeInMainWorld('electron', {
       engine: import('./types').VoiceEngine,
     ) => ipcRenderer.invoke('cloud-generate-voice', runId, text, voicePrompt, engine),
     localVoiceStatus: () => ipcRenderer.invoke('local-voice-status'),
+    indexTtsStatus: () => ipcRenderer.invoke('index-tts-status'),
+    generateEpisodeVoice: (params: import('./types').GenerateEpisodeVoiceParams) =>
+      ipcRenderer.invoke('index-tts-generate-episode', params),
     generateStoryboard: (params: import('./types').GenerateStoryboardImageParams) =>
       ipcRenderer.invoke('cloud-generate-storyboard', params),
     generateAsset: (params: import('./types').GenerateAssetImageParams) =>
       ipcRenderer.invoke('cloud-generate-asset', params),
     generateVideo: (params: import('./types').GenerateSegmentVideoParams) =>
       ipcRenderer.invoke('cloud-generate-video', params),
+    analyzeShotVideo: (params: import('./types').AnalyzeShotVideoParams) =>
+      ipcRenderer.invoke('cloud-analyze-shot-video', params),
+    composePictureMaster: (params: import('./ffmpeg/types').ComposePictureMasterParams) =>
+      ipcRenderer.invoke('cloud-compose-picture-master', params),
     composeVideo: (params: import('./ffmpeg/types').ComposeGeneratedVideoParams) =>
       ipcRenderer.invoke('cloud-compose-video', params),
     resumePending: (runId: string) => ipcRenderer.invoke('cloud-resume-pending', runId),
@@ -70,6 +77,7 @@ contextBridge.exposeInMainWorld('electron', {
     loadLatestState: () => ipcRenderer.invoke('cloud-load-latest-state'),
     scanVoiceLibrary: (sourceRoot: string) => ipcRenderer.invoke('voice-library-scan', sourceRoot),
     voiceLibraryPath: () => ipcRenderer.invoke('voice-library-path'),
+    openVoicePack: (voiceProfileId: string) => ipcRenderer.invoke('voice-library-open-pack', voiceProfileId),
     listVoiceProfiles: (query?: Record<string, unknown>) => ipcRenderer.invoke('voice-library-list', query),
     reviewVoiceProfile: (voiceProfileId: string, patch: import('./voice-library').VoiceProfile) =>
       ipcRenderer.invoke('voice-library-review', voiceProfileId, patch),

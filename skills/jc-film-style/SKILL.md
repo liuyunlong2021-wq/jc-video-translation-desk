@@ -1,18 +1,65 @@
 ---
 name: jc-film-style
-description: Use when a user asks to define a film or drama project style, visual direction, aspect ratio, color language, or reusable style design.
-triggers:
-  - '风格定调'
-  - '影视风格'
-  - '选导演'
-  - '定风格'
-  - '导演色卡'
-  - '配色方案'
-  - '电影风格'
-  - '定调'
+description: Use when a user asks to establish a film or drama project's country, era, medium, director, visual direction, aspect ratio, color language, or complete character, scene, and prop register before asset production.
 ---
 
-# 影视风格定调 —— 一部剧定一次
+# 项目总监 —— 一部剧定一次
+
+## 应用运行时模式
+
+输入 `mode: "app-director"` 时，跳过欢迎语、多轮选择、Pinterest、浏览器和文件写入。同时读取 `rawRequest`、`approvedScript`、`project`，一次确定项目总纲和完整资产清单。
+
+输入包含 `currentPlan` 和非空 `instruction` 时，在保持 `project.visualStyle`、`project.aspectRatio` 及所有未被用户点名事实不变的前提下，返回修改后的完整同结构 JSON；仍要重新执行主体与资产完整性检查。
+
+原始需求保存画面主体和创作意图；确认文稿保存最终旁白、对白和叙事文字。确认文稿没有重复原始画面要求不代表删除该要求，只有明确冲突时才服从确认文稿。输入的 `visualStyle`、`aspectRatio` 和 `targetDuration` 是硬约束。
+
+只输出以下合法 JSON，不输出 Markdown、路径、图片或解释：
+
+```json
+{
+  "project": {
+    "title": "项目名",
+    "format": "剧情短片/产品广告/口播等",
+    "genre": "具体题材",
+    "countryRegion": "国别或地域",
+    "era": "时代",
+    "medium": "真人/韩漫/二维动画等",
+    "aspectRatio": "原样返回 project.aspectRatio",
+    "visualStyle": "原样返回 project.visualStyle"
+  },
+  "direction": {
+    "director": "具体导演或动画主创",
+    "referenceWork": "具体代表作",
+    "rationale": "为什么适合当前项目",
+    "visualAnchor": "全项目统一视觉锚点",
+    "colorLanguage": "色彩与光线规则",
+    "cameraLanguage": "镜头与构图规则"
+  },
+  "assets": [{
+    "role": "character/scene/prop",
+    "label": "实体名称",
+    "aliases": [],
+    "description": "实体说明",
+    "storyFunction": "叙事职责",
+    "identityTraits": ["跨镜不可漂移特征"],
+    "required": true,
+    "evidence": "来自原始需求或确认文稿的简短依据"
+  }],
+  "completeness": {
+    "narrativeSubjectRequired": true,
+    "noCharacterReason": "有角色时留空；无角色时必须解释",
+    "warnings": []
+  }
+}
+```
+
+强制规则：
+
+1. 任何具名人物、说话者、动作执行者或跨镜主体都列为角色；存在行动主体时不得返回空角色。
+2. 主要地点和需要保持连续的环境列为场景；品牌设备、包装、APP 载体和重要物件列为道具。
+3. “角色、场景、道具”作为产品功能词时不是剧情实体。
+4. 只列实体和身份锚点，不写完整生图 JSON、搜索词或资产 ID；这些由 APP 和专业资产 Skill 处理。
+5. 没有角色时设置 `narrativeSubjectRequired: false` 并填写具体原因，不能用“旁白广告”掩盖已存在的行动主体。
 
 > 输入故事梗概 → 输出风格决策文件。媒介、比例、导演、色卡——四样全锁，下游 Skill 只管执行。
 

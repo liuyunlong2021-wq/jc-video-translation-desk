@@ -13,7 +13,7 @@ description: Use when a user asks to create a character design prompt, character
 { "assets": [{ "role": "character", "label": "角色名", "description": "角色职责", "identityTraits": ["不可漂移特征"], "styleRequirements": ["项目风格要求"], "required": true, "design": { "严格完整遵守 references/prompt-format.md 的 JSON 模板": "不得省略字段" }, "searchQuery": "从 design 派生的一条精确英文 Pinterest 查询" }] }
 ```
 
-`design` 是唯一生图事实源，必须把输入 `projectStyle` 的视觉风格和比例原样写入 `design.project`。不得输出 `generationPrompt`、`prompt` 或另一份自然语言提示词。`searchQuery` 只能从完整 `design` 派生，严格使用“媒介 + 身份/原型与关键外貌 + 制作用途构图”的一条英文查询。真人项目必须包含 `live action` 以及 `full body cast portrait` 或 `full body character reference`；动画项目必须包含具体动画媒介以及 `character sheet` 或 `character turnaround`。例如 `live action anxious office worker full body cast portrait`。情绪只能修饰身份，不能替代角色构图词。不输出多个备选查询。没有角色时输出 `{ "assets": [] }`。不得提取场景或道具，不得返回路径、图片或其他字段。
+`design` 是唯一生图事实源，必须把输入 `projectStyle` 的视觉风格和比例原样写入 `design.project`。不得输出 `generationPrompt`、`prompt` 或另一份自然语言提示词。`searchQuery` 只用于寻找现实影视参考，与最终项目画风分离：使用“身份/职业 + 必要外貌或服装 + film character portrait/full body/movie still”的一条英文查询，例如 `young male illustrator black hoodie film character portrait full body`。不得加入 webtoon、anime、animation、illustration、concept art、character sheet、key visual、项目色彩或画风。不输出多个备选查询。没有角色时输出 `{ "assets": [] }`。不得提取场景或道具，不得返回路径、图片或其他字段。
 
 输入 `mode: "app-runtime"` 时跳过下方搜图、询问和文件流程。只读取 `asset` 和 `projectStyle`，输出：
 
@@ -22,6 +22,10 @@ description: Use when a user asks to create a character design prompt, character
 ```
 
 `design` 必须严格完整遵守 `references/prompt-format.md`，锁定 `identityTraits`、服装、人物比例、项目风格和画面比例，使用纯净背景和可复用角色设定图构图。不得返回路径、图片、Markdown、`generationPrompt`、`prompt` 或其他字段。
+
+`searchQuery` 必须继续遵守上面的现实影视参考规则，不得从 `projectStyle` 抄入画风词。
+
+APP 主流程中的 `asset` 来自已确认项目总监清单。必须原样保留 `asset.id`、角色身份、别名和叙事职责；不得重新阅读全文决定角色数量，不得新增、删除、合并、拆分或改名角色。
 
 输入 `mode: "app-revise"` 时读取 `asset`、`currentDesign`、`instruction` 和 `projectStyle`，只把用户意见应用到完整设计，并从修改后的 `design` 重新派生 `searchQuery`，返回相同的 `{ "assetId", "design", "searchQuery" }` 合同。不得搜索、下载、生成图片或改变角色身份。
 

@@ -1,6 +1,7 @@
 import type {
   ResolvedShotPace,
   ShotPace,
+  ShotVideoAnalysisResult,
   TargetDuration,
   VideoRatio,
   VisualStyleId,
@@ -56,6 +57,148 @@ export const VISUAL_STYLE_GROUPS = [
         prompt:
           '铁线描、矿物颜料、朱砂石青石绿、大色块平涂、东方装饰构图；禁止日系赛璐璐、写实摄影、数字渐变和西式卡通造型',
       },
+      {
+        id: 'shonen-action-cel',
+        label: '热血动作赛璐璐',
+        prompt:
+          '二维热血动作动画，硬朗清晰线稿、协调人物比例、分层赛璐璐上色、强动态透视、速度线与冲击光影、电影式动作构图；禁止真人摄影、三维塑料感、静态站桩和指定作品角色',
+      },
+      {
+        id: 'monochrome-shonen-manga',
+        label: '黑白少年漫画',
+        prompt:
+          '黑白少年漫画媒介，锐利墨线、协调人物比例、网点与排线塑造明暗、高反差光影、富有张力的单幅电影构图；禁止彩色上色、真人摄影、多格漫画排版和文字气泡',
+      },
+      {
+        id: 'modern-anime-key-visual',
+        label: '现代精致日系动画',
+        prompt:
+          '现代精致二维动画主视觉，干净细线、自然修长人物比例、细腻赛璐璐与柔和渐变上色、通透环境光、电影海报式单幅构图；禁止指定作品角色、低幼比例、三维塑料感和多格排版',
+      },
+      {
+        id: 'hand-painted-watercolor-animation',
+        label: '手绘水彩动画',
+        prompt:
+          '手绘水彩二维动画，柔韧铅笔线、自然人物比例、透明水彩叠色、纸张肌理、柔和散射光和诗意电影构图；禁止厚重油画、硬质赛璐璐、真人摄影和数字塑料感',
+      },
+      {
+        id: 'dunhuang-mural-animation',
+        label: '敦煌壁画动画',
+        prompt:
+          '敦煌壁画式二维动画，古拙描线、东方人物比例、矿物色平涂、赭石青绿与岁月斑驳、平面装饰光影、横向叙事构图；禁止现代服饰、日系赛璐璐、写实摄影和霓虹色',
+      },
+      {
+        id: 'paper-cut-shadow-animation',
+        label: '剪纸皮影动画',
+        prompt:
+          '中国剪纸皮影动画，镂空轮廓与关节化人物、平面侧身比例、红黑金纸张色块、透光幕布质感、层叠侧影构图；禁止写实体积、三维塑料材质、现代摄影光和细碎渐变',
+      },
+      {
+        id: 'chinese-puppet-stop-motion',
+        label: '中国木偶定格',
+        prompt:
+          '中国传统木偶定格动画，手工雕刻线条、木偶人物比例、木材织物与彩绘材质、微缩舞台光、戏剧化景深构图；禁止真人皮肤、光滑 CGI、现代塑料玩具感和材质漂移',
+      },
+      {
+        id: 'origami-animation',
+        label: '折纸动画',
+        prompt:
+          '折纸定格动画，明确纸张折线、几何化人物与物体比例、纯净纸色和纤维纹理、柔和棚拍阴影、层叠微缩场景构图；禁止真人摄影主体、金属塑料材质、复杂毛发和光滑 CGI',
+      },
+      {
+        id: 'comic-minimalism',
+        label: '东方极简漫画',
+        prompt:
+          '东方极简二维漫画，克制流畅线条、简练自然人物比例、少量平涂色块、大面积留白、清晰明暗关系和单幅叙事构图；禁止繁复背景、照片写实、三维渲染、多格排版和文字气泡',
+      },
+      {
+        id: 'ink-paper-cut-animation',
+        label: '水墨剪纸动画',
+        prompt:
+          '水墨与剪纸融合动画，纸刻轮廓、平面东方人物比例、墨色晕染叠加有限朱红、宣纸透光、层次分明的侧影构图；禁止日系赛璐璐、真人摄影、光滑三维和高饱和霓虹',
+      },
+    ],
+  },
+  {
+    label: '游戏动漫',
+    styles: [
+      {
+        id: 'anime-open-world-3d',
+        label: '明亮二次元开放世界',
+        prompt:
+          '明亮二次元三维动画，精致描边、自然修长人物比例、柔和卡通渲染、通透天空与环境光、开阔冒险电影构图；禁止游戏 UI、指定角色、低模、写实皮肤和过曝光晕',
+      },
+      {
+        id: 'dark-chinese-mythology-cg',
+        label: '暗黑东方神话',
+        prompt:
+          '暗黑东方神话动画，苍劲轮廓、可信人物比例、粗粝写实材质、低饱和墨黑与暗金、强体积光和史诗电影构图；禁止欧美盔甲套用、游戏 UI、廉价仙气和卡通低幼感',
+      },
+      {
+        id: 'xianxia-cultivation-animation',
+        label: '修仙国风动画',
+        prompt:
+          '国风修仙动画，利落东方线条、飘逸修长人物比例、细腻动画上色、青绿山水与克制灵气、云雾层次和仙侠电影构图；禁止游戏 UI、欧美魔法阵、廉价光效和现代物件',
+      },
+      {
+        id: 'victorian-mysticism',
+        label: '蒸汽神秘悬疑',
+        prompt:
+          '维多利亚蒸汽神秘动画，精密墨线、写实修长人物比例、铜铁皮革材质、煤烟灰与暗红配色、煤气灯光影和悬疑电影构图；禁止现代科技、明亮糖果色、游戏 UI和低幼造型',
+      },
+      {
+        id: 'creature-collection-animation',
+        label: '萌系生物冒险',
+        prompt:
+          '萌系生物冒险动画，圆润干净线条、可爱但结构清晰的角色比例、鲜明赛璐璐上色、明快自然光和富有探索感的电影构图；禁止指定 IP 角色、游戏 UI、照片写实和恐怖畸形',
+      },
+      {
+        id: 'cozy-pixel-farm',
+        label: '温暖像素田园',
+        prompt:
+          '温暖像素田园动画，清晰像素轮廓、简化协调人物比例、有限暖色调色板、块状光影、温馨生活化场景构图；禁止高清平滑线条、写实摄影、三维材质、游戏 UI 和像素尺寸混乱',
+      },
+      {
+        id: 'pixel-underwater-adventure',
+        label: '像素海洋冒险',
+        prompt:
+          '像素海洋冒险动画，清晰像素轮廓、简化角色比例、蓝绿有限色盘、层叠水下光束和气泡、横向探索电影构图；禁止平滑矢量线、照片写实、三维塑料感、游戏 UI 和像素尺寸混乱',
+      },
+    ],
+  },
+  {
+    label: '韩漫',
+    styles: [
+      {
+        id: 'korean-webtoon-color',
+        label: '韩漫彩色条漫',
+        prompt:
+          '彩色韩漫条漫画风，干净细线、修长自然人物比例、细腻平涂与柔和渐变上色、清透肤色、明确电影光影和单幅竖屏叙事构图；禁止多格排版、文字气泡、真人摄影、三维塑料感和指定作品角色',
+      },
+      {
+        id: 'korean-webtoon-cinematic',
+        label: '韩漫电影感',
+        prompt:
+          '电影感彩色韩漫，精致利落线稿、写实修长人物比例、细腻厚涂与赛璐璐融合上色、冷暖电影光、景深和高完成度单幅构图；禁止多格排版、对白文字、平淡正面站姿和真人摄影',
+      },
+      {
+        id: 'korean-webtoon-romance',
+        label: '韩漫恋爱漫',
+        prompt:
+          '韩漫恋爱题材画风，柔和精细线条、俊美修长人物比例、通透肤色与细腻渐变、柔光和克制高光、强调眼神与距离感的浪漫单幅构图；禁止多格排版、文字气泡、低幼比例和过度粉色滤镜',
+      },
+      {
+        id: 'korean-webtoon-action',
+        label: '韩漫动作漫',
+        prompt:
+          '韩漫动作题材画风，锐利有力线条、健美可信人物比例、高对比赛璐璐上色、强烈明暗切割、动态透视和冲击力单幅电影构图；禁止多格排版、文字拟声、静态站桩、肢体畸形和三维游戏截图感',
+      },
+      {
+        id: 'korean-webtoon-dark',
+        label: '韩漫暗黑漫',
+        prompt:
+          '暗黑悬疑韩漫画风，锐利细密线条、写实修长人物比例、低饱和冷色与局部暗红、深阴影和轮廓光、压迫感单幅电影构图；禁止多格排版、文字气泡、廉价血腥、纯黑丢失细节和真人摄影',
+      },
     ],
   },
   {
@@ -92,23 +235,17 @@ export const VISUAL_STYLES = VISUAL_STYLE_GROUPS.flatMap((group) => group.styles
 export function assetReferenceSearchQuery(
   query: string,
   role: AssetRole,
-  styleId: VisualStyleId,
+  _styleId: VisualStyleId,
 ) {
-  const liveAction = ['cinematic-contrast', 'commercial-bright', 'natural-documentary'].includes(
-    styleId,
-  )
-  const suffix = liveAction
-    ? {
-        character: 'film character costume portrait full body movie still',
-        scene: 'cinematic film still establishing shot wide shot',
-        prop: 'movie prop close up film still',
-      }[role]
-    : {
-        character: 'animation character design full body key visual',
-        scene: 'animation background art establishing shot wide shot',
-        prop: 'animation prop design concept art',
-      }[role]
-  return `${query.trim()} ${suffix}`.trim()
+  const styleTerms = /\b(?:korean\s+webtoon|webtoon|manhwa|manga|anime|animation|animated|illustration|concept\s+art|environment(?:\s+art)?|background\s+art|character\s+(?:design|sheet|turnaround)|prop\s+design|asset\s+reference|game\s+asset\s+reference|key\s+visual|cinematic|stylized|photorealistic|dark|mystery|dramatic|ambient|glow|style|sharp\s+lines?|blue|red|green|cold|warm|neon|moody|suspense|horror|high\s+contrast)\b/gi
+  const base = query.replace(styleTerms, ' ').replace(/\s+/g, ' ').trim()
+  const suffixText = {
+    character: 'film character portrait full body',
+    scene: 'film still wide shot',
+    prop: 'movie prop close up',
+  }[role]
+  const maxQueryLength = Math.max(20, 160 - suffixText.length - 1)
+  return `${base.slice(0, maxQueryLength)} ${suffixText}`.replace(/\s+/g, ' ').trim()
 }
 
 export const SHOT_PACES: ShotPace[] = ['auto', 'slow', 'medium', 'fast']
@@ -148,7 +285,7 @@ export interface StoryboardSegment {
   shotRole: 'hook' | 'development' | 'payoff'
   editTreatment: 'hold' | 'progression' | 'montage'
   playDuration: number
-  generationDuration: 4 | 6 | 8
+  generationDuration: number
   script: string
   timelineType?: 'dialogue' | 'action'
   soundType?: 'onscreen' | 'voiceover' | 'none'
@@ -178,7 +315,28 @@ export interface StoryboardSegment {
   videoVersions?: string[]
   imageStatus?: 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
   videoStatus?: 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
+  editingStatus?: 'pending' | 'running' | 'ready' | 'failed'
+  editingAnalysis?: ShotVideoAnalysisResult
+  editingError?: string
   error?: string
+}
+
+export function videoSoundInstruction(segment: Pick<StoryboardSegment,
+  'index' | 'soundType' | 'speakerId' | 'dialogueText' | 'dialogueEmotion' | 'emotionIntensity' | 'speechRate' | 'pauseEmphasis'
+>) {
+  const soundType = segment.soundType || 'none'
+  if (soundType === 'none') return '声音要求：无对白、无旁白。'
+  const speakerId = String(segment.speakerId || '').trim()
+  const dialogueText = String(segment.dialogueText || '').trim()
+  if (!speakerId || !dialogueText)
+    throw new Error(`第 ${segment.index} 镜缺少${soundType === 'onscreen' ? '画面内对白' : '旁白'}的说话者 ID 或确认原文`)
+  if (soundType === 'voiceover')
+    return `声音要求：后期旁白：“${dialogueText}”；说话者 ${speakerId}；本次视频模型不得生成人声。`
+  return `声音要求：角色 ${speakerId} 自然说出：“${dialogueText}”；情绪 ${segment.dialogueEmotion || '自然'}，强度 ${segment.emotionIntensity || '自然'}，语速 ${segment.speechRate || '自然'}，停顿与重音 ${segment.pauseEmphasis || '自然'}；口型与台词逐字同步。`
+}
+
+export function videoPromptWithSound(segment: StoryboardSegment) {
+  return `${segment.videoPrompt.trim()}\n\n${videoSoundInstruction(segment)}`
 }
 
 export interface StoryboardPlan {
@@ -196,7 +354,7 @@ export interface StoryboardPlan {
   segments: StoryboardSegment[]
 }
 
-export type RevisionTargetType = 'script' | 'voice-plan' | 'asset-prompt' | 'shot' | 'image' | 'video'
+export type RevisionTargetType = 'script' | 'project-director' | 'voice-plan' | 'asset-prompt' | 'shot' | 'image' | 'video'
 
 export interface RevisionProposal {
   targetType: RevisionTargetType
@@ -210,7 +368,9 @@ export interface RevisionProposal {
 
 export function unfinishedSegments(segments: StoryboardSegment[], kind: 'image' | 'video') {
   return segments.filter((segment) =>
-    kind === 'image' ? segment.imageStatus !== 'success' : segment.videoStatus !== 'success',
+    kind === 'image'
+      ? segment.imageStatus !== 'success'
+      : segment.videoStatus !== 'success' || segment.editingStatus !== 'ready',
   )
 }
 
@@ -225,6 +385,76 @@ export function generationDurationFor(playDuration: number): 4 | 6 | 8 {
   if (playDuration <= 6) return 6
   if (playDuration <= 8) return 8
   throw new Error('单镜头播放时长超过 8 秒')
+}
+
+export function grokGenerationDuration(totalPlayDuration: number) {
+  if (!Number.isFinite(totalPlayDuration) || totalPlayDuration <= 0)
+    throw new Error('Grok 序列播放时长必须大于 0 秒')
+  return Math.min(30, Math.max(6, Math.ceil(totalPlayDuration)))
+}
+
+export interface GrokSequence {
+  id: string
+  segments: StoryboardSegment[]
+  generationDuration: number
+  referenceAssetIds: string[]
+}
+
+export interface GrokReferenceAsset {
+  id: string
+  role: AssetRole
+  label: string
+}
+
+export function grokStoryboardBoardInstruction(shotCount: number) {
+  if (!Number.isInteger(shotCount) || shotCount < 1 || shotCount > 9)
+    throw new Error('Grok 组合分镜板只能包含 1 到 9 个镜头')
+  return `请生成一张包含准确 ${shotCount} 幅画面的连续分镜板，严格按上述镜头顺序呈现。版式自行安排，不要固定网格或均分；不得增加、遗漏或重复镜头，不要文字、编号、对白气泡或画外拼贴。`
+}
+
+export function grokReferenceGuide(assets: GrokReferenceAsset[], storyboardFirst: boolean) {
+  if (assets.length > 6) throw new Error('Grok 组合最多引用 6 个资产')
+  const purpose: Record<AssetRole, string> = {
+    character: '锁定角色身份、脸部、发型和服装',
+    scene: '锁定场景空间、陈设、光线和色彩',
+    prop: '锁定道具外观、材质和关键细节',
+  }
+  const role: Record<AssetRole, string> = { character: '角色', scene: '场景', prop: '道具' }
+  const lines = ['参考图使用规则：']
+  if (storyboardFirst)
+    lines.push('参考图1：组合分镜板，只参考镜头顺序、构图、景别、机位和动作。')
+  assets.forEach((asset, index) => {
+    lines.push(`参考图${index + (storyboardFirst ? 2 : 1)}：${role[asset.role]}“${asset.label}”（${asset.id}），${purpose[asset.role]}。`)
+  })
+  lines.push(storyboardFirst
+    ? '分镜板只决定怎么拍；角色、场景和道具必须以对应资产参考图为准。'
+    : '以上资产参考图只锁定是谁、在哪里和是什么；镜头顺序和拍法以分镜提示词为准。')
+  return lines.join('\n')
+}
+
+export function buildGrokSequences(segments: StoryboardSegment[]): GrokSequence[] {
+  const sequences: GrokSequence[] = []
+  let current: StoryboardSegment[] = []
+  let refs = new Set<string>()
+  let duration = 0
+  const flush = () => {
+    if (!current.length) return
+    const id = `grok-sequence-${current[0].index}`
+    sequences.push({ id, segments: current, generationDuration: grokGenerationDuration(duration), referenceAssetIds: [...refs].slice(0, 6) })
+    current = []
+    refs = new Set()
+    duration = 0
+  }
+  for (const segment of segments) {
+    const nextRefs = new Set([...refs, ...segment.referenceAssetIds])
+    const nextDuration = duration + segment.playDuration
+    if (current.length && (nextDuration > 30 || nextRefs.size > 6 || current.length >= 9)) flush()
+    current.push(segment)
+    refs = new Set([...refs, ...segment.referenceAssetIds])
+    duration += segment.playDuration
+  }
+  flush()
+  return sequences
 }
 
 function narrationText(value: string) {
@@ -354,7 +584,11 @@ export function parseStoryboardPlan(
   selectedPace: ShotPace,
 ): StoryboardPlan {
   const segments = Array.isArray(value?.segments) ? value.segments : []
-  const resolvedPace = String(value?.resolvedPace || '') as ResolvedShotPace
+  const averageShotDuration = segments.length
+    ? segments.reduce((sum: number, segment: any) => sum + Number(segment?.playDuration || 0), 0) / segments.length
+    : 0
+  const inferredPace: ResolvedShotPace = averageShotDuration <= 3.25 ? 'fast' : averageShotDuration <= 5.75 ? 'medium' : 'slow'
+  const resolvedPace = String(value?.resolvedPace || (selectedPace === 'auto' ? inferredPace : '')) as ResolvedShotPace
   if (!['slow', 'medium', 'fast'].includes(resolvedPace)) {
     throw new Error('分镜方案缺少有效的最终镜头节奏')
   }
@@ -400,6 +634,14 @@ export function parseStoryboardPlan(
       ) {
         throw new Error(`第 ${offset + 1} 段必须是无切镜的单一连续镜头`)
       }
+      const soundType = ['onscreen', 'voiceover', 'none'].includes(segment?.soundType)
+        ? segment.soundType as StoryboardSegment['soundType']
+        : segment?.timelineType === 'dialogue'
+          ? segment?.lipSyncRequired ? 'onscreen' : 'voiceover'
+          : 'none'
+      const speakerId = String(segment?.speakerId || '').trim() || undefined
+      const dialogueText = String(segment?.dialogueText || '').trim()
+      videoSoundInstruction({ index: offset + 1, soundType, speakerId, dialogueText })
       return {
         index: offset + 1,
         storyBeat: String(segment?.storyBeat || script).trim(),
@@ -409,14 +651,10 @@ export function parseStoryboardPlan(
         generationDuration: generationDuration as 4 | 6 | 8,
         script,
         timelineType: segment?.soundType === 'none' || segment?.timelineType !== 'dialogue' ? 'action' : 'dialogue',
-        soundType: ['onscreen', 'voiceover', 'none'].includes(segment?.soundType)
-          ? segment.soundType
-          : segment?.timelineType === 'dialogue'
-            ? segment?.lipSyncRequired ? 'onscreen' : 'voiceover'
-            : 'none',
-        speakerId: String(segment?.speakerId || '').trim() || undefined,
+        soundType,
+        speakerId,
         dialogueCharacter: String(segment?.dialogueCharacter || '无').trim(),
-        dialogueText: String(segment?.dialogueText || '').trim(),
+        dialogueText,
         dialogueEmotion: String(segment?.dialogueEmotion || '无').trim(),
         emotionIntensity: String(segment?.emotionIntensity || '无').trim(),
         speechRate: String(segment?.speechRate || '无').trim(),
@@ -442,6 +680,7 @@ export function parseStoryboardPlan(
         videoVersions: Array.isArray(segment?.videoVersions) ? segment.videoVersions : [],
         imageStatus: 'pending',
         videoStatus: 'pending',
+        editingStatus: 'pending',
       }
     },
   )

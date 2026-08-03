@@ -39,6 +39,21 @@
           >
         </div>
       </div>
+      <div v-else-if="mediaStore.workflowStep === 'voice'" class="voice-controls">
+        <strong>原声处理</strong>
+        <v-btn-toggle
+          :model-value="mediaStore.audioMode"
+          mandatory
+          density="compact"
+          color="primary"
+          @update:model-value="mediaStore.setAudioMode($event)"
+        >
+          <v-btn value="keep-original" size="small">保留原声</v-btn>
+          <v-btn value="replace-preserve-ambience" size="small">配音 + 环境声</v-btn>
+          <v-btn value="replace-all" size="small">仅配音</v-btn>
+        </v-btn-toggle>
+        <small>{{ voiceRouteDescription }}</small>
+      </div>
       <div v-else class="operation-empty" />
       <div v-if="mediaStore.error" class="text-error text-body-2">{{ displayError }}</div>
     </div>
@@ -48,7 +63,8 @@
         color="primary"
         prepend-icon="mdi-text-box-edit-outline"
         :loading="mediaStore.busyAction === 'asset-prompts'"
-        :disabled="Boolean(mediaStore.busyAction)"
+        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured || !mediaStore.projectDirectorPlan || Boolean(mediaStore.projectDirectorDraft) || mediaStore.assetPlanningComplete"
+        :title="!mediaStore.projectDirectorPlan || mediaStore.projectDirectorDraft ? '请先确认项目总监方案' : undefined"
         @click="$emit('prepareAssets')"
         >生成资产设计 JSON</v-btn
       >
@@ -63,16 +79,18 @@
       <v-btn
         color="primary"
         prepend-icon="mdi-image-multiple-outline"
-        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.referenceAssets.some((asset) => asset.design)"
+        :loading="mediaStore.busyAction === 'assets'"
+        :disabled="Boolean(mediaStore.busyAction) || !pendingAssets.length"
         @click="$emit('generateAssets')"
         >生成资产图</v-btn
       >
       <v-btn
         color="primary"
-        prepend-icon="mdi-arrow-right-circle-outline"
-        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.allRequiredAssetsApproved"
-        @click="mediaStore.selectStep('shots')"
-        >进入分镜</v-btn
+        prepend-icon="mdi-movie-edit-outline"
+        :loading="mediaStore.busyAction === 'shot-plan'"
+        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured || !mediaStore.allRequiredAssetsApproved"
+        @click="$emit('generateShotPlan')"
+        >转分镜</v-btn
       >
     </div>
     <div v-else class="action-bar">
@@ -109,21 +127,22 @@
 import { computed, ref } from 'vue'
 import { useMediaTaskStore } from '@/store'
 import type { WorkspaceView } from '@/store/mediaTask'
-import { unfinishedSegments, type RevisionTargetType } from '@/runtime/videoWorkflow'
+import { buildGrokSequences, unfinishedSegments, type RevisionTargetType } from '@/runtime/videoWorkflow'
 import { assetVersionMatches } from '@/runtime/storyboardMarkdown'
 
 const emit = defineEmits([
   'generateScript',
   'approveScript',
+  'generateProjectDirector',
+  'confirmProjectDirector',
   'editScriptMode',
-  'generateVoicePlan',
-  'generateVoice',
   'generateShotPlan',
   'prepareAssets',
   'searchAssets',
   'generateAssets',
   'generateStoryboards',
   'generateVideos',
+  'generateVoice',
   'compose',
   'cancel',
   'retryImage',
@@ -143,8 +162,6 @@ const selectedReferenceAsset = computed(() =>
 const selectedAsset = computed(() => {
   const id = mediaStore.selectedAssetId
   if (!id) return null
-  if (id === 'voice')
-    return { kind: 'audio', title: '统一配音', path: mediaStore.voicePath, status: '已完成' }
   if (mediaStore.coreReference?.id === id)
     return {
       kind: 'image',
@@ -161,17 +178,28 @@ const selectedAsset = computed(() => {
     kind: match[1],
     title: `${image ? '分镜图' : '视频'} ${segment.index}`,
     path: image ? segment.imagePath : segment.videoPath,
-    status: image ? segment.imageStatus : segment.videoStatus,
-    error: segment.error,
+    status: image
+      ? segment.imageStatus
+      : segment.videoStatus === 'success'
+        ? segment.editingStatus === 'ready'
+          ? 'success'
+          : segment.editingStatus === 'running'
+            ? 'running'
+            : segment.editingStatus === 'failed'
+              ? 'failed'
+              : 'pending'
+        : segment.videoStatus,
+    error: image ? segment.error : segment.editingError || segment.error,
+    editingFailed: !image && segment.videoStatus === 'success' && segment.editingStatus === 'failed',
     index: segment.index,
   }
 })
 const revisionTarget = computed<{ type: RevisionTargetType; id: string } | null>(() => {
+  if (mediaStore.workspaceView === 'director' && (mediaStore.projectDirectorDraft || mediaStore.projectDirectorPlan))
+    return { type: 'project-director', id: 'project-director' }
   if (mediaStore.workflowStep === 'script') {
     if (mediaStore.script) return { type: 'script', id: 'script' }
   }
-  if (mediaStore.workflowStep === 'voice' && mediaStore.voicePlan)
-    return { type: 'voice-plan', id: 'voice-plan' }
   if (mediaStore.workflowStep === 'assets' && selectedReferenceAsset.value)
     return { type: 'asset-prompt', id: selectedReferenceAsset.value.id }
   if (mediaStore.workflowStep === 'shots' && selectedShot.value)
@@ -183,9 +211,29 @@ const revisionTarget = computed<{ type: RevisionTargetType; id: string } | null>
     }
   return null
 })
-const imagePending = computed(() => unfinishedSegments(mediaStore.segments, 'image'))
-const videoPending = computed(() => unfinishedSegments(mediaStore.segments, 'video'))
+const pendingAssets = computed(() =>
+  mediaStore.referenceAssets.filter(
+    (asset) => asset.design && !asset.versions.some((version) => assetVersionMatches(asset, version)),
+  ),
+)
+const grokSequences = computed(() =>
+  mediaStore.videoModel === 'rh-grok-image-video' ? buildGrokSequences(mediaStore.segments) : [],
+)
+const imagePending = computed(() =>
+  mediaStore.videoModel === 'rh-grok-image-video'
+    ? grokSequences.value.filter((sequence) => sequence.segments[0].imageStatus !== 'success').map((sequence) => sequence.segments[0])
+    : unfinishedSegments(mediaStore.segments, 'image'),
+)
+const videoPending = computed(() =>
+  mediaStore.videoModel === 'rh-grok-image-video'
+    ? grokSequences.value
+        .filter((sequence) => sequence.segments[0].videoStatus !== 'success' || sequence.segments.some((segment) => segment.editingStatus !== 'ready'))
+        .map((sequence) => sequence.segments[0])
+    : unfinishedSegments(mediaStore.segments, 'video'),
+)
 const secondaryAction = computed(() => {
+  if (mediaStore.workspaceView === 'director' && mediaStore.projectDirectorDraft)
+    return { key: 'regenerate-director', label: '重新生成', icon: 'mdi-refresh' }
   if (
     mediaStore.workflowStep === 'images' &&
     selectedAsset.value?.index &&
@@ -197,22 +245,30 @@ const secondaryAction = computed(() => {
     selectedAsset.value?.index &&
     selectedAsset.value.status === 'failed'
   )
-    return { key: 'retry-video', label: '重新生成本镜', icon: 'mdi-refresh' }
+    return {
+      key: 'retry-video',
+      label: selectedAsset.value.editingFailed ? '重试剪辑分析' : '重新生成本镜',
+      icon: 'mdi-refresh',
+    }
   if (mediaStore.workflowStep === 'final' && mediaStore.finalPath)
     return { key: 'export', label: '导出成片', icon: 'mdi-export-variant' }
   return null
 })
 const primaryAction = computed(() => {
   const idle = !mediaStore.busyAction
+  if (mediaStore.workspaceView === 'director') {
+    if (mediaStore.projectDirectorDraft)
+      return { key: 'confirm-director', label: '确认项目总监方案', icon: 'mdi-check-circle-outline', enabled: idle }
+    if (!mediaStore.projectDirectorPlan)
+      return { key: 'project-director', label: '生成项目总监方案', icon: 'mdi-account-tie-outline', enabled: idle && mediaStore.apiConfigured && Boolean(mediaStore.approvedScript) }
+    return { key: 'asset-prompts', label: '生成资产设计 JSON', icon: 'mdi-text-box-edit-outline', enabled: idle && mediaStore.apiConfigured }
+  }
   if (mediaStore.workflowStep === 'script') {
     if (!mediaStore.script)
       return { key: 'script', label: '生成文稿', icon: 'mdi-auto-fix', enabled: idle && mediaStore.apiConfigured && Boolean(mediaStore.request.trim()) }
-    return { key: 'approve', label: '确认并进入配音', icon: 'mdi-arrow-right-circle-outline', enabled: idle && Boolean(mediaStore.script.trim()) }
-  }
-  if (mediaStore.workflowStep === 'voice') {
-    if (!mediaStore.voicePlan)
-      return { key: 'voice-plan', label: '生成声音方案', icon: 'mdi-account-voice', enabled: idle && mediaStore.apiConfigured }
-    return { key: 'next-assets', label: '进入资产', icon: 'mdi-arrow-right-circle-outline', enabled: idle }
+    if (!mediaStore.approvedScript)
+      return { key: 'approve', label: '确认并进入项目总监', icon: 'mdi-arrow-right-circle-outline', enabled: idle && Boolean(mediaStore.script.trim()) }
+    return { key: 'next-director', label: '进入项目总监', icon: 'mdi-arrow-right-circle-outline', enabled: idle }
   }
   if (!mediaStore.script)
     return {
@@ -228,6 +284,15 @@ const primaryAction = computed(() => {
       icon: 'mdi-check-circle-outline',
       enabled: idle && Boolean(mediaStore.script.trim()),
     }
+  if (mediaStore.workflowStep === 'voice') {
+    if (!mediaStore.pictureMasterPath)
+      return { key: 'compose', label: '生成画面母版', icon: 'mdi-movie-open-plus', enabled: idle && mediaStore.allVideosReady }
+    if (!mediaStore.voiceReady)
+      return { key: 'generate-voice', label: '生成本集配音', icon: 'mdi-microphone-plus', enabled: idle }
+    if (!mediaStore.finalPath)
+      return { key: 'compose', label: '生成最终成片', icon: 'mdi-movie-open-plus', enabled: idle }
+    return { key: 'open', label: '打开成片', icon: 'mdi-folder-open-outline', enabled: idle }
+  }
   if (mediaStore.workflowStep === 'assets') {
     if (!mediaStore.assetPlanningComplete)
       return {
@@ -236,14 +301,10 @@ const primaryAction = computed(() => {
         icon: 'mdi-text-box-edit-outline',
         enabled: idle && mediaStore.apiConfigured,
       }
-    const pendingAssets = mediaStore.referenceAssets.filter(
-      (asset) =>
-        !asset.versions.some((version) => assetVersionMatches(asset, version)),
-    )
-    if (pendingAssets.length)
+    if (pendingAssets.value.length)
       return {
         key: 'assets',
-        label: `生成 ${pendingAssets.length} 张资产图`,
+        label: `生成 ${pendingAssets.value.length} 张资产图`,
         icon: 'mdi-image-multiple-outline',
         enabled: idle && mediaStore.apiConfigured,
       }
@@ -260,20 +321,6 @@ const primaryAction = computed(() => {
           : '转分镜',
       icon: 'mdi-movie-edit-outline',
       enabled: idle && mediaStore.apiConfigured && mediaStore.assetPlanningComplete && mediaStore.allRequiredAssetsApproved,
-    }
-  if (!mediaStore.voicePlan)
-    return {
-      key: 'voice-plan',
-      label: '生成声音方案',
-      icon: 'mdi-account-voice',
-      enabled: idle && mediaStore.apiConfigured,
-    }
-  if (!mediaStore.voicePath)
-    return {
-      key: 'voice',
-      label: '生成配音',
-      icon: 'mdi-waveform',
-      enabled: idle && (mediaStore.voiceEngine === 'local' || mediaStore.apiConfigured),
     }
   if (imagePending.value.length)
     return {
@@ -292,20 +339,20 @@ const primaryAction = computed(() => {
   if (!mediaStore.finalPath)
     return {
       key: 'compose',
-      label: '合成视频',
+      label: mediaStore.pictureMasterPath ? '合成视频' : '生成画面母版',
       icon: 'mdi-movie-open-plus',
-      enabled: idle && Boolean(mediaStore.voicePath),
+      enabled: idle && mediaStore.allVideosReady,
     }
   return { key: 'open', label: '打开成片', icon: 'mdi-folder-open-outline', enabled: idle }
 })
 const canStop = computed(() =>
   [
-    'voice-plan',
-    'voice',
     'shot-plan',
     'asset-prompts',
+    'project-director',
     'compose',
     'resume',
+    'voice',
   ].includes(mediaStore.busyAction),
 )
 const displayError = computed(() =>
@@ -325,14 +372,6 @@ const stages = computed(
         done: Boolean(mediaStore.approvedScript),
         enabled: true,
         current: mediaStore.workflowStep === 'script',
-      },
-      {
-        key: 'voice',
-        label: '配音',
-        view: 'script',
-        done: Boolean(mediaStore.voicePath),
-        enabled: Boolean(mediaStore.approvedScript),
-        current: mediaStore.workflowStep === 'voice',
       },
       {
         key: 'assets',
@@ -355,7 +394,7 @@ const stages = computed(
         label: '分镜图',
         view: 'media',
         done: mediaStore.allImagesReady,
-        enabled: Boolean(mediaStore.voicePath) && mediaStore.allRequiredAssetsApproved,
+        enabled: mediaStore.allRequiredAssetsApproved,
         current: mediaStore.workflowStep === 'images',
       },
       {
@@ -367,11 +406,19 @@ const stages = computed(
         current: mediaStore.workflowStep === 'videos',
       },
       {
+        key: 'voice',
+        label: '配音',
+        view: 'final',
+        done: mediaStore.voiceReady,
+        enabled: mediaStore.allVideosReady,
+        current: mediaStore.workflowStep === 'voice',
+      },
+      {
         key: 'final',
         label: '成片',
         view: 'final',
         done: Boolean(mediaStore.finalPath),
-        enabled: mediaStore.allVideosReady,
+        enabled: mediaStore.allVideosReady && mediaStore.voiceReady,
         current: mediaStore.workflowStep === 'final',
       },
     ] as {
@@ -393,7 +440,17 @@ function sendRevision() {
   )
   revisionInstruction.value = ''
 }
+const voiceRouteDescription = computed(() => {
+  if (!mediaStore.hasSoundSegments) return '本集没有对白或旁白，将直接跳过配音。'
+  if (mediaStore.audioMode === 'keep-original') return '保留剪辑后的原视频声音，不生成正式配音。'
+  if (mediaStore.voiceSource === 'design') return '设计声音只适用于单一旁白；角色对白请切换克隆音色包。'
+  return '按每镜说话者和情绪使用已绑定的 IndexTTS2 音色包。'
+})
 function runPrimary() {
+  if (primaryAction.value.key === 'next-director') {
+    mediaStore.selectView('director')
+    return
+  }
   if (primaryAction.value.key === 'next-assets') {
     mediaStore.selectStep('assets')
     return
@@ -401,20 +458,22 @@ function runPrimary() {
   const event = {
     script: 'generateScript',
     approve: 'approveScript',
-    'voice-plan': 'generateVoicePlan',
-    voice: 'generateVoice',
+    'project-director': 'generateProjectDirector',
+    'confirm-director': 'confirmProjectDirector',
     'shot-plan': 'generateShotPlan',
     'asset-prompts': 'prepareAssets',
     assets: 'generateAssets',
     storyboards: 'generateStoryboards',
     videos: 'generateVideos',
+    'generate-voice': 'generateVoice',
     compose: 'compose',
     open: 'openFinal',
   }[primaryAction.value.key]
   if (event) emit(event as any)
 }
 function runSecondary() {
-  if (secondaryAction.value?.key === 'retry-image') emit('retryImage', selectedAsset.value!.index)
+  if (secondaryAction.value?.key === 'regenerate-director') emit('generateProjectDirector')
+  else if (secondaryAction.value?.key === 'retry-image') emit('retryImage', selectedAsset.value!.index)
   else if (secondaryAction.value?.key === 'retry-video') emit('retryVideo', selectedAsset.value!.index)
   else if (secondaryAction.value?.key === 'export') emit('exportFinal')
 }
@@ -487,6 +546,10 @@ function runSecondary() {
   padding: 0 10px 10px;
 }
 .operation-empty { flex: 1; }
+.voice-controls { display: grid; gap: 10px; align-content: start; }
+.voice-controls .v-btn-toggle { display: grid; grid-template-columns: 1fr; height: auto; }
+.voice-controls .v-btn { justify-content: flex-start; }
+.voice-controls small { color: rgba(0,0,0,.58); line-height: 1.6; }
 .action-bar {
   flex: none;
   display: flex;

@@ -41,6 +41,42 @@ test('persists managed media as paths relative to its run', () => {
   assert.equal(persisted.history[0].finalPath, 'final.mp4')
 })
 
+test('persists the project director gate and restores its center view', () => {
+  const projectDirectorPlan = {
+    project: { title: '项目', aspectRatio: '9:16', visualStyle: '电影感' },
+    direction: { director: '导演' },
+    assets: [{ id: 'asset-character-1', role: 'character', label: '主角' }],
+    completeness: { narrativeSubjectRequired: true, noCharacterReason: '', warnings: [] },
+  }
+  const state = deserializeMediaTask(serializeMediaTask({
+    projectDirectorDraft: null,
+    projectDirectorPlan,
+    workspaceView: 'director',
+  }))
+  assert.deepEqual(state.projectDirectorPlan, projectDirectorPlan)
+  assert.equal(state.projectDirectorDraft, null)
+  assert.equal(state.workspaceView, 'director')
+})
+
+test('drops assets and shot bindings without a project director identity', () => {
+  const state = deserializeMediaTask(JSON.stringify({
+    projectDirectorPlan: {
+      assets: [
+        { id: 'asset-scene', role: 'scene', label: '工作室' },
+        { id: 'asset-character', role: 'character', label: '创作者' },
+      ],
+    },
+    referenceAssets: [
+      { id: 'stale-asset', role: 'prop', versions: [] },
+      { id: 'asset-character', role: 'character', versions: [] },
+      { id: 'asset-scene', role: 'scene', versions: [] },
+    ],
+    segments: [{ index: 1, referenceAssetIds: ['asset-character', 'stale-asset'] }],
+  }))
+  assert.deepEqual(state.referenceAssets.map((asset: any) => asset.id), ['asset-scene', 'asset-character'])
+  assert.deepEqual(state.segments[0].referenceAssetIds, ['asset-character'])
+})
+
 test('migrates legacy segment durations without losing generated media', () => {
   const state = deserializeMediaTask(
     JSON.stringify({
@@ -55,11 +91,26 @@ test('migrates legacy segment durations without losing generated media', () => {
   assert.equal(state.shotPace, 'auto')
   assert.equal(state.resolvedPace, null)
   assert.equal(state.voiceEngine, 'cloud')
+  assert.equal(state.voiceSource, 'clone')
+  assert.equal(state.audioMode, 'replace-all')
   assert.equal(state.workspaceView, 'script')
   assert.equal(state.mediaFilter, 'all')
   assert.equal(state.finalShotCount, 1)
   assert.deepEqual(state.segments[0].referenceAssetIds, [])
   assert.equal(state.segments[0].storyBeat, '历史镜头')
+})
+
+test('repairs Grok sequence durations that leaked into base shots', () => {
+  const state = deserializeMediaTask(JSON.stringify({
+    videoModel: 'rh-grok-image-video',
+    segments: [
+      { index: 1, playDuration: 2.5, generationDuration: 15, grokSequenceId: 'grok-sequence-1', grokSequenceLeader: true },
+      { index: 2, playDuration: 2.5, generationDuration: 15, grokSequenceId: 'grok-sequence-1', grokSequenceLeader: false },
+    ],
+  }))
+  assert.deepEqual(state.segments.map((segment: any) => segment.generationDuration), [4, 4])
+  assert.equal('grokSequenceId' in state.segments[0], false)
+  assert.equal('grokSequenceLeader' in state.segments[0], false)
 })
 
 test('hides obsolete core references without deleting their source file', () => {

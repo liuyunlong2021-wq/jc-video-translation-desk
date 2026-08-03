@@ -5,6 +5,8 @@ import type {
   AssetRole,
   ImportedMarkdown,
   PendingCloudTask,
+  ProjectDirectorDraft,
+  ProjectDirectorPlan,
   ReferenceAsset,
   ResolvedShotPace,
   ShotPace,
@@ -13,12 +15,15 @@ import type {
   VideoModel,
   VideoRatio,
   VoiceEngine,
+  VoiceSource,
+  AudioMode,
   VisualStyleId,
 } from '~/electron/types'
-import type {
-  RevisionProposal,
-  StoryboardSegment,
-  VoiceDesignDraft,
+import {
+  buildGrokSequences,
+  type RevisionProposal,
+  type StoryboardSegment,
+  type VoiceDesignDraft,
 } from '../runtime/videoWorkflow.ts'
 import { deserializeMediaTask, serializeMediaTask } from '../runtime/mediaPersistence.ts'
 
@@ -34,9 +39,10 @@ export type WorkflowStage =
   | 'videos-ready'
   | 'completed'
 
-export type WorkspaceView = 'script' | 'assets' | 'storyboard' | 'media' | 'final'
+export type WorkspaceView = 'script' | 'director' | 'assets' | 'storyboard' | 'media' | 'final'
 export type MediaFilter = 'all' | 'references' | 'audio' | 'storyboards' | 'videos'
 export type WorkflowStep = 'script' | 'voice' | 'assets' | 'shots' | 'images' | 'videos' | 'final'
+export type { VoiceSource, AudioMode } from '~/electron/types'
 
 export interface MediaRunSnapshot {
   request: string
@@ -44,6 +50,8 @@ export interface MediaRunSnapshot {
   script: string
   approvedScript: string
   scriptHash: string
+  projectDirectorDraft: ProjectDirectorDraft | null
+  projectDirectorPlan: ProjectDirectorPlan | null
   ratio: VideoRatio
   targetDuration: TargetDuration
   textModel: TextModel
@@ -58,6 +66,8 @@ export interface MediaRunSnapshot {
   stage: WorkflowStage
   voicePlan: VoiceDesignDraft | null
   voiceEngine: VoiceEngine
+  voiceSource: VoiceSource
+  audioMode: AudioMode
   voicePath: string
   voiceDuration: number
   creativeIdentity: string
@@ -69,6 +79,7 @@ export interface MediaRunSnapshot {
   shotCountRationale: string
   visualAnchor: string
   segments: StoryboardSegment[]
+  pictureMasterPath: string
   finalPath: string
 }
 
@@ -80,6 +91,8 @@ export const useMediaTaskStore = defineStore(
     const script = ref('')
     const approvedScript = ref('')
     const scriptHash = ref('')
+    const projectDirectorDraft = ref<ProjectDirectorDraft | null>(null)
+    const projectDirectorPlan = ref<ProjectDirectorPlan | null>(null)
     const ratio = ref<VideoRatio>('9:16')
     const targetDuration = ref<TargetDuration>(15)
     const textModel = ref<TextModel>('gemini-3.6-flash')
@@ -94,6 +107,8 @@ export const useMediaTaskStore = defineStore(
     const stage = ref<WorkflowStage>('draft')
     const voicePlan = ref<VoiceDesignDraft | null>(null)
     const voiceEngine = ref<VoiceEngine>('cloud')
+    const voiceSource = ref<VoiceSource>('clone')
+    const audioMode = ref<AudioMode>('replace-all')
     const voicePath = ref('')
     const voiceDuration = ref(0)
     const creativeIdentity = ref('')
@@ -105,6 +120,7 @@ export const useMediaTaskStore = defineStore(
     const shotCountRationale = ref('')
     const visualAnchor = ref('')
     const segments = ref<StoryboardSegment[]>([])
+    const pictureMasterPath = ref('')
     const finalPath = ref('')
     const busyAction = ref('')
     const cancelRequested = ref(false)
@@ -120,7 +136,7 @@ export const useMediaTaskStore = defineStore(
     const scriptEditing = ref(false)
     const revisionProposal = ref<RevisionProposal | null>(null)
     const revisionUndo = ref<{
-      targetType: 'script' | 'voice-plan' | 'asset-prompt' | 'shot'
+      targetType: 'script' | 'project-director' | 'voice-plan' | 'asset-prompt' | 'shot'
       value: any
     } | null>(
       null,
@@ -132,7 +148,10 @@ export const useMediaTaskStore = defineStore(
     )
     const allVideosReady = computed(
       () =>
-        segments.value.length > 0 && segments.value.every((item) => item.videoStatus === 'success'),
+        segments.value.length > 0 &&
+        segments.value.every(
+          (item) => item.videoStatus === 'success' && item.editingStatus === 'ready',
+        ),
     )
     const allRequiredAssetsApproved = computed(() =>
       referenceAssets.value
@@ -141,18 +160,37 @@ export const useMediaTaskStore = defineStore(
     )
     const assetPlanningComplete = computed(
       () =>
-        (assetPlanCompletedRoles.value.includes('character') &&
+        Boolean(projectDirectorPlan.value) && !projectDirectorDraft.value &&
+        ((assetPlanCompletedRoles.value.includes('character') &&
           assetPlanCompletedRoles.value.includes('scene') &&
           assetPlanCompletedRoles.value.includes('prop')) ||
-        (referenceAssets.value.length > 0 && referenceAssets.value.every((asset) => Boolean(asset.design))),
+          (referenceAssets.value.length > 0 && referenceAssets.value.every((asset) => Boolean(asset.design)))),
+    )
+    const requiredSpeakerIds = computed(() => [
+      ...new Set(
+        segments.value
+          .filter((segment) => segment.soundType && segment.soundType !== 'none')
+          .map((segment) => segment.speakerId || '')
+          .filter(Boolean),
+      ),
+    ])
+    const hasSoundSegments = computed(() =>
+      segments.value.some((segment) => segment.soundType && segment.soundType !== 'none'),
+    )
+    const voiceReady = computed(
+      () => segments.value.length > 0 && (!hasSoundSegments.value || audioMode.value === 'keep-original' || Boolean(voicePath.value)),
     )
 
     function invalidateFrom(level: 'script' | 'voice' | 'images' | 'videos') {
+      pictureMasterPath.value = ''
       finalPath.value = ''
       if (level === 'videos') return
       segments.value.forEach((segment) => {
         segment.videoPath = ''
         segment.videoStatus = segment.imagePath ? 'pending' : undefined
+        segment.editingStatus = 'pending'
+        segment.editingAnalysis = undefined
+        segment.editingError = ''
       })
       if (level === 'images') return
       visualAnchor.value = ''
@@ -166,6 +204,8 @@ export const useMediaTaskStore = defineStore(
       resolvedPace.value = null
       segments.value = []
       if (level === 'voice') return
+      projectDirectorDraft.value = null
+      projectDirectorPlan.value = null
       referenceAssets.value = []
       assetPlanCompletedRoles.value = []
       voicePlan.value = null
@@ -174,6 +214,7 @@ export const useMediaTaskStore = defineStore(
     }
 
     function invalidateVisuals() {
+      pictureMasterPath.value = ''
       finalPath.value = ''
       visualAnchor.value = ''
       creativeIdentity.value = ''
@@ -185,6 +226,8 @@ export const useMediaTaskStore = defineStore(
       shotCountRationale.value = ''
       resolvedPace.value = null
       segments.value = []
+      projectDirectorDraft.value = null
+      projectDirectorPlan.value = null
       referenceAssets.value = []
       assetPlanCompletedRoles.value = []
     }
@@ -198,9 +241,18 @@ export const useMediaTaskStore = defineStore(
       stage.value = 'voice-plan-ready'
     }
 
+    function confirmProjectDirector(plan: ProjectDirectorPlan, assets: ReferenceAsset[]) {
+      invalidateFrom('script')
+      projectDirectorDraft.value = null
+      projectDirectorPlan.value = plan
+      referenceAssets.value = assets
+      stage.value = 'script-approved'
+    }
+
     function setVisualAnchor(value: string) {
       if (visualAnchor.value === value) return
       visualAnchor.value = value
+      pictureMasterPath.value = ''
       finalPath.value = ''
       segments.value.forEach((segment) => {
         segment.imagePath = ''
@@ -220,47 +272,54 @@ export const useMediaTaskStore = defineStore(
       const segment = segments.value.find((item) => item.index === index)
       if (!segment || segment[field] === value) return
       segment[field] = value
-      finalPath.value = ''
-      if (field === 'storyboardImagePrompt') {
-        segment.imagePath = ''
-        segment.imageStatus = 'pending'
-      }
-      segment.videoPath = ''
-      segment.videoStatus = 'pending'
-      segment.error = ''
-      stage.value =
-        field === 'videoPrompt' && allImagesReady.value ? 'storyboards-ready' : 'shot-plan-ready'
+      invalidateShot(index, field === 'storyboardImagePrompt' ? 'image' : 'video')
     }
 
     function selectView(view: WorkspaceView) {
       workspaceView.value = view
       if (view === 'storyboard') workflowStep.value = 'shots'
+      else if (view === 'director') workflowStep.value = 'assets'
       else if (view === 'assets') workflowStep.value = 'assets'
       else if (view === 'final') workflowStep.value = 'final'
       else if (view === 'media' && workflowStep.value !== 'images' && workflowStep.value !== 'videos')
         workflowStep.value = mediaFilter.value === 'videos' ? 'videos' : 'images'
-      else if (view === 'script' && workflowStep.value !== 'script' && workflowStep.value !== 'voice')
-        workflowStep.value = approvedScript.value ? 'voice' : 'script'
+      else if (view === 'script' && workflowStep.value !== 'script') workflowStep.value = 'script'
       if (view !== 'storyboard') selectedShotIndex.value = undefined
       if (view !== 'media' && view !== 'assets') selectedAssetId.value = undefined
       revisionProposal.value = null
     }
 
     function selectStep(step: WorkflowStep) {
-      workflowStep.value = step
       selectView(
-        step === 'script' || step === 'voice'
+        step === 'script'
           ? 'script'
+          : step === 'voice'
+            ? 'final'
           : step === 'shots'
             ? 'storyboard'
             : step === 'assets'
-              ? 'assets'
+              ? projectDirectorPlan.value && !projectDirectorDraft.value ? 'assets' : 'director'
               : step === 'images' || step === 'videos'
                 ? 'media'
                 : 'final',
       )
+      workflowStep.value = step
       if (step === 'images') mediaFilter.value = 'storyboards'
       if (step === 'videos') mediaFilter.value = 'videos'
+    }
+
+    function setVoiceSource(value: VoiceSource) {
+      if (voiceSource.value === value) return
+      voiceSource.value = value
+      voicePath.value = ''
+      voiceDuration.value = 0
+      finalPath.value = ''
+    }
+
+    function setAudioMode(value: AudioMode) {
+      if (audioMode.value === value) return
+      audioMode.value = value
+      finalPath.value = ''
     }
 
     function selectShot(index?: number) {
@@ -283,14 +342,24 @@ export const useMediaTaskStore = defineStore(
     function invalidateShot(index: number, from: 'image' | 'video') {
       const segment = segments.value.find((item) => item.index === index)
       if (!segment) return
+      pictureMasterPath.value = ''
       finalPath.value = ''
-      if (from === 'image') {
-        segment.imagePath = ''
-        segment.imageStatus = 'pending'
-      }
-      segment.videoPath = ''
-      segment.videoStatus = 'pending'
-      segment.error = ''
+      const sequence = videoModel.value === 'rh-grok-image-video'
+        ? buildGrokSequences(segments.value).find((item) => item.segments.includes(segment))
+        : undefined
+      const targets = sequence?.segments || [segment]
+      targets.forEach((item) => {
+        if (from === 'image') {
+          item.imagePath = ''
+          item.imageStatus = 'pending'
+        }
+        item.videoPath = ''
+        item.videoStatus = 'pending'
+        item.editingStatus = 'pending'
+        item.editingAnalysis = undefined
+        item.editingError = ''
+        item.error = ''
+      })
       stage.value = from === 'image' ? 'shot-plan-ready' : 'storyboards-ready'
     }
 
@@ -347,12 +416,29 @@ export const useMediaTaskStore = defineStore(
       }
     }
 
+    function removeGeneratedAssetVersion(assetId: string, versionId: string) {
+      const asset = referenceAssets.value.find((item) => item.id === assetId)
+      const version = asset?.versions.find((item) => item.id === versionId)
+      if (!asset || !version || version.source !== 'generated') return
+      const wasActive = asset.activeVersionId === versionId
+      asset.versions = asset.versions.filter((item) => item.id !== versionId)
+      if (!wasActive) return
+      const fallback = [...asset.versions].reverse().find((item) => item.source === 'generated')
+      asset.activeVersionId = fallback?.id
+      asset.status = fallback ? 'approved' : asset.design ? 'design-ready' : 'planned'
+      segments.value
+        .filter((segment) => segment.referenceAssetIds.includes(assetId))
+        .forEach((segment) => invalidateShot(segment.index, 'image'))
+    }
+
     function reset() {
       request.value = ''
       rawImports.value = []
       script.value = ''
       approvedScript.value = ''
       scriptHash.value = ''
+      projectDirectorDraft.value = null
+      projectDirectorPlan.value = null
       runId.value = ''
       targetDuration.value = 15
       textModel.value = 'gemini-3.6-flash'
@@ -365,6 +451,8 @@ export const useMediaTaskStore = defineStore(
       assetPlanCompletedRoles.value = []
       stage.value = 'draft'
       voicePlan.value = null
+      voiceSource.value = 'clone'
+      audioMode.value = 'replace-all'
       voicePath.value = ''
       voiceDuration.value = 0
       creativeIdentity.value = ''
@@ -376,6 +464,7 @@ export const useMediaTaskStore = defineStore(
       shotCountRationale.value = ''
       visualAnchor.value = ''
       segments.value = []
+      pictureMasterPath.value = ''
       finalPath.value = ''
       busyAction.value = ''
       cancelRequested.value = false
@@ -400,6 +489,8 @@ export const useMediaTaskStore = defineStore(
           script: script.value,
           approvedScript: approvedScript.value,
           scriptHash: scriptHash.value,
+          projectDirectorDraft: projectDirectorDraft.value,
+          projectDirectorPlan: projectDirectorPlan.value,
           ratio: ratio.value,
           targetDuration: targetDuration.value,
           textModel: textModel.value,
@@ -414,6 +505,8 @@ export const useMediaTaskStore = defineStore(
           stage: stage.value,
           voicePlan: voicePlan.value,
           voiceEngine: voiceEngine.value,
+          voiceSource: voiceSource.value,
+          audioMode: audioMode.value,
           voicePath: voicePath.value,
           voiceDuration: voiceDuration.value,
           creativeIdentity: creativeIdentity.value,
@@ -425,6 +518,7 @@ export const useMediaTaskStore = defineStore(
           shotCountRationale: shotCountRationale.value,
           visualAnchor: visualAnchor.value,
           segments: segments.value,
+          pictureMasterPath: pictureMasterPath.value,
           finalPath: finalPath.value,
         }),
       )
@@ -437,6 +531,8 @@ export const useMediaTaskStore = defineStore(
       script,
       approvedScript,
       scriptHash,
+      projectDirectorDraft,
+      projectDirectorPlan,
       ratio,
       targetDuration,
       textModel,
@@ -451,6 +547,8 @@ export const useMediaTaskStore = defineStore(
       stage,
       voicePlan,
       voiceEngine,
+      voiceSource,
+      audioMode,
       voicePath,
       voiceDuration,
       creativeIdentity,
@@ -462,6 +560,7 @@ export const useMediaTaskStore = defineStore(
       shotCountRationale,
       visualAnchor,
       segments,
+      pictureMasterPath,
       finalPath,
       busyAction,
       cancelRequested,
@@ -481,19 +580,26 @@ export const useMediaTaskStore = defineStore(
       allVideosReady,
       allRequiredAssetsApproved,
       assetPlanningComplete,
+      requiredSpeakerIds,
+      hasSoundSegments,
+      voiceReady,
       invalidateFrom,
       invalidateVisuals,
       setVoicePrompt,
+      confirmProjectDirector,
       setVisualAnchor,
       setSegmentPrompt,
       selectView,
       selectStep,
+      setVoiceSource,
+      setAudioMode,
       selectShot,
       selectAsset,
       invalidateShot,
       adoptAssetVersion,
       currentGeneratedAssetVersion,
       removeAssetReferenceVersion,
+      removeGeneratedAssetVersion,
       archiveCurrent,
       reset,
     }

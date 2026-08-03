@@ -13,20 +13,82 @@ import {
   parseVoiceDesign,
   unfinishedSegments,
   assetReferenceSearchQuery,
+  buildGrokSequences,
+  grokGenerationDuration,
+  grokReferenceGuide,
+  grokStoryboardBoardInstruction,
+  videoSoundInstruction,
+  videoPromptWithSound,
 } from './videoWorkflow.ts'
 
-test('narrows Pinterest searches by asset role and visual medium', () => {
+test('builds one validated sound instruction for Veo and Grok prompts', () => {
+  const onscreen = {
+    index: 5,
+    soundType: 'onscreen' as const,
+    speakerId: 'asset-character-host',
+    dialogueText: '点一点',
+    dialogueEmotion: '惊喜',
+    videoPrompt: '单一连续镜头，无切镜，无背景音乐',
+  } as any
+  assert.match(videoPromptWithSound(onscreen), /角色 asset-character-host 自然说出：“点一点”/)
+  assert.match(videoSoundInstruction({
+    index: 1,
+    soundType: 'voiceover',
+    speakerId: 'narrator-male',
+    dialogueText: '一分钟做完一条片。',
+  }), /本次视频模型不得生成人声/)
+  assert.throws(() => videoSoundInstruction({ index: 2, soundType: 'onscreen' }), /说话者 ID 或确认原文/)
+})
+
+test('groups Grok shots into bounded multi-cut sequences', () => {
+  assert.equal(grokGenerationDuration(5.1), 6)
+  assert.equal(grokGenerationDuration(30), 30)
+  const segments = Array.from({ length: 4 }, (_, index) => ({
+    index: index + 1,
+    playDuration: 8,
+    referenceAssetIds: [`asset-${index}`],
+  })) as any
+  const before = structuredClone(segments)
+  const sequences = buildGrokSequences(segments)
+  assert.equal(sequences.length, 2)
+  assert.equal(sequences[0].generationDuration, 24)
+  assert.deepEqual(segments, before)
+})
+
+test('describes an exact free-layout Grok storyboard and the real reference order', () => {
+  const instruction = grokStoryboardBoardInstruction(7)
+  assert.match(instruction, /准确 7 幅/)
+  assert.match(instruction, /版式自行安排/)
+  assert.doesNotMatch(instruction, /3x3|九宫格/)
+  assert.throws(() => grokStoryboardBoardInstruction(10), /1 到 9/)
+
+  const references = grokReferenceGuide([
+    { id: 'scene-studio', role: 'scene', label: '工作室' },
+    { id: 'character-host', role: 'character', label: '陈大发' },
+    { id: 'prop-phone', role: 'prop', label: '手机' },
+  ], true)
+  assert.match(references, /参考图1：组合分镜板/)
+  assert.match(references, /参考图2：场景“工作室”（scene-studio）/)
+  assert.match(references, /参考图3：角色“陈大发”（character-host）/)
+  assert.match(references, /参考图4：道具“手机”（prop-phone）/)
+})
+
+test('searches broad live-action references without carrying the project art style', () => {
   assert.equal(
     assetReferenceSearchQuery('anxious office worker', 'character', 'cinematic-contrast'),
-    'anxious office worker film character costume portrait full body movie still',
+    'anxious office worker film character portrait full body',
   )
   assert.equal(
-    assetReferenceSearchQuery('student dining hall', 'scene', 'cel-cinematic'),
-    'student dining hall animation background art establishing shot wide shot',
+    assetReferenceSearchQuery('dark webtoon digital creator studio workspace interior blue ambient glow environment concept art background art', 'scene', 'korean-webtoon-dark'),
+    'digital creator studio workspace interior film still wide shot',
   )
   assert.equal(
     assetReferenceSearchQuery('old smartphone', 'prop', 'handmade-clay'),
-    'old smartphone animation prop design concept art',
+    'old smartphone movie prop close up',
+  )
+  assert.equal(
+    assetReferenceSearchQuery('Korean webtoon male artist black hoodie character sheet', 'character', 'korean-webtoon-cinematic'),
+    'male artist black hoodie film character portrait full body',
   )
 })
 
@@ -190,6 +252,10 @@ test('auto pacing accepts one resolved pace while fixed pacing cannot drift', ()
   }
   assert.equal(parseStoryboardPlan(value, '字字字字', 10, 'auto').resolvedPace, 'fast')
   assert.throws(() => parseStoryboardPlan(value, '字字字字', 10, 'medium'), /用户选择/)
+
+  const { resolvedPace: _omitted, ...missingPace } = value
+  assert.equal(parseStoryboardPlan(missingPace, '字字字字', 10, 'auto').resolvedPace, 'fast')
+  assert.throws(() => parseStoryboardPlan(missingPace, '字字字字', 10, 'medium'), /最终镜头节奏/)
 })
 
 test('requires the five voice-design fields in their fixed order', () => {
@@ -292,7 +358,7 @@ test('rejects a larger Veo duration when a smaller supported duration covers the
 
 test('stage retries exclude already successful paid tasks', () => {
   const segments = [
-    { index: 1, imageStatus: 'success', videoStatus: 'success' },
+    { index: 1, imageStatus: 'success', videoStatus: 'success', editingStatus: 'ready' },
     { index: 2, imageStatus: 'failed', videoStatus: 'failed' },
   ] as any
   assert.deepEqual(

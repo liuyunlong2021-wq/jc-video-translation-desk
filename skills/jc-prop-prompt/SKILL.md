@@ -13,7 +13,7 @@ description: Use when a user asks to create a prop design prompt, prop concept i
 { "assets": [{ "role": "prop", "label": "道具名", "description": "用途与叙事职责", "identityTraits": ["轮廓、结构、材质、尺寸和识别标记"], "styleRequirements": ["项目风格要求"], "required": true, "design": { "严格完整遵守 references/prop-format.md 的 JSON 模板": "不得省略字段" }, "searchQuery": "从 design 派生的一条精确英文 Pinterest 查询" }] }
 ```
 
-品牌设备、包装和应用载体统一作为 `prop`；在 `identityTraits` 和 `design` 中锁定 Logo、文字、品牌色、包装轮廓及关键结构。`design` 是唯一生图事实源，必须把输入 `projectStyle` 的视觉风格和比例原样写入 `design.project`。不得输出 `generationPrompt`、`prompt` 或另一份自然语言提示词。`searchQuery` 只能从完整 `design` 派生，严格使用“媒介 + 具体物件与关键结构/材质/用途 + 独立道具制作用途”的一条英文查询。真人项目使用 `isolated film prop reference` 或 `product reference`；动画项目使用具体动画媒介以及 `prop concept sheet` 或 `game asset reference`。例如 `branded smartphone display isolated film prop reference`。不得只搜索品牌名、用途或物件类别。不输出多个备选查询。没有重要道具时输出 `{ "assets": [] }`。不得提取角色或场景，不得返回路径、图片或其他字段。
+品牌设备、包装和应用载体统一作为 `prop`；在 `identityTraits` 和 `design` 中锁定 Logo、文字、品牌色、包装轮廓及关键结构。`design` 是唯一生图事实源，必须把输入 `projectStyle` 的视觉风格和比例原样写入 `design.project`。不得输出 `generationPrompt`、`prompt` 或另一份自然语言提示词。`searchQuery` 只用于寻找现实影视或广告参考，与最终项目画风分离：使用“具体物件 + 必要用途/结构 + movie prop close up”的一条英文查询，例如 `professional pen display tablet movie prop close up`；真实产品和软件界面可使用 `product commercial still`。不得加入 webtoon、anime、animation、illustration、concept art、prop sheet、项目色彩或画风。不输出多个备选查询。没有重要道具时输出 `{ "assets": [] }`。不得提取角色或场景，不得返回路径、图片或其他字段。
 
 输入 `mode: "app-runtime"` 时跳过下方搜图、询问和文件流程。只读取 `asset` 和 `projectStyle`，输出：
 
@@ -22,6 +22,10 @@ description: Use when a user asks to create a prop design prompt, prop concept i
 ```
 
 `design` 必须严格完整遵守 `references/prop-format.md`，锁定轮廓、结构、材质、尺寸、识别标记、项目风格和画面比例，使用纯净背景、多角度和特写标注的资产设定图。不得返回路径、图片、Markdown、`generationPrompt`、`prompt` 或其他字段。
+
+`searchQuery` 必须继续遵守上面的现实影视或广告参考规则，不得从 `projectStyle` 抄入画风词。
+
+APP 主流程中的 `asset` 来自已确认项目总监清单。必须原样保留 `asset.id`、道具身份和叙事职责；不得重新阅读全文决定道具数量，不得新增、删除、合并、拆分或改名道具。
 
 输入 `mode: "app-revise"` 时读取 `asset`、`currentDesign`、`instruction` 和 `projectStyle`，只把用户意见应用到完整设计，并从修改后的 `design` 重新派生 `searchQuery`，返回相同的 `{ "assetId", "design", "searchQuery" }` 合同。不得搜索、下载或生成图片，不得改变道具身份。
 

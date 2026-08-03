@@ -61,8 +61,9 @@ i18nInitialized().then(() => {
   app.use(I18NextVue, { i18next })
   app.mount('#app').$nextTick(() => {
     // 监听主进程切换语言
-    window.i18n.onLanguageChanged((lng) => {
-      i18next.changeLanguage(lng)
+    window.i18n.onLanguageChanged(async (lng) => {
+      await i18next.changeLanguage(lng)
+      document.title = i18next.t('app.name')
       useAppStore().updateLocale(lng)
     })
   })

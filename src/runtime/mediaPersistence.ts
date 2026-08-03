@@ -1,4 +1,6 @@
 import { assetVersionMatches } from './storyboardMarkdown.ts'
+import { projectDirectorAssets } from './projectDirector.ts'
+import { generationDurationFor } from './videoWorkflow.ts'
 
 function relativeAsset(runId: string, filePath?: string) {
   if (!filePath) return filePath
@@ -33,6 +35,7 @@ function relativizeRun(run: any) {
     }),
   )
   run.voicePath = relativeAsset(run.runId, run.voicePath)
+  run.pictureMasterPath = relativeAsset(run.runId, run.pictureMasterPath)
   run.finalPath = relativeAsset(run.runId, run.finalPath)
   run.segments?.forEach((segment: any) => {
     segment.imagePath = relativeAsset(run.runId, segment.imagePath)
@@ -56,6 +59,28 @@ function migrateRun(run: any) {
       'ink-wash',
       'cel-cinematic',
       'gongbi-color',
+      'shonen-action-cel',
+      'monochrome-shonen-manga',
+      'modern-anime-key-visual',
+      'hand-painted-watercolor-animation',
+      'dunhuang-mural-animation',
+      'paper-cut-shadow-animation',
+      'chinese-puppet-stop-motion',
+      'origami-animation',
+      'comic-minimalism',
+      'ink-paper-cut-animation',
+      'anime-open-world-3d',
+      'dark-chinese-mythology-cg',
+      'xianxia-cultivation-animation',
+      'victorian-mysticism',
+      'creature-collection-animation',
+      'cozy-pixel-farm',
+      'pixel-underwater-adventure',
+      'korean-webtoon-color',
+      'korean-webtoon-cinematic',
+      'korean-webtoon-romance',
+      'korean-webtoon-action',
+      'korean-webtoon-dark',
       'eastern-xianxia-cg',
       'realistic-fantasy-cg',
       'handmade-clay',
@@ -67,6 +92,9 @@ function migrateRun(run: any) {
   if (!['auto', 'slow', 'medium', 'fast'].includes(run.shotPace)) run.shotPace = 'auto'
   if (!['slow', 'medium', 'fast'].includes(run.resolvedPace)) run.resolvedPace = null
   if (!['cloud', 'local'].includes(run.voiceEngine)) run.voiceEngine = 'cloud'
+  if (!['design', 'clone'].includes(run.voiceSource)) run.voiceSource = 'clone'
+  if (!['keep-original', 'replace-preserve-ambience', 'replace-all'].includes(run.audioMode))
+    run.audioMode = 'replace-all'
   if (
     ![
       'gemini-3.6-flash',
@@ -87,16 +115,22 @@ function migrateRun(run: any) {
     run.videoModel = 'veo-3.1-generate-preview'
   if (!['script', 'voice', 'shots', 'assets', 'images', 'videos', 'final'].includes(run.workflowStep))
     run.workflowStep = run.workspaceView === 'script' ? 'script' : run.workspaceView || 'script'
-  if (!['script', 'storyboard', 'assets', 'media', 'final'].includes(run.workspaceView))
+  if (!['script', 'director', 'storyboard', 'assets', 'media', 'final'].includes(run.workspaceView))
     run.workspaceView = 'script'
   if (!['all', 'references', 'audio', 'storyboards', 'videos'].includes(run.mediaFilter))
     run.mediaFilter = 'all'
   run.rawImports ||= []
+  run.projectDirectorDraft ||= null
+  run.projectDirectorPlan ||= null
   if (!Array.isArray(run.referenceAssets)) run.referenceAssets = []
   const legacyCoreId = run.coreReference?.id
   run.referenceAssets = run.referenceAssets.filter(
     (asset: any) => asset.planKey !== 'legacy-core-reference' && asset.id !== legacyCoreId,
   )
+  run.referenceAssets = projectDirectorAssets(run.projectDirectorPlan, run.referenceAssets)
+  const directorAssetIds = run.projectDirectorPlan
+    ? new Set(run.projectDirectorPlan.assets.map((asset: any) => asset.id))
+    : null
   run.referenceAssets.forEach((asset: any) => {
     if (asset.role === 'product') asset.role = 'prop'
     if (asset.status === 'prompt-ready') asset.status = 'design-ready'
@@ -114,21 +148,23 @@ function migrateRun(run: any) {
   })
   if (!Array.isArray(run.assetPlanCompletedRoles)) run.assetPlanCompletedRoles = []
   run.coreReference = null
+  run.pictureMasterPath ||= ''
   run.finalShotCount ||= run.segments?.length || 0
   run.segments?.forEach((segment: any) => {
     if (segment.playDuration == null && segment.duration != null) {
       segment.playDuration = Number(segment.duration)
     }
-    if (segment.generationDuration == null && segment.playDuration != null) {
-      const duration = Number(segment.playDuration)
-      segment.generationDuration = duration <= 4 ? 4 : duration <= 6 ? 6 : 8
-    }
+    const playDuration = Number(segment.playDuration)
+    if (Number.isFinite(playDuration) && playDuration > 0 && playDuration <= 8)
+      segment.generationDuration = generationDurationFor(playDuration)
     if (segment.coreReferenceVisible == null) segment.coreReferenceVisible = false
     if (!Array.isArray(segment.referenceAssetIds)) {
       segment.referenceAssetIds =
         segment.coreReferenceVisible && legacyCoreId ? [legacyCoreId] : []
     }
-    segment.referenceAssetIds = segment.referenceAssetIds.filter((id: string) => id !== legacyCoreId)
+    segment.referenceAssetIds = segment.referenceAssetIds.filter(
+      (id: string) => id !== legacyCoreId && (!directorAssetIds || directorAssetIds.has(id)),
+    )
     segment.coreReferenceVisible = false
     segment.storyBeat ||= segment.script || '历史镜头'
     segment.timelineType = segment.timelineType === 'dialogue' ? 'dialogue' : 'action'
@@ -156,6 +192,11 @@ function migrateRun(run: any) {
     segment.endState ||= '未记录'
     segment.imageVersions ||= []
     segment.videoVersions ||= []
+    if (!['pending', 'running', 'ready', 'failed'].includes(segment.editingStatus))
+      segment.editingStatus = segment.editingAnalysis ? 'ready' : 'pending'
+    segment.editingError ||= ''
+    delete segment.grokSequenceId
+    delete segment.grokSequenceLeader
     delete segment.duration
   })
 }
