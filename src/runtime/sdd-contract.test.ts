@@ -113,6 +113,20 @@ test('keeps VoiceDesign as a post-storyboard single-narrator backend only', () =
   assert.doesNotMatch(localVoice, /shell:\s*true|generateCloudVoice|generateVoice\(/)
 })
 
+test('exposes two real local voice engines without creating dialogue work early', () => {
+  assert.match(textUi, /mediaStore\.localVoiceEngine/)
+  assert.match(textUi, /value="qwen3-tts"/)
+  assert.match(textUi, /value="indextts2"/)
+  assert.match(textUi, /启动服务/)
+  assert.match(textUi, /停止服务/)
+  assert.match(preload, /indexTtsStart/)
+  assert.match(preload, /indexTtsStop/)
+  assert.match(ipc, /startIndexTtsService/)
+  assert.match(ipc, /stopIndexTtsService/)
+  assert.match(mediaUi, /indexTtsReady:\s*true/)
+  assert.doesNotMatch(mediaUi, /八种情绪|情绪播放器|逐句待处理|配音完成数/)
+})
+
 test('adds the project director gate without changing the seven-stage workflow', () => {
   const renderTemplate = renderUi.slice(0, renderUi.indexOf('<script setup'))
   for (const view of ['文稿', '项目总监', '分镜', '资产', '分镜图/视频', '成片'])
@@ -120,10 +134,19 @@ test('adds the project director gate without changing the seven-stage workflow',
   assert.match(mediaUi, /value="director"/)
   assert.match(renderUi, /生成项目总监方案/)
   assert.match(renderUi, /确认项目总监方案/)
-  assert.match(renderUi, /v-if="mediaStore\.workflowStep === 'assets'" class="action-bar asset-actions"/)
+  assert.match(
+    renderUi,
+    /v-if="mediaStore\.workflowStep === 'assets' && mediaStore\.workspaceView !== 'director'"[\s\S]*?class="action-bar asset-actions"/,
+  )
   assert.match(renderUi, /@click="runPrimary"[\s\S]*primaryAction\.label/)
   assert.match(projectDirectorSkill, /app-director/)
   assert.match(projectDirectorSkill, /currentPlan/)
+  assert.match(projectDirectorSkill, /productionRoute/)
+  assert.match(projectDirectorSkill, /narration-promo/)
+  assert.match(projectDirectorSkill, /routeReason/)
+  assert.match(mediaUi, /value="narration-promo"/)
+  assert.match(mediaUi, /value="drama"/)
+  assert.match(mediaUi, /setProjectDirectorRoute/)
   assert.match(renderUi, /repeat\(7,\s*minmax\(0,\s*1fr\)\)/)
   assert.doesNotMatch(renderUi, /repeat\(8,\s*minmax\(0,\s*1fr\)\)/)
   assert.match(renderUi, /inspector-scroll/)
@@ -159,7 +182,7 @@ test('adds the project director gate without changing the seven-stage workflow',
   )
   const videoGeneration = homeUi.slice(
     homeUi.indexOf('async function generateVideos'),
-    homeUi.indexOf('async function composeVideo'),
+    homeUi.indexOf('async function generateMaterialSrts'),
   )
   assert.doesNotMatch(storyboardGeneration, /reloadStoryboardMarkdown/)
   assert.doesNotMatch(videoGeneration, /reloadStoryboardMarkdown/)
@@ -190,7 +213,11 @@ test('adds the project director gate without changing the seven-stage workflow',
   assert.match(textUi, /v-model="mediaStore\.videoModel"\s+class="text-model-select"/)
   assert.match(homeUi, /task\.kind === 'video'\) mediaStore\.invalidateShot\(segment\.index, 'video'\)/)
   assert.match(homeUi, /cloudTasks\.every\(\(item\) => item\.status === 'success'\).*taskDrawerOpen\.value = false/)
-  assert.match(homeUi, /item\.editingError \|\| item\.error/)
+  assert.doesNotMatch(videoGeneration, /analyzeMaterialVideo|analyzeShotVideo/)
+  assert.match(homeUi, /generateMaterialSrts/)
+  assert.match(homeUi, /generateEditingTimeline/)
+  assert.match(renderUi, /生成 SRT/)
+  assert.match(renderUi, /生成剪辑时间轴/)
 })
 
 test('keeps asset generation recoverable and validates every professional design', () => {
@@ -251,6 +278,8 @@ test('writes the project director Wiki before exposing its confirmed state', () 
     homeUi.indexOf('async function runAction'),
   )
   assert.ok(confirm.indexOf('writeMarkdown(') < confirm.indexOf('mediaStore.confirmProjectDirector('))
+  assert.match(confirm, /wiki\/项目\/制作路线\.md/)
+  assert.ok(confirm.lastIndexOf('writeMarkdown(') < confirm.indexOf('mediaStore.confirmProjectDirector('))
   assert.ok(confirm.indexOf('writeAssetDocuments(') < confirm.indexOf('mediaStore.confirmProjectDirector('))
 })
 

@@ -22,7 +22,7 @@ mock.module('electron', {
 ;(globalThis as any).require = require
 process.env.VITE_DEV_SERVER_URL = 'test'
 const { composeGeneratedVideo, composePictureMaster } = await import('../../electron/ffmpeg/index.ts')
-const { ensureRunDir, getRunAssetPath } = await import('../../electron/media-workspace.ts')
+const { ensureRunDir, getRunAssetPath, writeEditingTimeline } = await import('../../electron/media-workspace.ts')
 
 after(() => fs.rmSync(userData, { recursive: true, force: true }))
 
@@ -145,15 +145,26 @@ test('trims the picture master from the persisted editing timeline', async () =>
     clip,
   ])
   const timeline = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
+    route: 'drama' as const,
     shots: [{
       shotId: 'shot-001',
+      promptSegmentId: 'shot-001',
+      sourceMediaId: 'shot-001',
       sourceVideoPath: 'clips/001.mp4',
       sourceDurationMs: 1_000,
-      trimStartMs: 300,
-      trimEndMs: 800,
+      geminiStartMs: 0,
+      geminiEndMs: 1_000,
+      adoptedStartMs: 300,
+      adoptedEndMs: 800,
+      adoptedBy: 'gemini' as const,
+      revision: 0,
       outputStartMs: 0,
       outputEndMs: 500,
+      observedContent: '',
+      subtitleCueIds: [],
+      speakerIds: [],
+      confidence: 1,
       needsReview: false,
     }],
   }
@@ -174,4 +185,26 @@ test('trims the picture master from the persisted editing timeline', async () =>
     'editing-timeline.json',
   )
   assert.deepEqual(JSON.parse(fs.readFileSync(timelinePath, 'utf8')), timeline)
+})
+
+test('persists editing timeline before FFmpeg creates a picture master', async () => {
+  const runId = 'timeline-only-run'
+  await ensureRunDir(runId)
+  const clip = getRunAssetPath(runId, 'clip', 1)
+  fs.writeFileSync(clip, 'not rendered yet')
+  const timeline = {
+    schemaVersion: 2 as const,
+    route: 'drama' as const,
+    shots: [{
+      shotId: 'shot-001', promptSegmentId: 'shot-001', sourceMediaId: 'media-shot-001',
+      sourceVideoPath: 'clips/001.mp4', sourceDurationMs: 1000,
+      geminiStartMs: 0, geminiEndMs: 1000, adoptedStartMs: 0, adoptedEndMs: 1000,
+      adoptedBy: 'gemini' as const, revision: 0, outputStartMs: 0, outputEndMs: 1000,
+      observedContent: '完整动作', subtitleCueIds: [], speakerIds: [], confidence: 1, needsReview: false,
+    }],
+  }
+  const relativePath = await writeEditingTimeline(runId, timeline)
+  assert.equal(relativePath, 'wiki/剪辑/episode-001/editing-timeline.json')
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userData, 'media-runs', runId, relativePath), 'utf8')), timeline)
+  assert.equal(fs.existsSync(getRunAssetPath(runId, 'picture-master')), false)
 })

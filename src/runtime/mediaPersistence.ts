@@ -35,11 +35,14 @@ function relativizeRun(run: any) {
     }),
   )
   run.voicePath = relativeAsset(run.runId, run.voicePath)
+  run.editingTimelinePath = relativeAsset(run.runId, run.editingTimelinePath)
   run.pictureMasterPath = relativeAsset(run.runId, run.pictureMasterPath)
   run.finalPath = relativeAsset(run.runId, run.finalPath)
   run.segments?.forEach((segment: any) => {
     segment.imagePath = relativeAsset(run.runId, segment.imagePath)
     segment.videoPath = relativeAsset(run.runId, segment.videoPath)
+    segment.transcriptJsonPath = relativeAsset(run.runId, segment.transcriptJsonPath)
+    segment.transcriptSrtPath = relativeAsset(run.runId, segment.transcriptSrtPath)
   })
 }
 
@@ -92,6 +95,7 @@ function migrateRun(run: any) {
   if (!['auto', 'slow', 'medium', 'fast'].includes(run.shotPace)) run.shotPace = 'auto'
   if (!['slow', 'medium', 'fast'].includes(run.resolvedPace)) run.resolvedPace = null
   if (!['cloud', 'local'].includes(run.voiceEngine)) run.voiceEngine = 'cloud'
+  if (!['qwen3-tts', 'indextts2'].includes(run.localVoiceEngine)) run.localVoiceEngine = 'qwen3-tts'
   if (!['design', 'clone'].includes(run.voiceSource)) run.voiceSource = 'clone'
   if (!['keep-original', 'replace-preserve-ambience', 'replace-all'].includes(run.audioMode))
     run.audioMode = 'replace-all'
@@ -122,6 +126,16 @@ function migrateRun(run: any) {
   run.rawImports ||= []
   run.projectDirectorDraft ||= null
   run.projectDirectorPlan ||= null
+  if (
+    run.projectDirectorDraft &&
+    (!['narration-promo', 'drama'].includes(run.projectDirectorDraft.productionRoute) ||
+      !String(run.projectDirectorDraft.routeReason || '').trim())
+  ) run.projectDirectorDraft = null
+  if (
+    run.projectDirectorPlan &&
+    (!['narration-promo', 'drama'].includes(run.projectDirectorPlan.productionRoute) ||
+      !String(run.projectDirectorPlan.routeReason || '').trim())
+  ) run.projectDirectorPlan = null
   if (!Array.isArray(run.referenceAssets)) run.referenceAssets = []
   const legacyCoreId = run.coreReference?.id
   run.referenceAssets = run.referenceAssets.filter(
@@ -149,6 +163,7 @@ function migrateRun(run: any) {
   if (!Array.isArray(run.assetPlanCompletedRoles)) run.assetPlanCompletedRoles = []
   run.coreReference = null
   run.pictureMasterPath ||= ''
+  run.editingTimelinePath ||= ''
   run.finalShotCount ||= run.segments?.length || 0
   run.segments?.forEach((segment: any) => {
     if (segment.playDuration == null && segment.duration != null) {
@@ -192,6 +207,9 @@ function migrateRun(run: any) {
     segment.endState ||= '未记录'
     segment.imageVersions ||= []
     segment.videoVersions ||= []
+    if (!['pending', 'running', 'ready', 'failed'].includes(segment.transcriptStatus))
+      segment.transcriptStatus = segment.transcriptSrtPath ? 'ready' : 'pending'
+    segment.transcriptError ||= ''
     if (!['pending', 'running', 'ready', 'failed'].includes(segment.editingStatus))
       segment.editingStatus = segment.editingAnalysis ? 'ready' : 'pending'
     segment.editingError ||= ''

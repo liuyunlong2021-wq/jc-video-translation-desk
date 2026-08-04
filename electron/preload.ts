@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('electron', {
     ) => ipcRenderer.invoke('cloud-generate-voice', runId, text, voicePrompt, engine),
     localVoiceStatus: () => ipcRenderer.invoke('local-voice-status'),
     indexTtsStatus: () => ipcRenderer.invoke('index-tts-status'),
+    indexTtsStart: () => ipcRenderer.invoke('index-tts-start'),
+    indexTtsStop: () => ipcRenderer.invoke('index-tts-stop'),
     generateEpisodeVoice: (params: import('./types').GenerateEpisodeVoiceParams) =>
       ipcRenderer.invoke('index-tts-generate-episode', params),
     generateStoryboard: (params: import('./types').GenerateStoryboardImageParams) =>
@@ -61,8 +63,12 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('cloud-generate-asset', params),
     generateVideo: (params: import('./types').GenerateSegmentVideoParams) =>
       ipcRenderer.invoke('cloud-generate-video', params),
-    analyzeShotVideo: (params: import('./types').AnalyzeShotVideoParams) =>
-      ipcRenderer.invoke('cloud-analyze-shot-video', params),
+    generateMaterialTranscript: (params: import('./types').GenerateMaterialTranscriptParams) =>
+      ipcRenderer.invoke('material-generate-srt', params),
+    analyzeMaterialVideo: (params: import('./types').AnalyzeMaterialVideoParams) =>
+      ipcRenderer.invoke('material-analyze-video', params),
+    writeEditingTimeline: (runId: string, timeline: import('../src/runtime/productionContract').EditingTimeline) =>
+      ipcRenderer.invoke('material-write-editing-timeline', runId, timeline),
     composePictureMaster: (params: import('./ffmpeg/types').ComposePictureMasterParams) =>
       ipcRenderer.invoke('cloud-compose-picture-master', params),
     composeVideo: (params: import('./ffmpeg/types').ComposeGeneratedVideoParams) =>

@@ -1,16 +1,45 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import http from 'node:http'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { app } from 'electron'
 import { executeFFmpeg } from './ffmpeg/index.ts'
 import { getRunDir, mediaDuration } from './media-workspace.ts'
 import { getVoiceLibraryDir, getVoicePackDir } from './voice-library.ts'
-import type { GenerateEpisodeVoiceParams, LocalVoiceStatus } from './types.ts'
+import type { GenerateEpisodeVoiceParams, IndexTtsServiceStatus } from './types.ts'
 
 const processes = new Map<string, ChildProcess>()
+let serviceProcess: ChildProcess | null = null
+let serviceStartedAt: string | undefined
+let serviceError: string | undefined
+let stoppingService = false
 
 function cliPath() {
-  return process.env.INDEXTTS2_CLI || path.join(app.getPath('home'), 'Documents', 'index-tts', '.venv', 'bin', 'indextts2')
+  return process.env.INDEXTTS2_CLI || path.join(runtimeDir(), '.venv', 'bin', 'indextts2')
+}
+
+function runtimeDir() {
+  return process.env.INDEXTTS2_RUNTIME || path.join(app.getPath('home'), 'Documents', 'index-tts')
+}
+
+function modelDir() {
+  return process.env.INDEXTTS2_MODEL || path.join(app.getPath('home'), 'Documents', 'peiyin-pyvideotrans', 'models', 'IndexTTS-2')
+}
+
+function pythonPath() {
+  return process.env.INDEXTTS2_PYTHON || path.join(runtimeDir(), '.venv', 'bin', 'python')
+}
+
+function webuiPath() {
+  return process.env.INDEXTTS2_WEBUI || path.join(runtimeDir(), 'webui.py')
+}
+
+function uvPath() {
+  return process.env.INDEXTTS2_UV || path.join(app.getPath('home'), '.local', 'bin', 'uv')
+}
+
+function serviceUrl() {
+  return process.env.INDEXTTS2_URL || 'http://127.0.0.1:7860'
 }
 
 function run(runId: string, args: string[]) {
@@ -31,13 +60,120 @@ function run(runId: string, args: string[]) {
   })
 }
 
-export async function getIndexTtsStatus(): Promise<LocalVoiceStatus> {
-  try {
+async function isServiceHealthy() {
+  return new Promise<boolean>((resolve) => {
+    const request = http.get(`${serviceUrl()}/config`, (response) => {
+      response.resume()
+      resolve(Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 300))
+    })
+    request.setTimeout(1000, () => request.destroy())
+    request.once('error', () => resolve(false))
+  })
+}
+
+function status(state: IndexTtsServiceStatus['state'], available: boolean): IndexTtsServiceStatus {
+  return {
+    engine: 'indextts2',
+    state,
+    available,
+    runtimePath: runtimeDir(),
+    modelPath: modelDir(),
+    ...(serviceProcess?.pid ? { pid: serviceProcess.pid } : {}),
+    ...(serviceStartedAt ? { startedAt: serviceStartedAt } : {}),
+    ...(serviceError ? { error: serviceError } : {}),
+  }
+}
+
+async function detectIndexTts() {
+  await fs.promises.access(pythonPath(), fs.constants.X_OK)
+  await fs.promises.access(webuiPath(), fs.constants.R_OK)
+  await fs.promises.access(modelDir(), fs.constants.R_OK)
+  if (!process.env.INDEXTTS2_PYTHON && !process.env.INDEXTTS2_WEBUI) {
+    await fs.promises.access(uvPath(), fs.constants.X_OK)
     await fs.promises.access(cliPath(), fs.constants.X_OK)
-    await run('__status__', ['check', '--device', process.platform === 'darwin' ? 'mps' : 'cpu'])
-    return { available: true, reason: 'ready', runtimePath: cliPath() }
+    await run('__status__', [
+      'check',
+      '--model-dir',
+      modelDir(),
+      '--device',
+      process.platform === 'darwin' ? 'mps' : 'cpu',
+    ])
+  }
+}
+
+export async function getIndexTtsStatus(): Promise<IndexTtsServiceStatus> {
+  if (await isServiceHealthy()) return status('running', true)
+  if (serviceProcess) return status(serviceError ? 'failed' : 'starting', !serviceError)
+  try {
+    await detectIndexTts()
+    return status(serviceError ? 'failed' : 'stopped', true)
   } catch (error) {
-    return { available: false, reason: /missing required model|model directory/i.test(String(error)) ? 'model' : 'runtime', runtimePath: cliPath() }
+    serviceError = String(error)
+    return status('unavailable', false)
+  }
+}
+
+export async function startIndexTtsService(): Promise<IndexTtsServiceStatus> {
+  const current = await getIndexTtsStatus()
+  if (current.state === 'running' || serviceProcess) return current
+  if (!current.available) return current
+  const url = new URL(serviceUrl())
+  serviceError = undefined
+  stoppingService = false
+  serviceStartedAt = new Date().toISOString()
+  const command = process.env.INDEXTTS2_PYTHON ? pythonPath() : uvPath()
+  const child = spawn(command, [
+    ...(process.env.INDEXTTS2_PYTHON ? [] : ['run']),
+    webuiPath(),
+    '--host',
+    url.hostname,
+    '--port',
+    url.port || '7860',
+    '--model_dir',
+    modelDir(),
+  ], { cwd: runtimeDir(), stdio: ['ignore', 'ignore', 'pipe'] })
+  serviceProcess = child
+  const errors: string[] = []
+  child.stderr?.on('data', (value) => errors.push(String(value)))
+  child.once('error', (error) => { serviceError = String(error) })
+  child.once('exit', (code, signal) => {
+    if (!stoppingService && code !== 0)
+      serviceError = errors.join('').trim() || `IndexTTS2 服务异常退出：${signal || code}`
+    serviceProcess = null
+    serviceStartedAt = undefined
+  })
+  for (let attempt = 0; attempt < 240; attempt++) {
+    if (await isServiceHealthy()) return status('running', true)
+    if (!serviceProcess || serviceError) break
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  if (serviceProcess) serviceProcess.kill('SIGTERM')
+  serviceProcess = null
+  serviceStartedAt = undefined
+  serviceError ||= 'IndexTTS2 服务启动超时'
+  return status('failed', true)
+}
+
+export async function stopIndexTtsService(): Promise<IndexTtsServiceStatus> {
+  const child = serviceProcess
+  if (child) {
+    stoppingService = true
+    child.kill('SIGTERM')
+    await Promise.race([
+      new Promise<void>((resolve) => child.once('exit', () => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ])
+  }
+  serviceProcess = null
+  serviceStartedAt = undefined
+  serviceError = undefined
+  stoppingService = false
+  try {
+    await detectIndexTts()
+    return status('stopped', true)
+  } catch (error) {
+    serviceError = String(error)
+    return status('unavailable', false)
   }
 }
 

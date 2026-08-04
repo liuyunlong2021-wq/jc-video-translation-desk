@@ -17,20 +17,7 @@ export interface ComposeGeneratedVideoParams {
 export interface ComposePictureMasterParams {
   runId: string
   ratio: import('../types').VideoRatio
-  timeline: {
-    schemaVersion: 1
-    shots: Array<{
-      shotId: string
-      sourceVideoPath: string
-      sourceDurationMs: number
-      trimStartMs: number
-      trimEndMs: number
-      outputStartMs: number
-      outputEndMs: number
-      needsReview: boolean
-      dialogue?: Record<string, unknown>
-    }>
-  }
+  timeline: import('../../src/runtime/productionContract.ts').EditingTimeline
 }
 
 export interface SubtitleCue {

@@ -315,6 +315,11 @@ export interface StoryboardSegment {
   videoVersions?: string[]
   imageStatus?: 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
   videoStatus?: 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
+  transcriptStatus?: 'pending' | 'running' | 'ready' | 'failed'
+  transcriptMediaId?: string
+  transcriptJsonPath?: string
+  transcriptSrtPath?: string
+  transcriptError?: string
   editingStatus?: 'pending' | 'running' | 'ready' | 'failed'
   editingAnalysis?: ShotVideoAnalysisResult
   editingError?: string
@@ -370,7 +375,7 @@ export function unfinishedSegments(segments: StoryboardSegment[], kind: 'image' 
   return segments.filter((segment) =>
     kind === 'image'
       ? segment.imageStatus !== 'success'
-      : segment.videoStatus !== 'success' || segment.editingStatus !== 'ready',
+      : segment.videoStatus !== 'success',
   )
 }
 
@@ -680,6 +685,7 @@ export function parseStoryboardPlan(
         videoVersions: Array.isArray(segment?.videoVersions) ? segment.videoVersions : [],
         imageStatus: 'pending',
         videoStatus: 'pending',
+        transcriptStatus: 'pending',
         editingStatus: 'pending',
       }
     },

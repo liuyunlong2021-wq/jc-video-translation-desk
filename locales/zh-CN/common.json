@@ -125,7 +125,7 @@
     },
     "localVoice": {
       "title": "配音引擎",
-      "description": "本地模式使用 Qwen3-TTS VoiceDesign；不会自动切换云端",
+      "description": "本地模式可选 Qwen3-TTS VoiceDesign 或 IndexTTS2；不会自动切换云端",
       "cloud": "云端",
       "local": "本地",
       "model": "Qwen3-TTS VoiceDesign 1.7B",

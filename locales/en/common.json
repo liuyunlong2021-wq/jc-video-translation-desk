@@ -125,7 +125,7 @@
     },
     "localVoice": {
       "title": "Voice engine",
-      "description": "Local mode uses Qwen3-TTS VoiceDesign and never falls back to cloud",
+      "description": "Local mode supports Qwen3-TTS VoiceDesign or IndexTTS2 and never falls back to cloud",
       "cloud": "Cloud",
       "local": "Local",
       "model": "Qwen3-TTS VoiceDesign 1.7B",

@@ -4,13 +4,15 @@ import { createHash, randomUUID } from 'node:crypto'
 import { app, dialog, net } from 'electron'
 import { parseBuffer } from 'music-metadata'
 import { generateUniqueFileName } from './lib/tools.ts'
-import { projectDirectorMarkdown } from '../src/runtime/projectDirector.ts'
+import { productionRouteMarkdown, projectDirectorMarkdown } from '../src/runtime/projectDirector.ts'
 import type {
   AssetVersion,
   CoreReferenceAsset,
   ImportedMarkdown,
   ProjectManifest,
 } from './types.ts'
+import type { EditingTimeline } from '../src/runtime/productionContract.ts'
+import { validateEditingTimeline } from '../src/runtime/editingTimeline.ts'
 
 const RUN_ID = /^[A-Za-z0-9_-]+$/
 const stateWrites = new Map<string, Promise<void>>()
@@ -23,7 +25,9 @@ const WIKI_DIRS = [
   'wiki/项目',
   'wiki/声音',
   'wiki/分镜/镜头',
+  'wiki/转录/episode-001',
   'wiki/字幕',
+  'wiki/字幕/素材',
   'wiki/资产/角色',
   'wiki/资产/场景',
   'wiki/资产/道具',
@@ -195,6 +199,13 @@ export async function ensureRunDir(runId: string) {
     ),
   )
   return dir
+}
+
+export async function writeEditingTimeline(runId: string, timeline: EditingTimeline) {
+  validateEditingTimeline(timeline)
+  const filePath = path.join(await ensureRunDir(runId), 'wiki', '剪辑', 'episode-001', 'editing-timeline.json')
+  await writeAtomic(filePath, `${JSON.stringify(timeline, null, 2)}\n`)
+  return relativeRunAsset(runId, filePath)
 }
 
 function projectManifestPath(projectId: string) {
@@ -490,6 +501,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
     '- [[来源索引]]',
     state.approvedScript ? '- [[文稿/确认文稿|确认文稿]]' : '',
     state.projectDirectorPlan ? '- [[项目/项目总监|项目总监]]' : '',
+    state.projectDirectorPlan ? '- [[项目/制作路线|制作路线]]' : '',
     state.segments?.length ? '- [[分镜/导演总览|导演分镜]]' : '',
     state.finalPath ? '- [[成片/成片|最终成片]]' : '',
   ].filter(Boolean)
@@ -518,7 +530,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
   )
   const sourceRows = await rawSourceRows(projectId)
   const directorSource = state.projectDirectorPlan
-    ? '\n\n## 项目事实链\n\n- [[项目/项目总监]] ← [[文稿/确认文稿]] + Raw 原始需求 + `jc-film-style`\n'
+    ? '\n\n## 项目事实链\n\n- [[项目/项目总监]] ← [[文稿/确认文稿]] + Raw 原始需求 + `jc-film-style`\n- [[项目/制作路线]] ← [[项目/项目总监]]\n'
     : ''
   await writeAtomic(
     path.join(dir, 'wiki/来源索引.md'),
@@ -537,6 +549,16 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
         'project-director',
         'project-director',
         projectDirectorMarkdown(state.projectDirectorPlan),
+      ),
+    )
+  if (state.projectDirectorPlan)
+    await writeAtomic(
+      path.join(dir, 'wiki/项目/制作路线.md'),
+      managedPage(
+        projectId,
+        'production-route',
+        'production-route',
+        productionRouteMarkdown(state.projectDirectorPlan),
       ),
     )
   const referenceAssets = Array.isArray(state.referenceAssets) ? state.referenceAssets : []

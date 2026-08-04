@@ -51,6 +51,24 @@
         :disabled="!mediaStore.runId"
         @click="showCurrentProject"
       />
+      <template v-if="isDubbingWorkspace">
+        <v-btn
+          :icon="dubbingLeftOpen ? 'mdi-chevron-double-left' : 'mdi-chevron-double-right'"
+          variant="text"
+          size="small"
+          :color="dubbingLeftOpen ? 'primary' : undefined"
+          :title="dubbingLeftOpen ? '收起左侧项目设置' : '展开左侧项目设置'"
+          @click="dubbingLeftOpen = !dubbingLeftOpen"
+        />
+        <v-btn
+          :icon="dubbingRightOpen ? 'mdi-chevron-double-right' : 'mdi-chevron-double-left'"
+          variant="text"
+          size="small"
+          :color="dubbingRightOpen ? 'primary' : undefined"
+          :title="dubbingRightOpen ? '收起右侧后期操作' : '展开右侧后期操作'"
+          @click="dubbingRightOpen = !dubbingRightOpen"
+        />
+      </template>
       <span v-if="currentProject?.wikiPending" class="text-caption text-warning">
         Wiki 待同步
       </span>
@@ -130,21 +148,33 @@
       </div>
     </aside>
 
-    <div class="workspace-grid w-full h-0 min-h-0 flex-1 grid gap-3 py-3 px-3">
-      <TextGenerate @import-markdown="importMarkdown" />
+    <div
+      class="workspace-grid w-full h-0 min-h-0 flex-1 grid gap-3 py-3 px-3"
+      :class="{
+        'dubbing-workspace-mode': isDubbingWorkspace,
+        'left-collapsed': !leftPanelVisible,
+        'right-collapsed': !rightPanelVisible,
+      }"
+    >
+      <TextGenerate v-show="leftPanelVisible" @import-markdown="importMarkdown" />
       <VideoManage
         @edit-script="editScript"
         @markdown-saved="reloadStoryboardMarkdown"
         @upload-asset-reference="uploadAssetReference"
       />
       <v-btn
+        v-if="!isDubbingWorkspace"
         class="inspector-toggle"
         :icon="inspectorOpen ? 'mdi-close' : 'mdi-tune-variant'"
         :aria-label="inspectorOpen ? '关闭检查器' : '打开检查器'"
         size="small"
         @click="inspectorOpen = !inspectorOpen"
       />
-      <div class="inspector-column min-w-0 min-h-0" :class="{ open: inspectorOpen }">
+      <div
+        v-show="rightPanelVisible"
+        class="inspector-column min-w-0 min-h-0"
+        :class="{ open: isDubbingWorkspace ? dubbingRightOpen : inspectorOpen }"
+      >
         <VideoRender
           @generate-script="generateScript"
           @approve-script="approveScript"
@@ -157,7 +187,8 @@
           @generate-assets="generateAssets"
           @generate-storyboards="generateStoryboards"
           @generate-videos="generateVideos"
-          @generate-voice="generateEpisodeVoice"
+          @generate-srt="generateMaterialSrts"
+          @generate-editing-timeline="generateEditingTimeline"
           @compose="composeVideo"
           @cancel="cancelWorkflow"
           @retry-image="retryImage"
@@ -203,12 +234,14 @@ import {
 import {
   confirmProjectDirectorDraft,
   parseProjectDirectorDraft,
+  productionRouteMarkdown,
   projectDirectorAssets,
   projectDirectorMarkdown,
 } from '@/runtime/projectDirector'
 import { assetGenerationChanged, assetVersionMatches, isLegacyStoryboardMarkdown, mergeStoryboardMedia, parseStoryboardMarkdown, withProjectDesign } from '@/runtime/storyboardMarkdown'
 import { deserializeMediaTask, serializeMediaTask } from '@/runtime/mediaPersistence'
 import { buildEditingTimeline, episodeVoiceTasks } from '@/runtime/editingTimeline'
+import { uniqueTranscriptInputs } from '@/runtime/materialTranscript'
 import type {
   AssetRole,
   AssetVersion,
@@ -222,12 +255,17 @@ const toast = useToast()
 const { t } = useTranslation()
 const isMac = window.electron.platform === 'darwin'
 const inspectorOpen = ref(false)
+const dubbingLeftOpen = ref(false)
+const dubbingRightOpen = ref(true)
 const taskDrawerOpen = ref(false)
 const projects = ref<ProjectManifest[]>([])
 const projectSwitching = ref(false)
 const currentProject = computed(() =>
   projects.value.find((project) => project.projectId === mediaStore.runId),
 )
+const isDubbingWorkspace = computed(() => mediaStore.workspaceView === 'dubbing')
+const leftPanelVisible = computed(() => !isDubbingWorkspace.value || dubbingLeftOpen.value)
+const rightPanelVisible = computed(() => !isDubbingWorkspace.value || dubbingRightOpen.value)
 const activeTaskCount = computed(
   () =>
     mediaStore.cloudTasks.filter((task) =>
@@ -595,12 +633,12 @@ async function confirmProjectDirector() {
     if (!draft) throw new Error('请先生成项目总监方案')
     if (
       mediaStore.projectDirectorPlan &&
-      !window.confirm('确认新方案会清空现有资产设计及后续分镜、媒体和成片，是否继续？')
+      !window.confirm('确认新方案会保留仍在清单中的资产，并清空后续分镜、媒体和成片，是否继续？')
     ) return
     const previousState = JSON.parse(JSON.stringify(mediaStore.$state))
     const confirmed = confirmProjectDirectorDraft(
       draft,
-      mediaStore.projectDirectorPlan ? [] : mediaStore.referenceAssets,
+      mediaStore.referenceAssets,
     )
     try {
       captureUndo('project-director')
@@ -611,6 +649,14 @@ async function confirmProjectDirector() {
         path,
         `---\nentityType: project-director\nentityId: project-director\nstatus: confirmed\nmanagedBy: short-video-factory\ngeneratedBySkill: jc-film-style\nsourceDocument: wiki/文稿/确认文稿.md\n---\n\n${projectDirectorMarkdown(confirmed.plan)}`,
         current?.revision,
+      )
+      const routePath = 'wiki/项目/制作路线.md'
+      const currentRoute = await window.electron.cloud.readMarkdown(mediaStore.runId, routePath).catch(() => null)
+      await window.electron.cloud.writeMarkdown(
+        mediaStore.runId,
+        routePath,
+        `---\nentityType: production-route\nentityId: production-route\nstatus: confirmed\nmanagedBy: short-video-factory\nsourceDocument: wiki/项目/项目总监.md\n---\n\n${productionRouteMarkdown(confirmed.plan)}`,
+        currentRoute?.revision,
       )
       await writeAssetDocuments(confirmed.assets)
       mediaStore.confirmProjectDirector(confirmed.plan, confirmed.assets)
@@ -648,7 +694,7 @@ async function runAction(name: string, action: () => Promise<void>) {
 
 async function generateShotPlan() {
   await runAction('shot-plan', async () => {
-    if (!mediaStore.projectDirectorPlan || mediaStore.projectDirectorDraft)
+    if (!mediaStore.confirmedProductionRoute || !mediaStore.projectDirectorPlan)
       throw new Error('请先确认项目总监方案')
     if (!mediaStore.assetPlanningComplete) throw new Error('请先准备角色、场景和道具资产提示词')
     if (!mediaStore.allRequiredAssetsApproved) throw new Error('请先确认全部必需资产')
@@ -799,11 +845,17 @@ async function reloadStoryboardMarkdown(runPaths?: string[]) {
         segment.imageStatus = 'pending'
         segment.videoPath = ''
         segment.videoStatus = 'pending'
+        segment.transcriptStatus = 'pending'
+        segment.transcriptMediaId = undefined
+        segment.transcriptJsonPath = undefined
+        segment.transcriptSrtPath = undefined
+        segment.transcriptError = ''
         segment.editingStatus = 'pending'
         segment.editingAnalysis = undefined
         segment.editingError = ''
         segment.error = ''
       })
+      mediaStore.editingTimelinePath = ''
       mediaStore.pictureMasterPath = ''
       mediaStore.finalPath = ''
     }
@@ -962,7 +1014,7 @@ async function writeAssetDocuments(assets: ReferenceAsset[]) {
 
 async function prepareAssetPrompts() {
   await runAction('asset-prompts', async () => {
-    if (!mediaStore.projectDirectorPlan || mediaStore.projectDirectorDraft)
+    if (!mediaStore.confirmedProductionRoute || !mediaStore.projectDirectorPlan)
       throw new Error('请先确认项目总监方案')
     const pending = mediaStore.referenceAssets.filter((asset) => !asset.design)
     if (!pending.length) return
@@ -1209,7 +1261,7 @@ async function generateVideos() {
         sequence.segments.forEach((segment) => { segment.videoPath = leader.videoPath; segment.videoStatus = 'success' })
     })
     const pendingVideos: any[] = mediaStore.videoModel === 'rh-grok-image-video'
-      ? grokSequences.filter((sequence) => sequence.segments[0].videoStatus !== 'success' || sequence.segments.some((segment) => segment.editingStatus !== 'ready'))
+      ? grokSequences.filter((sequence) => sequence.segments[0].videoStatus !== 'success')
       : unfinishedSegments(mediaStore.segments, 'video')
     if (
       pendingVideos.length > 20 &&
@@ -1230,22 +1282,23 @@ async function generateVideos() {
             + '\n连续完成以上时间段，按导演要求切换景别和机位；保持角色、场景、道具连续，不要输出分镜板、边框、拼贴或分屏。'
             + `\n\n${grokReferenceGuide(references.map(({ asset }) => asset), true)}`
           await generateVideo(leader, references.map(({ relativePath }) => relativePath), timedPrompt, sequence.generationDuration)
-          sequence.segments.forEach((segment: StoryboardSegment) => { segment.videoPath = leader.videoPath; segment.videoStatus = 'success' })
-        }
-        for (const segment of sequence.segments) {
-          if (segment === leader && segment.editingStatus === 'ready') continue
-          await analyzeVideo(segment)
+          sequence.segments.forEach((segment: StoryboardSegment) => {
+            segment.videoPath = leader.videoPath
+            segment.videoStatus = 'success'
+            segment.transcriptStatus = 'pending'
+            segment.transcriptMediaId = undefined
+            segment.transcriptJsonPath = undefined
+            segment.transcriptSrtPath = undefined
+            segment.transcriptError = ''
+            segment.editingStatus = 'pending'
+            segment.editingAnalysis = undefined
+            segment.editingError = ''
+          })
         }
       })
-    } else await pool(pendingVideos, pendingVideos.length, (segment) =>
-      segment.videoStatus === 'success' && segment.videoPath ? analyzeVideo(segment) : generateVideo(segment),
-    )
+    } else await pool(pendingVideos, pendingVideos.length, generateVideo)
     if (!mediaStore.allVideosReady) {
-      const errors = [
-        ...new Set(
-          pendingVideos.map((item) => item.editingError || item.error).filter(Boolean),
-        ),
-      ]
+      const errors = [...new Set(pendingVideos.map((item) => item.error).filter(Boolean))]
       throw new Error(errors.join('\n') || t('workflow.messages.videoPartial'))
     }
     mediaStore.stage = 'videos-ready'
@@ -1256,6 +1309,114 @@ async function generateVideos() {
   } finally {
     await refreshCloudTasks()
   }
+}
+
+async function generateMaterialSrts() {
+  await runAction('generate-srt', async () => {
+    if (!mediaStore.allVideosReady) throw new Error('请先完成全部视频素材')
+    const inputs = uniqueTranscriptInputs(mediaStore.segments)
+    const failures: string[] = []
+    for (const input of inputs) {
+      const targets = mediaStore.segments.filter((segment) => input.segmentIndexes.includes(segment.index))
+      if (targets.every((segment) => segment.transcriptStatus === 'ready' && segment.transcriptMediaId === input.mediaId))
+        continue
+      targets.forEach((segment) => {
+        segment.transcriptStatus = 'running'
+        segment.transcriptError = ''
+      })
+      try {
+        const result = await window.electron.cloud.generateMaterialTranscript({
+          runId: mediaStore.runId,
+          mediaId: input.mediaId,
+          videoPath: input.videoPath,
+        })
+        targets.forEach((segment) => {
+          segment.transcriptStatus = 'ready'
+          segment.transcriptMediaId = input.mediaId
+          segment.transcriptJsonPath = result.transcriptJsonPath
+          segment.transcriptSrtPath = result.transcriptSrtPath
+          segment.transcriptError = ''
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        targets.forEach((segment) => {
+          segment.transcriptStatus = 'failed'
+          segment.transcriptError = message
+        })
+        failures.push(`${input.mediaId}: ${message}`)
+      }
+    }
+    if (!mediaStore.allTranscriptsReady)
+      throw new Error(failures.join('\n') || '部分素材 SRT 生成失败')
+    toast.success('全部素材 SRT 已生成')
+  })
+}
+
+async function generateEditingTimeline() {
+  await runAction('generate-editing-timeline', async () => {
+    if (!mediaStore.allTranscriptsReady) throw new Error('请先完成全部素材 SRT')
+    const inputs = uniqueTranscriptInputs(mediaStore.segments)
+    const failures: string[] = []
+    for (const input of inputs) {
+      const targets = mediaStore.segments.filter((segment) => input.segmentIndexes.includes(segment.index))
+      if (targets.every((segment) => segment.editingStatus === 'ready' && segment.editingAnalysis))
+        continue
+      const evidence = targets[0]
+      if (!evidence.transcriptJsonPath || !evidence.transcriptSrtPath)
+        throw new Error(`${input.mediaId} 缺少素材 SRT 产物`)
+      targets.forEach((segment) => {
+        segment.editingStatus = 'running'
+        segment.editingError = ''
+      })
+      try {
+        const result = await window.electron.cloud.analyzeMaterialVideo({
+          runId: mediaStore.runId,
+          mediaId: input.mediaId,
+          videoPath: input.videoPath,
+          transcriptJsonPath: evidence.transcriptJsonPath,
+          transcriptSrtPath: evidence.transcriptSrtPath,
+          approvedScript: mediaStore.approvedScript,
+          shots: targets.map((segment) => ({
+            shotId: `shot-${String(segment.index).padStart(3, '0')}`,
+            script: segment.script,
+            soundType: segment.soundType || (segment.timelineType === 'dialogue' ? 'onscreen' : 'none'),
+            speakerId: segment.speakerId || segment.dialogueCharacter,
+            dialogueText: segment.dialogueText,
+            dialogueEmotion: segment.dialogueEmotion,
+            startState: segment.startState,
+            actionProgression: segment.actionProgression,
+            endState: segment.endState,
+            videoPrompt: segment.videoPrompt,
+          })),
+        })
+        targets.forEach((segment) => {
+          const shotId = `shot-${String(segment.index).padStart(3, '0')}`
+          const analysis = result.analyses.find((item) => item.shotId === shotId)
+          if (!analysis) throw new Error(`镜头 ${segment.index} 缺少 Gemini 分析结果`)
+          segment.editingAnalysis = analysis
+          segment.editingStatus = 'ready'
+          segment.editingError = ''
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        targets.forEach((segment) => {
+          segment.editingStatus = 'failed'
+          segment.editingError = message
+        })
+        failures.push(`${input.mediaId}: ${message}`)
+      }
+    }
+    if (!mediaStore.segments.every((segment) => segment.editingStatus === 'ready' && segment.editingAnalysis))
+      throw new Error(failures.join('\n') || '部分素材剪辑分析失败')
+    const timeline = buildEditingTimeline(
+      mediaStore.segments.map((segment) => segment.editingAnalysis!),
+      mediaStore.confirmedProductionRoute || 'drama',
+    )
+    mediaStore.editingTimelinePath = await window.electron.cloud.writeEditingTimeline(mediaStore.runId, timeline)
+    mediaStore.pictureMasterPath = ''
+    mediaStore.finalPath = ''
+    toast.success('剪辑时间轴已生成')
+  })
 }
 
 function validateShotPlan() {
@@ -1284,6 +1445,7 @@ function currentEditingTimeline() {
       if (!segment.editingAnalysis) throw new Error(`镜头 ${segment.index} 尚未完成剪辑分析`)
       return segment.editingAnalysis
     }),
+    mediaStore.confirmedProductionRoute || 'drama',
   )
 }
 
@@ -1296,48 +1458,6 @@ async function ensurePictureMaster() {
       timeline,
     })
   return timeline
-}
-
-async function generateEpisodeVoice() {
-  await runAction('voice', async () => {
-    if (!mediaStore.allVideosReady) throw new Error('请先完成全部视频和剪辑分析')
-    if (mediaStore.audioMode === 'keep-original' || !mediaStore.hasSoundSegments) {
-      mediaStore.selectStep('voice')
-      return
-    }
-    const timeline = await ensurePictureMaster()
-    const tasks = episodeVoiceTasks(timeline, mediaStore.segments)
-    if (mediaStore.voiceSource === 'design') {
-      const speakers = new Set(tasks.map((task) => task.speakerId))
-      if (speakers.size !== 1 || mediaStore.segments.some((segment) => segment.soundType === 'onscreen'))
-        throw new Error('设计声音只支持单一旁白；本集包含角色对白或多个说话者，请切换“克隆音色包”')
-      const text = tasks.map((task) => task.text).join('\n')
-      const raw = await window.electron.cloud.runSkill(
-        'jc-voice-design',
-        JSON.stringify({
-          mode: '完整表演模式',
-          role: '本集旁白',
-          script: text,
-          output: { voicePrompt: '按人设、音色特征、基础风格、本场情感、本场节奏依次写成五句自然语言' },
-        }),
-        mediaStore.runId,
-        mediaStore.textModel,
-      )
-      const voicePrompt = String(raw?.voicePrompt || raw?.prompt || Object.values(raw || {}).join('\n')).trim()
-      if (!voicePrompt) throw new Error('声音设计没有返回可用的声音提示词')
-      mediaStore.voicePlan = { text, voicePrompt }
-      const result = await window.electron.cloud.generateVoice(mediaStore.runId, text, voicePrompt, mediaStore.voiceEngine)
-      mediaStore.voicePath = result.path
-      mediaStore.voiceDuration = result.duration
-    } else {
-      const result = await window.electron.cloud.generateEpisodeVoice({ runId: mediaStore.runId, tasks })
-      mediaStore.voicePath = result.path
-      mediaStore.voiceDuration = result.duration
-    }
-    mediaStore.stage = 'voice-ready'
-    mediaStore.selectStep('voice')
-    toast.success('本集配音已生成')
-  })
 }
 
 async function composeVideo() {
@@ -1735,12 +1855,17 @@ async function applyRevision() {
     segment.videoPrompt = proposal.revised.prompt
     segment.videoPath = proposal.revised.path
     segment.videoStatus = 'success'
+    segment.transcriptStatus = 'pending'
+    segment.transcriptMediaId = undefined
+    segment.transcriptJsonPath = undefined
+    segment.transcriptSrtPath = undefined
+    segment.transcriptError = ''
     segment.editingStatus = 'pending'
     segment.editingAnalysis = undefined
     segment.editingError = ''
+    mediaStore.editingTimelinePath = ''
     mediaStore.pictureMasterPath = ''
     mediaStore.finalPath = ''
-    await analyzeVideo(segment)
     mediaStore.stage = mediaStore.allVideosReady ? 'videos-ready' : 'storyboards-ready'
   }
   mediaStore.revisionProposal = null
@@ -1770,6 +1895,14 @@ async function undoRevision() {
       projectDirectorMarkdown(mediaStore.projectDirectorPlan),
       current?.revision,
     )
+    const routePath = 'wiki/项目/制作路线.md'
+    const currentRoute = await window.electron.cloud.readMarkdown(mediaStore.runId, routePath).catch(() => null)
+    await window.electron.cloud.writeMarkdown(
+      mediaStore.runId,
+      routePath,
+      productionRouteMarkdown(mediaStore.projectDirectorPlan),
+      currentRoute?.revision,
+    )
     await writeAssetDocuments(mediaStore.referenceAssets)
   }
 }
@@ -1791,6 +1924,11 @@ async function generateVideo(
   if (!segment.imagePath) return
   const runId = mediaStore.runId
   segment.videoStatus = 'running'
+  segment.transcriptStatus = 'pending'
+  segment.transcriptMediaId = undefined
+  segment.transcriptJsonPath = undefined
+  segment.transcriptSrtPath = undefined
+  segment.transcriptError = ''
   segment.editingStatus = 'pending'
   segment.editingAnalysis = undefined
   segment.editingError = ''
@@ -1808,43 +1946,9 @@ async function generateVideo(
     })
     if (mediaStore.runId !== runId) return
     segment.videoStatus = 'success'
-    await analyzeVideo(segment)
   } catch (error) {
     segment.videoStatus = 'failed'
     segment.error = error instanceof Error ? error.message : String(error)
-  }
-}
-
-async function analyzeVideo(segment: StoryboardSegment) {
-  if (!segment.videoPath) return
-  const runId = mediaStore.runId
-  segment.editingStatus = 'running'
-  segment.editingError = ''
-  try {
-    segment.editingAnalysis = await window.electron.cloud.analyzeShotVideo({
-      runId,
-      videoPath: segment.videoPath,
-      shot: {
-        shotId: `shot-${String(segment.index).padStart(3, '0')}`,
-        script: segment.script,
-        soundType:
-          segment.soundType || (segment.timelineType === 'dialogue' ? 'onscreen' : 'none'),
-        speakerId: segment.speakerId || segment.dialogueCharacter,
-        dialogueText: segment.dialogueText,
-        dialogueEmotion: segment.dialogueEmotion,
-        startState: segment.startState,
-        actionProgression: segment.actionProgression,
-        endState: segment.endState,
-        videoPrompt: segment.videoPrompt,
-      },
-    })
-    if (mediaStore.runId !== runId) return
-    segment.editingStatus = 'ready'
-    mediaStore.pictureMasterPath = ''
-    mediaStore.finalPath = ''
-  } catch (error) {
-    segment.editingStatus = 'failed'
-    segment.editingError = error instanceof Error ? error.message : String(error)
   }
 }
 
@@ -1857,9 +1961,15 @@ async function retryImage(index: number) {
       throw new Error(segment.error || t('workflow.messages.imageFailed'))
     segment.videoPath = ''
     segment.videoStatus = 'pending'
+    segment.transcriptStatus = 'pending'
+    segment.transcriptMediaId = undefined
+    segment.transcriptJsonPath = undefined
+    segment.transcriptSrtPath = undefined
+    segment.transcriptError = ''
     segment.editingStatus = 'pending'
     segment.editingAnalysis = undefined
     segment.editingError = ''
+    mediaStore.editingTimelinePath = ''
     mediaStore.pictureMasterPath = ''
     mediaStore.finalPath = ''
     if (mediaStore.allImagesReady) mediaStore.stage = 'storyboards-ready'
@@ -1872,10 +1982,10 @@ async function retryVideo(index: number) {
   const segment = mediaStore.segments.find((item) => item.index === index)
   if (!segment) return
   try {
-    if (segment.videoStatus === 'success' && segment.videoPath) await analyzeVideo(segment)
-    else await generateVideo(segment)
-    if (segment.videoStatus !== 'success' || segment.editingStatus !== 'ready')
-      throw new Error(segment.editingError || segment.error || t('workflow.messages.videoFailed'))
+    await generateVideo(segment)
+    if (segment.videoStatus !== 'success')
+      throw new Error(segment.error || t('workflow.messages.videoFailed'))
+    mediaStore.editingTimelinePath = ''
     mediaStore.pictureMasterPath = ''
     mediaStore.finalPath = ''
     if (mediaStore.allVideosReady) mediaStore.stage = 'videos-ready'
@@ -1942,6 +2052,11 @@ async function restoreWorkflow() {
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | undefined
+watch(isDubbingWorkspace, (active) => {
+  if (!active) return
+  dubbingLeftOpen.value = false
+  dubbingRightOpen.value = true
+})
 watch(
   () => mediaStore.$state,
   () => {
@@ -2131,12 +2246,25 @@ onBeforeUnmount(() => {
   grid-template-rows: minmax(0, 1fr);
   grid-template-columns: minmax(250px, 0.82fr) minmax(420px, 1.55fr) minmax(300px, 1fr);
 }
+.workspace-grid.dubbing-workspace-mode.left-collapsed {
+  grid-template-columns: minmax(720px, 1fr) minmax(300px, .42fr);
+}
+.workspace-grid.dubbing-workspace-mode.right-collapsed:not(.left-collapsed) {
+  grid-template-columns: minmax(250px, .35fr) minmax(720px, 1fr);
+}
+.workspace-grid.dubbing-workspace-mode.left-collapsed.right-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
 .inspector-toggle {
   display: none;
 }
 @media (max-width: 1080px) {
   .workspace-grid {
     grid-template-columns: minmax(230px, 0.75fr) minmax(360px, 1.35fr);
+  }
+  .workspace-grid.dubbing-workspace-mode.left-collapsed,
+  .workspace-grid.dubbing-workspace-mode.left-collapsed.right-collapsed {
+    grid-template-columns: minmax(0, 1fr);
   }
   .inspector-toggle {
     display: inline-grid;

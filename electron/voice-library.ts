@@ -30,6 +30,10 @@ export interface VoiceProfile {
 }
 
 export interface VoiceCatalog { version: 1; profiles: VoiceProfile[] }
+export type VoiceSearchQuery = Partial<Pick<VoiceProfile, 'roleTags' | 'tags' | 'emotionTags' | 'cloneReady' | 'rights' | 'sourceGroup' | 'language'>> & {
+  includeNonCommercial?: boolean
+  indexTtsReady?: boolean
+}
 const AUDIO = new Set(['.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac'])
 
 function libraryDir() { return process.env.VOICE_LIBRARY_DIR || path.join(app.getPath('userData'), 'voice-library') }
@@ -130,7 +134,7 @@ export async function scanVoiceLibrary(sourceRoot: string) {
 
 export function searchVoiceProfiles(
   catalog: VoiceCatalog,
-  query: Partial<Pick<VoiceProfile, 'roleTags' | 'tags' | 'emotionTags' | 'cloneReady' | 'rights' | 'sourceGroup' | 'language'>> & { includeNonCommercial?: boolean } = {},
+  query: VoiceSearchQuery = {},
 ) {
   const includes = (values: string[], expected?: string[]) => !expected?.length || expected.every((tag) => values.includes(tag))
   return catalog.profiles.filter((profile) =>
@@ -143,8 +147,47 @@ export function searchVoiceProfiles(
   )
 }
 
-export async function listVoiceProfiles(query?: Parameters<typeof searchVoiceProfiles>[1]) {
-  return searchVoiceProfiles(await loadCatalog(), query)
+async function confirmedIndexTtsPack(profile: VoiceProfile) {
+  if (profile.quality !== 'approved' || profile.rights !== 'commercial-cleared' || !profile.cloneReady)
+    return false
+  const manifests: string[] = []
+  const visit = async (dir: string) => {
+    for (const entry of await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const target = path.join(dir, entry.name)
+      if (entry.isDirectory()) await visit(target)
+      else if (entry.name === 'manifest.json') manifests.push(target)
+    }
+  }
+  await visit(getVoicePackDir(profile.voiceProfileId))
+  for (const file of manifests) {
+    try {
+      const manifest = JSON.parse(await fs.promises.readFile(file, 'utf8'))
+      if (manifest.status !== 'confirmed' || manifest.model?.id !== 'indextts-2') continue
+      const reference = path.resolve(libraryDir(), manifest.source?.referenceRelativePath || '')
+      await fs.promises.access(reference, fs.constants.R_OK)
+      const emotionFiles = Object.values(manifest.emotions || {})
+        .map((emotion: any) => emotion?.audio)
+        .filter(Boolean)
+        .map((audio) => path.resolve(path.dirname(file), audio))
+      if (!emotionFiles.length) continue
+      for (const audio of emotionFiles) {
+        try {
+          await fs.promises.access(audio, fs.constants.R_OK)
+          return true
+        } catch { /* Try the next emotion file. */ }
+      }
+    } catch {
+      // Try another language pack when one manifest is incomplete.
+    }
+  }
+  return false
+}
+
+export async function listVoiceProfiles(query: VoiceSearchQuery = {}) {
+  const profiles = searchVoiceProfiles(await loadCatalog(), query)
+  if (!query.indexTtsReady) return profiles
+  const ready = await Promise.all(profiles.map((profile) => confirmedIndexTtsPack(profile)))
+  return profiles.filter((_, index) => ready[index])
 }
 
 export async function reviewVoiceProfile(
@@ -225,32 +268,28 @@ async function profileMarkdown(profile: VoiceProfile) {
 
 export async function bindProjectVoice(projectId: string, speakerId: string, voiceProfileId: string, taskId?: string) {
   if (!/^[A-Za-z0-9_-]+$/.test(speakerId)) throw new Error('无效的角色 ID')
+  if (speakerId.startsWith('narrator-')) throw new Error('旁白音色在宣传片旁白环节绑定')
+  if (taskId) throw new Error('角色音色绑定阶段不创建配音任务')
   const profile = (await loadCatalog()).profiles.find((item) => item.voiceProfileId === voiceProfileId)
   if (!profile) throw new Error('不存在的 voiceProfileId')
-  if (profile.quality !== 'approved' || profile.rights !== 'commercial-cleared') throw new Error('只能绑定已审核且已授权的声音档案')
-  await write(path.join(libraryDir(), '音色', `${profile.voiceProfileId}.md`), await profileMarkdown(profile))
-  const { listProjectMarkdown, readProjectMarkdown, writeProjectMarkdown } = await import('./media-workspace.ts')
-  const narrator = speakerId.startsWith('narrator-')
-  if (narrator) {
-    const shots = (await listProjectMarkdown(projectId)).filter((item) => item.startsWith('wiki/分镜/镜头/'))
-    const confirmed = await Promise.all(shots.map((item) => readProjectMarkdown(projectId, item)))
-    if (!confirmed.some((item) => new RegExp(`说话者ID[：:]?\\s*${speakerId}(?:\\s|$)`).test(item.content)))
-      throw new Error('旁白声音只能绑定当前确认分镜实际使用的 narrator ID')
-  } else {
-    const asset = await readProjectMarkdown(projectId, `wiki/资产/角色/${speakerId}.md`).catch(() => null)
-    if (!asset || !new RegExp(`^entityId:\\s*${speakerId}\\s*$`, 'm').test(asset.content))
-      throw new Error('声音绑定必须引用项目内已确认的角色 entityId')
-  }
+  if (!(await confirmedIndexTtsPack(profile))) throw new Error('只能绑定已审核、已授权且声音包已确认的 IndexTTS2 音色')
+  const { readProjectMarkdown, writeProjectMarkdown } = await import('./media-workspace.ts')
+  const route = await readProjectMarkdown(projectId, 'wiki/项目/制作路线.md').catch(() => null)
+  if (!route || !/路线代码[：:]\s*`drama`/.test(route.content)) throw new Error('只有已确认的剧情片路线可以绑定角色音色')
+  const director = await readProjectMarkdown(projectId, 'wiki/项目/项目总监.md').catch(() => null)
+  if (!director || !director.content.includes(`[[资产/角色/${speakerId}`))
+    throw new Error('声音绑定只能引用项目总监确认的角色')
+  const assetPath = `wiki/资产/角色/${speakerId}.md`
+  const asset = await readProjectMarkdown(projectId, assetPath).catch(() => null)
+  if (!asset || !new RegExp(`^entityId:\\s*${speakerId}\\s*$`, 'm').test(asset.content))
+    throw new Error('声音绑定必须引用项目内已确认的角色 entityId')
   const voicePath = `wiki/声音/角色/${speakerId}.md`
-  const taskLink = taskId ? `\n当前配音任务：[[声音/配音任务/${taskId}]]` : ''
-  const content = `---\nentityType: ${narrator ? 'narrator-voice' : 'character-voice'}\nspeakerId: ${speakerId}\nvoiceProfileId: ${voiceProfileId}\nstatus: approved\n---\n\n# ${speakerId} 的${narrator ? '旁白' : '角色'}声音\n\n声音档案：[[声音库/音色/${voiceProfileId}]]${narrator ? '' : `\n角色页面：[[资产/角色/${speakerId}]]`}${taskLink}\n`
+  const content = `---\nentityType: character-voice\nspeakerId: ${speakerId}\nvoiceProfileId: ${voiceProfileId}\nstatus: approved\n---\n\n# ${speakerId} 的角色声音\n\n声音档案：[[声音库/音色/${voiceProfileId}]]\n角色页面：[[资产/角色/${speakerId}]]\n`
   const current = await readProjectMarkdown(projectId, voicePath).catch(() => null)
   await writeProjectMarkdown(projectId, voicePath, content, current?.revision)
-  if (taskId) {
-    const taskPath = `wiki/声音/配音任务/${taskId}.md`
-    const task = await readProjectMarkdown(projectId, taskPath).catch(() => null)
-    await writeProjectMarkdown(projectId, taskPath, `# ${taskId}\n\n角色声音：[[声音/角色/${speakerId}]]\n声音档案：[[声音库/音色/${voiceProfileId}]]\n`, task?.revision)
-  }
+  const backlink = `[[声音/角色/${speakerId}|角色声音]]`
+  if (!asset.content.includes(backlink))
+    await writeProjectMarkdown(projectId, assetPath, `${asset.content.trimEnd()}\n\n- 角色声音：${backlink}\n`, asset.revision)
   await write(path.join(libraryDir(), '音色', `${profile.voiceProfileId}.md`), await profileMarkdown(profile))
   return { voicePath, libraryPath: path.join(libraryDir(), '音色', `${voiceProfileId}.md`) }
 }

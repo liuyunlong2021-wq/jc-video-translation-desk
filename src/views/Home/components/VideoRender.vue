@@ -40,31 +40,33 @@
         </div>
       </div>
       <div v-else-if="mediaStore.workflowStep === 'voice'" class="voice-controls">
-        <strong>原声处理</strong>
-        <v-btn-toggle
-          :model-value="mediaStore.audioMode"
-          mandatory
-          density="compact"
-          color="primary"
-          @update:model-value="mediaStore.setAudioMode($event)"
-        >
-          <v-btn value="keep-original" size="small">保留原声</v-btn>
-          <v-btn value="replace-preserve-ambience" size="small">配音 + 环境声</v-btn>
-          <v-btn value="replace-all" size="small">仅配音</v-btn>
-        </v-btn-toggle>
-        <small>{{ voiceRouteDescription }}</small>
+        <strong>后期处理</strong>
+        <small>工作台中的动作将在后续 TDD 接入真实引擎。</small>
+        <v-btn
+          v-for="action in dubbingActions"
+          :key="action.label"
+          block
+          variant="tonal"
+          size="small"
+          :prepend-icon="action.icon"
+          disabled
+          :title="action.label + '（后续接入）'"
+        >{{ action.label }}</v-btn>
       </div>
       <div v-else class="operation-empty" />
       <div v-if="mediaStore.error" class="text-error text-body-2">{{ displayError }}</div>
     </div>
 
-    <div v-if="mediaStore.workflowStep === 'assets'" class="action-bar asset-actions">
+    <div
+      v-if="mediaStore.workflowStep === 'assets' && mediaStore.workspaceView !== 'director'"
+      class="action-bar asset-actions"
+    >
       <v-btn
         color="primary"
         prepend-icon="mdi-text-box-edit-outline"
         :loading="mediaStore.busyAction === 'asset-prompts'"
-        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured || !mediaStore.projectDirectorPlan || Boolean(mediaStore.projectDirectorDraft) || mediaStore.assetPlanningComplete"
-        :title="!mediaStore.projectDirectorPlan || mediaStore.projectDirectorDraft ? '请先确认项目总监方案' : undefined"
+        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured || !mediaStore.confirmedProductionRoute || mediaStore.assetPlanningComplete"
+        :title="!mediaStore.confirmedProductionRoute ? '请先确认项目总监方案' : undefined"
         @click="$emit('prepareAssets')"
         >生成资产设计 JSON</v-btn
       >
@@ -93,7 +95,7 @@
         >转分镜</v-btn
       >
     </div>
-    <div v-else class="action-bar">
+    <div v-else-if="mediaStore.workflowStep !== 'voice'" class="action-bar">
       <v-btn
         v-if="secondaryAction"
         variant="tonal"
@@ -142,7 +144,8 @@ const emit = defineEmits([
   'generateAssets',
   'generateStoryboards',
   'generateVideos',
-  'generateVoice',
+  'generateSrt',
+  'generateEditingTimeline',
   'compose',
   'cancel',
   'retryImage',
@@ -227,7 +230,7 @@ const imagePending = computed(() =>
 const videoPending = computed(() =>
   mediaStore.videoModel === 'rh-grok-image-video'
     ? grokSequences.value
-        .filter((sequence) => sequence.segments[0].videoStatus !== 'success' || sequence.segments.some((segment) => segment.editingStatus !== 'ready'))
+        .filter((sequence) => sequence.segments[0].videoStatus !== 'success')
         .map((sequence) => sequence.segments[0])
     : unfinishedSegments(mediaStore.segments, 'video'),
 )
@@ -285,12 +288,8 @@ const primaryAction = computed(() => {
       enabled: idle && Boolean(mediaStore.script.trim()),
     }
   if (mediaStore.workflowStep === 'voice') {
-    if (!mediaStore.pictureMasterPath)
-      return { key: 'compose', label: '生成画面母版', icon: 'mdi-movie-open-plus', enabled: idle && mediaStore.allVideosReady }
-    if (!mediaStore.voiceReady)
-      return { key: 'generate-voice', label: '生成本集配音', icon: 'mdi-microphone-plus', enabled: idle }
     if (!mediaStore.finalPath)
-      return { key: 'compose', label: '生成最终成片', icon: 'mdi-movie-open-plus', enabled: idle }
+      return { key: 'open-dubbing', label: '返回配音字幕工作台', icon: 'mdi-subtitles-outline', enabled: idle }
     return { key: 'open', label: '打开成片', icon: 'mdi-folder-open-outline', enabled: idle }
   }
   if (mediaStore.workflowStep === 'assets') {
@@ -336,13 +335,22 @@ const primaryAction = computed(() => {
       icon: 'mdi-video-plus-outline',
       enabled: idle && mediaStore.apiConfigured,
     }
-  if (!mediaStore.finalPath)
+  if (!mediaStore.allTranscriptsReady)
     return {
-      key: 'compose',
-      label: mediaStore.pictureMasterPath ? '合成视频' : '生成画面母版',
-      icon: 'mdi-movie-open-plus',
+      key: 'generate-srt',
+      label: '生成 SRT',
+      icon: 'mdi-subtitles-outline',
       enabled: idle && mediaStore.allVideosReady,
     }
+  if (!mediaStore.allEditingReady)
+    return {
+      key: 'generate-editing-timeline',
+      label: '生成剪辑时间轴',
+      icon: 'mdi-timeline-clock-outline',
+      enabled: idle && mediaStore.allTranscriptsReady && mediaStore.apiConfigured,
+    }
+  if (!mediaStore.finalPath)
+    return { key: 'open-dubbing', label: '进入配音字幕工作台', icon: 'mdi-subtitles-outline', enabled: idle }
   return { key: 'open', label: '打开成片', icon: 'mdi-folder-open-outline', enabled: idle }
 })
 const canStop = computed(() =>
@@ -353,6 +361,7 @@ const canStop = computed(() =>
     'compose',
     'resume',
     'voice',
+    'generate-editing-timeline',
   ].includes(mediaStore.busyAction),
 )
 const displayError = computed(() =>
@@ -407,8 +416,8 @@ const stages = computed(
       },
       {
         key: 'voice',
-        label: '配音',
-        view: 'final',
+        label: '配音字幕',
+        view: 'dubbing',
         done: mediaStore.voiceReady,
         enabled: mediaStore.allVideosReady,
         current: mediaStore.workflowStep === 'voice',
@@ -418,7 +427,7 @@ const stages = computed(
         label: '成片',
         view: 'final',
         done: Boolean(mediaStore.finalPath),
-        enabled: mediaStore.allVideosReady && mediaStore.voiceReady,
+        enabled: mediaStore.allEditingReady && mediaStore.voiceReady,
         current: mediaStore.workflowStep === 'final',
       },
     ] as {
@@ -440,12 +449,16 @@ function sendRevision() {
   )
   revisionInstruction.value = ''
 }
-const voiceRouteDescription = computed(() => {
-  if (!mediaStore.hasSoundSegments) return '本集没有对白或旁白，将直接跳过配音。'
-  if (mediaStore.audioMode === 'keep-original') return '保留剪辑后的原视频声音，不生成正式配音。'
-  if (mediaStore.voiceSource === 'design') return '设计声音只适用于单一旁白；角色对白请切换克隆音色包。'
-  return '按每镜说话者和情绪使用已绑定的 IndexTTS2 音色包。'
-})
+const dubbingActions = [
+  { label: '重选剪辑点', icon: 'mdi-timeline-edit-outline' },
+  { label: '生成中文配音', icon: 'mdi-microphone-plus' },
+  { label: '翻译所有字幕', icon: 'mdi-translate' },
+  { label: '生成英语配音', icon: 'mdi-microphone-plus' },
+  { label: '分离原人声和背景声', icon: 'mdi-account-voice-off-outline' },
+  { label: '去除原人声', icon: 'mdi-volume-off' },
+  { label: '混回背景声、环境声和动作音', icon: 'mdi-music-note-plus' },
+  { label: '烧录配音和字幕', icon: 'mdi-movie-open-plus' },
+]
 function runPrimary() {
   if (primaryAction.value.key === 'next-director') {
     mediaStore.selectView('director')
@@ -453,6 +466,10 @@ function runPrimary() {
   }
   if (primaryAction.value.key === 'next-assets') {
     mediaStore.selectStep('assets')
+    return
+  }
+  if (primaryAction.value.key === 'open-dubbing') {
+    mediaStore.selectStep('voice')
     return
   }
   const event = {
@@ -465,7 +482,8 @@ function runPrimary() {
     assets: 'generateAssets',
     storyboards: 'generateStoryboards',
     videos: 'generateVideos',
-    'generate-voice': 'generateVoice',
+    'generate-srt': 'generateSrt',
+    'generate-editing-timeline': 'generateEditingTimeline',
     compose: 'compose',
     open: 'openFinal',
   }[primaryAction.value.key]

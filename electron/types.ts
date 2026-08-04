@@ -39,8 +39,17 @@ export type VisualStyleId =
 export type ShotPace = 'auto' | 'slow' | 'medium' | 'fast'
 export type ResolvedShotPace = Exclude<ShotPace, 'auto'>
 export type VoiceEngine = 'cloud' | 'local'
+export type LocalVoiceEngine = 'qwen3-tts' | 'indextts2'
+export type VoiceServiceState =
+  | 'unchecked'
+  | 'unavailable'
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'failed'
 export type VoiceSource = 'design' | 'clone'
-export type AudioMode = 'keep-original' | 'replace-preserve-ambience' | 'replace-all'
+import type { ProductionRoute } from '../src/runtime/productionContract.ts'
+export type { AudioMode, ProductionRoute } from '../src/runtime/productionContract.ts'
 export type VideoModel =
   | 'veo-3.1-generate-preview'
   | 'veo-3.0-generate-001'
@@ -83,6 +92,17 @@ export interface LocalVoiceStatus {
   reason: 'ready' | 'platform' | 'runtime' | 'model'
   runtimePath?: string
   modelPath?: string
+}
+
+export interface IndexTtsServiceStatus {
+  engine: 'indextts2'
+  state: VoiceServiceState
+  available: boolean
+  runtimePath?: string
+  modelPath?: string
+  pid?: number
+  startedAt?: string
+  error?: string
 }
 
 export interface GenerateEpisodeVoiceParams {
@@ -129,6 +149,8 @@ export interface ProjectDirectorAssetDraft {
 }
 
 export interface ProjectDirectorDraft {
+  productionRoute: ProductionRoute
+  routeReason: string
   project: {
     title: string
     format: string
@@ -231,13 +253,29 @@ export interface GenerateSegmentVideoParams extends GenerateStoryboardImageParam
   imagePaths?: string[]
 }
 
-export interface AnalyzeShotVideoParams {
+export interface GenerateMaterialTranscriptParams {
   runId: string
+  mediaId: string
   videoPath: string
-  shot: {
+}
+
+export interface MaterialTranscriptResult {
+  transcript: import('../src/runtime/productionContract').MaterialTranscript
+  transcriptJsonPath: string
+  transcriptSrtPath: string
+}
+
+export interface AnalyzeMaterialVideoParams {
+  runId: string
+  mediaId: string
+  videoPath: string
+  transcriptJsonPath: string
+  transcriptSrtPath: string
+  approvedScript: string
+  shots: Array<{
     shotId: string
     script: string
-    soundType?: 'onscreen' | 'voiceover' | 'none'
+    soundType: 'onscreen' | 'voiceover' | 'none'
     speakerId?: string
     dialogueText?: string
     dialogueEmotion?: string
@@ -245,15 +283,21 @@ export interface AnalyzeShotVideoParams {
     actionProgression: string
     endState: string
     videoPrompt: string
-  }
+  }>
 }
 
 export interface ShotVideoAnalysisResult {
   shotId: string
+  promptSegmentId: string
+  sourceMediaId: string
   sourceVideoPath: string
   sourceDurationMs: number
   trimStartMs: number
   trimEndMs: number
+  observedContent: string
+  subtitleCueIds: string[]
+  speakerIds: string[]
+  confidence: number
   needsReview: boolean
   dialogue?: {
     speakerId: string
@@ -264,6 +308,11 @@ export interface ShotVideoAnalysisResult {
     outputStartMs: number
     outputEndMs: number
   }
+}
+
+export interface MaterialVideoAnalysisResult {
+  mediaId: string
+  analyses: ShotVideoAnalysisResult[]
 }
 
 export type CloudTaskKind = 'voice' | 'asset' | 'storyboard' | 'video'

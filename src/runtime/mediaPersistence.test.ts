@@ -43,6 +43,8 @@ test('persists managed media as paths relative to its run', () => {
 
 test('persists the project director gate and restores its center view', () => {
   const projectDirectorPlan = {
+    productionRoute: 'drama',
+    routeReason: '角色行动推动剧情',
     project: { title: '项目', aspectRatio: '9:16', visualStyle: '电影感' },
     direction: { director: '导演' },
     assets: [{ id: 'asset-character-1', role: 'character', label: '主角' }],
@@ -58,9 +60,19 @@ test('persists the project director gate and restores its center view', () => {
   assert.equal(state.workspaceView, 'director')
 })
 
+test('treats a project director plan without a supported route as unconfirmed', () => {
+  const state = deserializeMediaTask(JSON.stringify({
+    projectDirectorPlan: { project: {}, direction: {}, assets: [] },
+    projectDirectorDraft: null,
+  }))
+  assert.equal(state.projectDirectorPlan, null)
+})
+
 test('drops assets and shot bindings without a project director identity', () => {
   const state = deserializeMediaTask(JSON.stringify({
     projectDirectorPlan: {
+      productionRoute: 'drama',
+      routeReason: '角色行动推动剧情',
       assets: [
         { id: 'asset-scene', role: 'scene', label: '工作室' },
         { id: 'asset-character', role: 'character', label: '创作者' },
@@ -91,6 +103,7 @@ test('migrates legacy segment durations without losing generated media', () => {
   assert.equal(state.shotPace, 'auto')
   assert.equal(state.resolvedPace, null)
   assert.equal(state.voiceEngine, 'cloud')
+  assert.equal(state.localVoiceEngine, 'qwen3-tts')
   assert.equal(state.voiceSource, 'clone')
   assert.equal(state.audioMode, 'replace-all')
   assert.equal(state.workspaceView, 'script')

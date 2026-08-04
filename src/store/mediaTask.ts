@@ -7,6 +7,7 @@ import type {
   PendingCloudTask,
   ProjectDirectorDraft,
   ProjectDirectorPlan,
+  ProductionRoute,
   ReferenceAsset,
   ResolvedShotPace,
   ShotPace,
@@ -15,6 +16,7 @@ import type {
   VideoModel,
   VideoRatio,
   VoiceEngine,
+  LocalVoiceEngine,
   VoiceSource,
   AudioMode,
   VisualStyleId,
@@ -39,7 +41,7 @@ export type WorkflowStage =
   | 'videos-ready'
   | 'completed'
 
-export type WorkspaceView = 'script' | 'director' | 'assets' | 'storyboard' | 'media' | 'final'
+export type WorkspaceView = 'script' | 'director' | 'assets' | 'storyboard' | 'media' | 'dubbing' | 'final'
 export type MediaFilter = 'all' | 'references' | 'audio' | 'storyboards' | 'videos'
 export type WorkflowStep = 'script' | 'voice' | 'assets' | 'shots' | 'images' | 'videos' | 'final'
 export type { VoiceSource, AudioMode } from '~/electron/types'
@@ -66,6 +68,7 @@ export interface MediaRunSnapshot {
   stage: WorkflowStage
   voicePlan: VoiceDesignDraft | null
   voiceEngine: VoiceEngine
+  localVoiceEngine: LocalVoiceEngine
   voiceSource: VoiceSource
   audioMode: AudioMode
   voicePath: string
@@ -79,6 +82,7 @@ export interface MediaRunSnapshot {
   shotCountRationale: string
   visualAnchor: string
   segments: StoryboardSegment[]
+  editingTimelinePath: string
   pictureMasterPath: string
   finalPath: string
 }
@@ -107,6 +111,7 @@ export const useMediaTaskStore = defineStore(
     const stage = ref<WorkflowStage>('draft')
     const voicePlan = ref<VoiceDesignDraft | null>(null)
     const voiceEngine = ref<VoiceEngine>('cloud')
+    const localVoiceEngine = ref<LocalVoiceEngine>('qwen3-tts')
     const voiceSource = ref<VoiceSource>('clone')
     const audioMode = ref<AudioMode>('replace-all')
     const voicePath = ref('')
@@ -120,6 +125,7 @@ export const useMediaTaskStore = defineStore(
     const shotCountRationale = ref('')
     const visualAnchor = ref('')
     const segments = ref<StoryboardSegment[]>([])
+    const editingTimelinePath = ref('')
     const pictureMasterPath = ref('')
     const finalPath = ref('')
     const busyAction = ref('')
@@ -149,9 +155,13 @@ export const useMediaTaskStore = defineStore(
     const allVideosReady = computed(
       () =>
         segments.value.length > 0 &&
-        segments.value.every(
-          (item) => item.videoStatus === 'success' && item.editingStatus === 'ready',
-        ),
+        segments.value.every((item) => item.videoStatus === 'success'),
+    )
+    const allTranscriptsReady = computed(
+      () => segments.value.length > 0 && segments.value.every((item) => item.transcriptStatus === 'ready'),
+    )
+    const allEditingReady = computed(
+      () => Boolean(editingTimelinePath.value) && allTranscriptsReady.value && segments.value.every((item) => item.editingStatus === 'ready' && item.editingAnalysis),
     )
     const allRequiredAssetsApproved = computed(() =>
       referenceAssets.value
@@ -160,7 +170,7 @@ export const useMediaTaskStore = defineStore(
     )
     const assetPlanningComplete = computed(
       () =>
-        Boolean(projectDirectorPlan.value) && !projectDirectorDraft.value &&
+        Boolean(confirmedProductionRoute.value) &&
         ((assetPlanCompletedRoles.value.includes('character') &&
           assetPlanCompletedRoles.value.includes('scene') &&
           assetPlanCompletedRoles.value.includes('prop')) ||
@@ -180,14 +190,25 @@ export const useMediaTaskStore = defineStore(
     const voiceReady = computed(
       () => segments.value.length > 0 && (!hasSoundSegments.value || audioMode.value === 'keep-original' || Boolean(voicePath.value)),
     )
+    const confirmedProductionRoute = computed<ProductionRoute | null>(() =>
+      projectDirectorPlan.value && !projectDirectorDraft.value
+        ? projectDirectorPlan.value.productionRoute
+        : null,
+    )
 
     function invalidateFrom(level: 'script' | 'voice' | 'images' | 'videos') {
+      editingTimelinePath.value = ''
       pictureMasterPath.value = ''
       finalPath.value = ''
       if (level === 'videos') return
       segments.value.forEach((segment) => {
         segment.videoPath = ''
         segment.videoStatus = segment.imagePath ? 'pending' : undefined
+        segment.transcriptStatus = 'pending'
+        segment.transcriptMediaId = undefined
+        segment.transcriptJsonPath = undefined
+        segment.transcriptSrtPath = undefined
+        segment.transcriptError = ''
         segment.editingStatus = 'pending'
         segment.editingAnalysis = undefined
         segment.editingError = ''
@@ -214,6 +235,7 @@ export const useMediaTaskStore = defineStore(
     }
 
     function invalidateVisuals() {
+      editingTimelinePath.value = ''
       pictureMasterPath.value = ''
       finalPath.value = ''
       visualAnchor.value = ''
@@ -249,9 +271,22 @@ export const useMediaTaskStore = defineStore(
       stage.value = 'script-approved'
     }
 
+    function setProjectDirectorRoute(route: ProductionRoute) {
+      if (!['narration-promo', 'drama'].includes(route)) return
+      const source = projectDirectorDraft.value || projectDirectorPlan.value
+      if (!source || source.productionRoute === route) return
+      projectDirectorDraft.value = {
+        ...JSON.parse(JSON.stringify(source)),
+        productionRoute: route,
+        routeReason: `用户手动选择${route === 'narration-promo' ? '旁白宣传片' : '剧情片'}路线`,
+      }
+      selectView('director')
+    }
+
     function setVisualAnchor(value: string) {
       if (visualAnchor.value === value) return
       visualAnchor.value = value
+      editingTimelinePath.value = ''
       pictureMasterPath.value = ''
       finalPath.value = ''
       segments.value.forEach((segment) => {
@@ -259,6 +294,11 @@ export const useMediaTaskStore = defineStore(
         segment.imageStatus = 'pending'
         segment.videoPath = ''
         segment.videoStatus = 'pending'
+        segment.transcriptStatus = 'pending'
+        segment.transcriptMediaId = undefined
+        segment.transcriptJsonPath = undefined
+        segment.transcriptSrtPath = undefined
+        segment.transcriptError = ''
         segment.error = ''
       })
       stage.value = 'shot-plan-ready'
@@ -280,6 +320,7 @@ export const useMediaTaskStore = defineStore(
       if (view === 'storyboard') workflowStep.value = 'shots'
       else if (view === 'director') workflowStep.value = 'assets'
       else if (view === 'assets') workflowStep.value = 'assets'
+      else if (view === 'dubbing') workflowStep.value = 'voice'
       else if (view === 'final') workflowStep.value = 'final'
       else if (view === 'media' && workflowStep.value !== 'images' && workflowStep.value !== 'videos')
         workflowStep.value = mediaFilter.value === 'videos' ? 'videos' : 'images'
@@ -294,11 +335,11 @@ export const useMediaTaskStore = defineStore(
         step === 'script'
           ? 'script'
           : step === 'voice'
-            ? 'final'
+            ? 'dubbing'
           : step === 'shots'
             ? 'storyboard'
             : step === 'assets'
-              ? projectDirectorPlan.value && !projectDirectorDraft.value ? 'assets' : 'director'
+              ? confirmedProductionRoute.value ? 'assets' : 'director'
               : step === 'images' || step === 'videos'
                 ? 'media'
                 : 'final',
@@ -342,6 +383,7 @@ export const useMediaTaskStore = defineStore(
     function invalidateShot(index: number, from: 'image' | 'video') {
       const segment = segments.value.find((item) => item.index === index)
       if (!segment) return
+      editingTimelinePath.value = ''
       pictureMasterPath.value = ''
       finalPath.value = ''
       const sequence = videoModel.value === 'rh-grok-image-video'
@@ -355,6 +397,11 @@ export const useMediaTaskStore = defineStore(
         }
         item.videoPath = ''
         item.videoStatus = 'pending'
+        item.transcriptStatus = 'pending'
+        item.transcriptMediaId = undefined
+        item.transcriptJsonPath = undefined
+        item.transcriptSrtPath = undefined
+        item.transcriptError = ''
         item.editingStatus = 'pending'
         item.editingAnalysis = undefined
         item.editingError = ''
@@ -464,6 +511,7 @@ export const useMediaTaskStore = defineStore(
       shotCountRationale.value = ''
       visualAnchor.value = ''
       segments.value = []
+      editingTimelinePath.value = ''
       pictureMasterPath.value = ''
       finalPath.value = ''
       busyAction.value = ''
@@ -505,6 +553,7 @@ export const useMediaTaskStore = defineStore(
           stage: stage.value,
           voicePlan: voicePlan.value,
           voiceEngine: voiceEngine.value,
+          localVoiceEngine: localVoiceEngine.value,
           voiceSource: voiceSource.value,
           audioMode: audioMode.value,
           voicePath: voicePath.value,
@@ -518,6 +567,7 @@ export const useMediaTaskStore = defineStore(
           shotCountRationale: shotCountRationale.value,
           visualAnchor: visualAnchor.value,
           segments: segments.value,
+          editingTimelinePath: editingTimelinePath.value,
           pictureMasterPath: pictureMasterPath.value,
           finalPath: finalPath.value,
         }),
@@ -547,6 +597,7 @@ export const useMediaTaskStore = defineStore(
       stage,
       voicePlan,
       voiceEngine,
+      localVoiceEngine,
       voiceSource,
       audioMode,
       voicePath,
@@ -560,6 +611,7 @@ export const useMediaTaskStore = defineStore(
       shotCountRationale,
       visualAnchor,
       segments,
+      editingTimelinePath,
       pictureMasterPath,
       finalPath,
       busyAction,
@@ -578,8 +630,11 @@ export const useMediaTaskStore = defineStore(
       revisionUndo,
       allImagesReady,
       allVideosReady,
+      allTranscriptsReady,
+      allEditingReady,
       allRequiredAssetsApproved,
       assetPlanningComplete,
+      confirmedProductionRoute,
       requiredSpeakerIds,
       hasSoundSegments,
       voiceReady,
@@ -587,6 +642,7 @@ export const useMediaTaskStore = defineStore(
       invalidateVisuals,
       setVoicePrompt,
       confirmProjectDirector,
+      setProjectDirectorRoute,
       setVisualAnchor,
       setSegmentPrompt,
       selectView,

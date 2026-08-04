@@ -133,15 +133,15 @@ export async function composePictureMaster(
   const [width, height] = OUTPUT_SIZES[params.ratio]
   const filters = params.timeline.shots.flatMap((shot, index) => {
     if (
-      !Number.isFinite(shot.trimStartMs) ||
-      !Number.isFinite(shot.trimEndMs) ||
-      shot.trimStartMs < 0 ||
-      shot.trimStartMs >= shot.trimEndMs ||
-      shot.trimEndMs > shot.sourceDurationMs
+      !Number.isFinite(shot.adoptedStartMs) ||
+      !Number.isFinite(shot.adoptedEndMs) ||
+      shot.adoptedStartMs < 0 ||
+      shot.adoptedStartMs >= shot.adoptedEndMs ||
+      shot.adoptedEndMs > shot.sourceDurationMs
     )
       throw new Error(`${shot.shotId} 裁切区间无效`)
-    const start = shot.trimStartMs / 1000
-    const end = shot.trimEndMs / 1000
+    const start = shot.adoptedStartMs / 1000
+    const end = shot.adoptedEndMs / 1000
     return [
       `[${index}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setsar=1[v${index}]`,
       sourceHasAudio[index]

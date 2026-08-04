@@ -24,11 +24,17 @@ import {
   testApiKey,
   stopCloudTask,
   abandonCloudTask,
-  analyzeShotVideo,
+  analyzeMaterialVideo,
   withRunAbort,
 } from './cloud'
 import { cancelLocalVoice, generateLocalVoice, getLocalVoiceStatus } from './local-tts'
-import { cancelIndexTts, generateEpisodeVoice, getIndexTtsStatus } from './index-tts'
+import {
+  cancelIndexTts,
+  generateEpisodeVoice,
+  getIndexTtsStatus,
+  startIndexTtsService,
+  stopIndexTtsService,
+} from './index-tts'
 import {
   assertRunAsset,
   beginStoryboardMarkdownUpdate,
@@ -51,8 +57,10 @@ import {
   selectCoreReference,
   setLastOpenedProject,
   writeProjectMarkdown,
+  writeEditingTimeline,
 } from './media-workspace'
 import { bindProjectVoice, getVoiceLibraryDir, getVoicePackDir, listVoiceProfiles, reviewVoiceProfile, scanVoiceLibrary, standardizeVoiceProfile } from './voice-library'
+import { generateMaterialTranscript } from './material-transcript'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let windowMaximizedByApp = false
@@ -183,6 +191,8 @@ export default function initIPC() {
   )
   ipcMain.handle('local-voice-status', () => getLocalVoiceStatus())
   ipcMain.handle('index-tts-status', () => getIndexTtsStatus())
+  ipcMain.handle('index-tts-start', () => startIndexTtsService())
+  ipcMain.handle('index-tts-stop', () => stopIndexTtsService())
   ipcMain.handle('index-tts-generate-episode', (_event, params) => generateEpisodeVoice(params))
   ipcMain.handle('cloud-generate-storyboard', (_event, params) =>
     generateStoryboardImage(
@@ -215,7 +225,9 @@ export default function initIPC() {
       params.imagePaths,
     ),
   )
-  ipcMain.handle('cloud-analyze-shot-video', (_event, params) => analyzeShotVideo(params))
+  ipcMain.handle('material-generate-srt', (_event, params) => generateMaterialTranscript(params))
+  ipcMain.handle('material-analyze-video', (_event, params) => analyzeMaterialVideo(params))
+  ipcMain.handle('material-write-editing-timeline', (_event, runId: string, timeline) => writeEditingTimeline(runId, timeline))
   ipcMain.handle('cloud-compose-picture-master', (_event, params) =>
     withRunAbort(params.runId, (signal) =>
       composePictureMaster({ ...params, abortSignal: signal }),

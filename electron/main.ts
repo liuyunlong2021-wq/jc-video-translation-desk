@@ -11,6 +11,7 @@ import { changeAppLanguage, initI18n } from './i18n'
 import { i18nLanguages } from './i18n/common-options'
 import { sendStatEvent } from './lib/stat'
 import { assertRunAsset } from './media-workspace'
+import { stopIndexTtsService } from './index-tts'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'short-video-media', privileges: { secure: true, standard: true, stream: true } },
@@ -199,6 +200,10 @@ app.on('window-all-closed', () => {
     app.quit()
     win = null
   }
+})
+
+app.on('before-quit', () => {
+  void stopIndexTtsService()
 })
 
 app.on('activate', () => {

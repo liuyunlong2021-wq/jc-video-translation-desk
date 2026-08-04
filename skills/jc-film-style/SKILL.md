@@ -17,6 +17,8 @@ description: Use when a user asks to establish a film or drama project's country
 
 ```json
 {
+  "productionRoute": "narration-promo/drama 二选一",
+  "routeReason": "判断叙事主要由统一旁白还是角色行动与对白推动",
   "project": {
     "title": "项目名",
     "format": "剧情短片/产品广告/口播等",
@@ -55,11 +57,13 @@ description: Use when a user asks to establish a film or drama project's country
 
 强制规则：
 
-1. 任何具名人物、说话者、动作执行者或跨镜主体都列为角色；存在行动主体时不得返回空角色。
-2. 主要地点和需要保持连续的环境列为场景；品牌设备、包装、APP 载体和重要物件列为道具。
-3. “角色、场景、道具”作为产品功能词时不是剧情实体。
-4. 只列实体和身份锚点，不写完整生图 JSON、搜索词或资产 ID；这些由 APP 和专业资产 Skill 处理。
-5. 没有角色时设置 `narrativeSubjectRequired: false` 并填写具体原因，不能用“旁白广告”掩盖已存在的行动主体。
+1. 统一旁白、解说、产品介绍、知识讲述或广告口播推动全片时返回 `narration-promo`；角色行动、对白、冲突和场景表演推动故事时返回 `drama`。存在角色不等于剧情片，必须判断叙事驱动力。
+2. `routeReason` 必须具体说明判定依据，不能只复述路线名称。
+3. 任何具名人物、说话者、动作执行者或跨镜主体都列为角色；存在行动主体时不得返回空角色。
+4. 主要地点和需要保持连续的环境列为场景；品牌设备、包装、APP 载体和重要物件列为道具。
+5. “角色、场景、道具”作为产品功能词时不是剧情实体。
+6. 只列实体和身份锚点，不写完整生图 JSON、搜索词或资产 ID；这些由 APP 和专业资产 Skill 处理。
+7. 没有角色时设置 `narrativeSubjectRequired: false` 并填写具体原因，不能用“旁白广告”掩盖已存在的行动主体。
 
 > 输入故事梗概 → 输出风格决策文件。媒介、比例、导演、色卡——四样全锁，下游 Skill 只管执行。
 

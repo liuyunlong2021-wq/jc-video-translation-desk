@@ -12,6 +12,7 @@
       <v-tab value="assets">资产</v-tab>
       <v-tab value="storyboard">分镜</v-tab>
       <v-tab value="media">分镜图/视频</v-tab>
+      <v-tab v-if="mediaStore.allVideosReady" value="dubbing">配音字幕</v-tab>
       <v-tab value="final">成片</v-tab>
     </v-tabs>
 
@@ -67,6 +68,23 @@
       </section>
 
       <section v-else-if="mediaStore.workspaceView === 'director'" class="document-view">
+        <div v-if="directorRoute" class="director-route">
+          <div>
+            <strong>制作路线</strong>
+            <small>{{ directorRoute.routeReason }}</small>
+          </div>
+          <v-btn-toggle
+            :model-value="directorRoute.productionRoute"
+            mandatory
+            density="compact"
+            color="primary"
+            :disabled="Boolean(mediaStore.busyAction)"
+            @update:model-value="mediaStore.setProjectDirectorRoute($event)"
+          >
+            <v-btn value="narration-promo" size="small">旁白宣传片</v-btn>
+            <v-btn value="drama" size="small">剧情片</v-btn>
+          </v-btn-toggle>
+        </div>
         <article
           v-if="mediaStore.projectDirectorDraft"
           class="director-draft markdown-body"
@@ -109,27 +127,6 @@
         <div v-else class="asset-document-layout">
           <div class="planned-assets">
           <article
-            v-for="speakerId in narratorIds"
-            :key="speakerId"
-            class="planned-asset narrator-asset"
-            :class="{ selected: mediaStore.selectedAssetId === speakerId }"
-            @click="mediaStore.selectAsset(speakerId)"
-          >
-            <div class="asset-placeholder"><v-icon size="28">mdi-microphone-outline</v-icon></div>
-            <div class="planned-asset-copy">
-              <div class="asset-title">
-                <strong>旁白声音</strong>
-                <v-icon
-                  size="17"
-                  :color="voiceBindings[speakerId] ? 'success' : 'grey'"
-                  :title="voiceBindings[speakerId] ? '已绑定声音' : '未绑定声音'"
-                >mdi-account-voice</v-icon>
-                <v-chip size="x-small" variant="tonal">{{ speakerId }}</v-chip>
-              </div>
-              <small>{{ voiceBindings[speakerId] ? '音色包已绑定' : '等待绑定音色包' }}</small>
-            </div>
-          </article>
-          <article
             v-for="asset in mediaStore.referenceAssets"
             :key="asset.id"
             class="planned-asset"
@@ -148,7 +145,7 @@
               <div class="asset-title">
                 <strong>{{ asset.label }}</strong>
                 <v-icon
-                  v-if="asset.role === 'character'"
+                  v-if="asset.role === 'character' && mediaStore.confirmedProductionRoute === 'drama'"
                   size="17"
                   :color="voiceBindings[asset.id] ? 'success' : 'grey'"
                   :title="voiceBindings[asset.id] ? '已绑定声音' : '未绑定声音'"
@@ -222,7 +219,7 @@
           </article>
           </div>
           <div class="asset-inspector">
-            <div v-if="selectedSpeakerId" class="voice-binding">
+            <div v-if="selectedSpeakerId && mediaStore.confirmedProductionRoute === 'drama'" class="voice-binding">
               <strong>{{ selectedSpeakerLabel }} · {{ boundVoiceName || '未绑定音色包' }}</strong>
               <v-select
                 v-model="selectedVoiceProfileId"
@@ -234,7 +231,7 @@
                 label="音色包"
               />
               <v-btn size="small" variant="tonal" :disabled="!boundVoiceId" @click="openBoundVoice">打开文件夹</v-btn>
-              <v-btn size="small" color="primary" :disabled="!selectedVoiceProfileId" @click="bindSelectedVoice">更换</v-btn>
+              <v-btn size="small" color="primary" :disabled="!selectedVoiceProfileId" @click="bindSelectedVoice">{{ boundVoiceId ? '更换' : '绑定' }}</v-btn>
             </div>
             <WikiDocument
               v-if="selectedAssetWikiPath"
@@ -317,6 +314,10 @@
         </div>
       </section>
 
+      <section v-else-if="mediaStore.workspaceView === 'dubbing'" class="dubbing-view">
+        <DubbingSubtitleWorkspace />
+      </section>
+
       <section v-else class="final-view">
         <div v-if="mediaStore.workflowStep === 'voice'" class="voice-timeline">
           <div class="document-heading">
@@ -386,6 +387,7 @@ import { managedMediaUrl } from '@/runtime/managedMediaUrl'
 import { renderMarkdown, resolveWikiLink } from '@/runtime/markdown'
 import { projectDirectorMarkdown } from '@/runtime/projectDirector'
 import WikiDocument from './WikiDocument.vue'
+import DubbingSubtitleWorkspace from './DubbingSubtitleWorkspace.vue'
 import type { VoiceProfile } from '~/electron/voice-library'
 
 type AssetStatus = StoryboardSegment['imageStatus'] | StoryboardSegment['videoStatus'] | 'success'
@@ -410,10 +412,9 @@ const wikiPath = ref('wiki/分镜/导演总览.md')
 const voiceProfiles = ref<VoiceProfile[]>([])
 const voiceBindings = ref<Record<string, string>>({})
 const selectedVoiceProfileId = ref('')
-const narratorIds = computed(() => mediaStore.requiredSpeakerIds.filter((id) => id.startsWith('narrator-')))
 const selectedCharacter = computed(() => mediaStore.referenceAssets.find((asset) => asset.id === mediaStore.selectedAssetId && asset.role === 'character'))
-const selectedSpeakerId = computed(() => selectedCharacter.value?.id || narratorIds.value.find((id) => id === mediaStore.selectedAssetId) || '')
-const selectedSpeakerLabel = computed(() => selectedCharacter.value?.label || (selectedSpeakerId.value ? '旁白声音' : ''))
+const selectedSpeakerId = computed(() => mediaStore.confirmedProductionRoute === 'drama' ? selectedCharacter.value?.id || '' : '')
+const selectedSpeakerLabel = computed(() => selectedCharacter.value?.label || '')
 const boundVoiceId = computed(() => selectedSpeakerId.value ? voiceBindings.value[selectedSpeakerId.value] : '')
 const boundVoiceName = computed(() => voiceProfiles.value.find((profile) => profile.voiceProfileId === boundVoiceId.value)?.displayName || '')
 const selectedAssetWikiPath = computed(() => {
@@ -431,19 +432,17 @@ const filters = [
   { value: 'videos', title: '视频' },
 ]
 onMounted(async () => {
-  voiceProfiles.value = await window.electron.cloud.listVoiceProfiles()
+  voiceProfiles.value = await window.electron.cloud.listVoiceProfiles({ indexTtsReady: true })
   await loadVoiceBindings()
 })
 watch(() => mediaStore.runId, loadVoiceBindings)
 watch(() => mediaStore.referenceAssets.map((asset) => asset.id).join(','), loadVoiceBindings)
-watch(() => mediaStore.requiredSpeakerIds.join(','), loadVoiceBindings)
 watch(boundVoiceId, (value) => { selectedVoiceProfileId.value = value || '' }, { immediate: true })
 
 async function loadVoiceBindings() {
   const bindings: Record<string, string> = {}
   const speakerIds = [...new Set([
     ...mediaStore.referenceAssets.filter((asset) => asset.role === 'character').map((asset) => asset.id),
-    ...narratorIds.value,
   ])]
   await Promise.all(speakerIds.map(async (speakerId) => {
     const document = await window.electron.cloud.readMarkdown(mediaStore.runId, `wiki/声音/角色/${speakerId}.md`).catch(() => null)
@@ -480,6 +479,9 @@ const directorDraftHtml = computed(() =>
         'wiki/项目/项目总监.md',
       )
     : '',
+)
+const directorRoute = computed(() =>
+  mediaStore.projectDirectorDraft || mediaStore.projectDirectorPlan,
 )
 const assets = computed<Asset[]>(() => {
   const items: Asset[] = []
@@ -708,6 +710,11 @@ function previewMediaAsset(asset: Asset) {
   flex: 1;
   overflow: hidden;
 }
+.dubbing-view {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
 .asset-document-layout { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(260px, 38%) minmax(0, 1fr); }
 .asset-document-layout .planned-assets { overflow: auto; border-right: 1px solid rgba(0,0,0,.1); }
 .asset-inspector { min-width: 0; min-height: 0; overflow: auto; }
@@ -733,6 +740,9 @@ function previewMediaAsset(asset: Asset) {
   flex-direction: column;
   gap: 12px;
 }
+.director-route { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px; border-bottom: 1px solid rgba(0,0,0,.1); }
+.director-route > div { min-width: 0; display: grid; gap: 2px; }
+.director-route small { color: rgba(0,0,0,.58); overflow-wrap: anywhere; }
 .director-draft { min-height: 0; overflow: auto; padding: 6px 10px 36px; line-height: 1.75; }
 .director-draft :deep(h1) { font-size: 24px; margin: 0 0 20px; }
 .director-draft :deep(h2) { font-size: 18px; margin: 28px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #dfe5e0; }

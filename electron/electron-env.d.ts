@@ -69,7 +69,9 @@ interface Window {
         engine: import('./types').VoiceEngine,
       ) => Promise<{ path: string; duration: number }>
       localVoiceStatus: () => Promise<import('./types').LocalVoiceStatus>
-      indexTtsStatus: () => Promise<import('./types').LocalVoiceStatus>
+      indexTtsStatus: () => Promise<import('./types').IndexTtsServiceStatus>
+      indexTtsStart: () => Promise<import('./types').IndexTtsServiceStatus>
+      indexTtsStop: () => Promise<import('./types').IndexTtsServiceStatus>
       generateEpisodeVoice: (
         params: import('./types').GenerateEpisodeVoiceParams,
       ) => Promise<{ path: string; duration: number }>
@@ -78,9 +80,16 @@ interface Window {
       ) => Promise<string>
       generateAsset: (params: import('./types').GenerateAssetImageParams) => Promise<string>
       generateVideo: (params: import('./types').GenerateSegmentVideoParams) => Promise<string>
-      analyzeShotVideo: (
-        params: import('./types').AnalyzeShotVideoParams,
-      ) => Promise<import('./types').ShotVideoAnalysisResult>
+      generateMaterialTranscript: (
+        params: import('./types').GenerateMaterialTranscriptParams,
+      ) => Promise<import('./types').MaterialTranscriptResult>
+      analyzeMaterialVideo: (
+        params: import('./types').AnalyzeMaterialVideoParams,
+      ) => Promise<import('./types').MaterialVideoAnalysisResult>
+      writeEditingTimeline: (
+        runId: string,
+        timeline: import('../src/runtime/productionContract').EditingTimeline,
+      ) => Promise<string>
       composePictureMaster: (
         params: import('./ffmpeg/types').ComposePictureMasterParams,
       ) => Promise<string>

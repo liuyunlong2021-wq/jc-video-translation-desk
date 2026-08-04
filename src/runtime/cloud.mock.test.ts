@@ -584,23 +584,48 @@ test('submits the fixed voice and selectable video contracts through controlled 
   assert.equal(typeof veo3Request.data.input_reference.pipe, 'function')
 })
 
-test('sends the original shot video directly to Gemini for editing analysis', async () => {
+test('sends video, script, complete shot prompt and material SRT to Gemini once', async () => {
   const runId = 'shot-analysis-run'
   await workspace.ensureRunDir(runId)
   const videoPath = workspace.getRunAssetPath(runId, 'clip', 1)
   fs.writeFileSync(videoPath, Buffer.from('mock mp4'))
+  const transcriptDir = path.join(userData, 'media-runs', runId, 'wiki', '转录', 'episode-001')
+  const subtitleDir = path.join(userData, 'media-runs', runId, 'wiki', '字幕', '素材')
+  fs.mkdirSync(transcriptDir, { recursive: true })
+  fs.mkdirSync(subtitleDir, { recursive: true })
+  const transcriptJsonPath = path.join(transcriptDir, 'media-shot-001-whisper.json')
+  const transcriptSrtPath = path.join(subtitleDir, 'media-shot-001-whisper.srt')
+  fs.writeFileSync(transcriptJsonPath, JSON.stringify({
+    schemaVersion: 1,
+    mediaId: 'media-shot-001',
+    sourceMediaPath: 'clips/001.mp4',
+    durationMs: 12_000,
+    cues: [{ cueId: 'cue-001', mediaId: 'media-shot-001', startMs: 2500, endMs: 4000, recognizedText: '你好' }],
+  }))
+  fs.writeFileSync(transcriptSrtPath, '1\n00:00:02,500 --> 00:00:04,000\n你好\n')
   chatOutputs.push(JSON.stringify({
-    trimStartMs: 2_000,
-    trimEndMs: 5_000,
-    needsReview: false,
-    dialogue: { sourceStartMs: 2_500, sourceEndMs: 4_000 },
+    shots: [{
+      shotId: 'shot-001',
+      trimStartMs: 2_000,
+      trimEndMs: 5_000,
+      observedContent: '角色完整举手并说你好',
+      subtitleCueIds: ['cue-001'],
+      speakerIds: ['character-1'],
+      confidence: 0.96,
+      needsReview: false,
+      dialogue: { sourceStartMs: 2_500, sourceEndMs: 4_000 },
+    }],
   }))
 
   const requestStart = requests.length
-  const result = await cloud.analyzeShotVideo({
+  const result = await cloud.analyzeMaterialVideo({
     runId,
+    mediaId: 'media-shot-001',
     videoPath,
-    shot: {
+    transcriptJsonPath,
+    transcriptSrtPath,
+    approvedScript: '陈大发举手并说：“你好”。',
+    shots: [{
       shotId: 'shot-001',
       script: '角色举手并说你好',
       soundType: 'onscreen',
@@ -611,7 +636,7 @@ test('sends the original shot video directly to Gemini for editing analysis', as
       actionProgression: '角色举手',
       endState: '手举过肩',
       videoPrompt: '单一连续镜头，角色举手',
-    },
+    }],
   })
 
   const analysisRequests = requests
@@ -622,11 +647,65 @@ test('sends the original shot video directly to Gemini for editing analysis', as
   const content = analysisRequests[0].data.messages[1].content
   assert.equal(content.filter((part: any) => part.type === 'file').length, 1)
   assert.match(content.find((part: any) => part.type === 'file').file.file_data, /^data:video\/mp4;base64,/)
-  assert.equal(result.sourceDurationMs, 12_000)
-  assert.equal(result.trimStartMs, 2_000)
-  assert.equal(result.trimEndMs, 5_000)
-  assert.equal(result.dialogue?.sourceStartMs, 2_500)
-  assert.equal(result.dialogue?.sourceEndMs, 4_000)
+  const prompt = content.find((part: any) => part.type === 'text').text
+  assert.match(prompt, /陈大发举手并说/)
+  assert.match(prompt, /单一连续镜头，角色举手/)
+  assert.match(prompt, /cue-001/)
+  assert.match(prompt, /00:00:02,500/)
+  assert.equal(result.analyses[0].sourceDurationMs, 12_000)
+  assert.equal(result.analyses[0].trimStartMs, 2_000)
+  assert.equal(result.analyses[0].trimEndMs, 5_000)
+  assert.deepEqual(result.analyses[0].subtitleCueIds, ['cue-001'])
+  assert.deepEqual(result.analyses[0].speakerIds, ['character-1'])
+  assert.equal(result.analyses[0].dialogue?.sourceStartMs, 2_500)
+  assert.equal(result.analyses[0].dialogue?.sourceEndMs, 4_000)
+})
+
+test('keeps every Grok shot whole when Gemini returns invalid or missing evidence', async () => {
+  const runId = 'grok-analysis-fallback'
+  await workspace.ensureRunDir(runId)
+  const videoPath = workspace.getRunAssetPath(runId, 'clip', 1)
+  fs.writeFileSync(videoPath, Buffer.from('mock mp4'))
+  const transcriptJsonPath = path.join(userData, 'media-runs', runId, 'wiki', '转录', 'episode-001', 'media-shot-001-whisper.json')
+  const transcriptSrtPath = path.join(userData, 'media-runs', runId, 'wiki', '字幕', '素材', 'media-shot-001-whisper.srt')
+  fs.mkdirSync(path.dirname(transcriptJsonPath), { recursive: true })
+  fs.mkdirSync(path.dirname(transcriptSrtPath), { recursive: true })
+  fs.writeFileSync(transcriptJsonPath, JSON.stringify({
+    schemaVersion: 1,
+    mediaId: 'media-shot-001',
+    sourceMediaPath: 'clips/001.mp4',
+    durationMs: 12_000,
+    cues: [],
+  }))
+  fs.writeFileSync(transcriptSrtPath, '')
+  chatOutputs.push(JSON.stringify({
+    shots: [{
+      shotId: 'shot-001',
+      trimStartMs: 9000,
+      trimEndMs: 1000,
+      subtitleCueIds: ['unknown-cue'],
+      speakerIds: ['unknown-role'],
+      needsReview: false,
+    }],
+  }))
+  const requestStart = requests.length
+  const result = await cloud.analyzeMaterialVideo({
+    runId,
+    mediaId: 'media-shot-001',
+    videoPath,
+    transcriptJsonPath,
+    transcriptSrtPath,
+    approvedScript: '角色先抬头，再转身。',
+    shots: [
+      { shotId: 'shot-001', script: '抬头', soundType: 'none', startState: '低头', actionProgression: '抬头', endState: '平视', videoPrompt: '角色缓慢抬头' },
+      { shotId: 'shot-002', script: '转身', soundType: 'none', startState: '正面', actionProgression: '转身', endState: '背面', videoPrompt: '角色转身离开' },
+    ],
+  })
+  assert.equal(requests.slice(requestStart).filter((request) => request.url.endsWith('/v1/chat/completions')).length, 1)
+  assert.deepEqual(result.analyses.map((item) => [item.trimStartMs, item.trimEndMs, item.needsReview]), [
+    [0, 12_000, true],
+    [0, 12_000, true],
+  ])
 })
 
 test('uses the selected text model and retries one malformed Skill JSON response', async () => {

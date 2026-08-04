@@ -6,7 +6,8 @@ import { app, safeStorage } from 'electron'
 import { generateUniqueFileName } from './lib/tools.ts'
 import type { PendingCloudTask, ResumedCloudTask } from './types.ts'
 import type {
-  AnalyzeShotVideoParams,
+  AnalyzeMaterialVideoParams,
+  MaterialVideoAnalysisResult,
   MediaScriptBrief,
   ShotVideoAnalysisResult,
   TextModel,
@@ -26,6 +27,7 @@ import {
   writeStoryboardMarkdownBatch,
   writeDataUrl,
 } from './media-workspace.ts'
+import { validateMaterialTranscript } from '../src/runtime/productionContract.ts'
 
 export const API_ORIGIN = 'https://api.jiucaihezi.studio'
 export const OPENAI_BASE_URL = `${API_ORIGIN}/v1`
@@ -273,86 +275,122 @@ export async function runSkill(
   return runId ? withRunAbort(runId, action) : action()
 }
 
-export async function analyzeShotVideo(
-  params: AnalyzeShotVideoParams,
-): Promise<ShotVideoAnalysisResult> {
-  if (!params?.shot?.shotId || !params.shot.script?.trim()) throw new Error('镜头分析参数无效')
+export async function analyzeMaterialVideo(
+  params: AnalyzeMaterialVideoParams,
+): Promise<MaterialVideoAnalysisResult> {
+  if (!params?.mediaId || !params.approvedScript?.trim() || !params.shots?.length)
+    throw new Error('素材剪辑分析参数无效')
+  const shotIds = new Set<string>()
+  for (const shot of params.shots) {
+    if (!shot.shotId?.trim() || shotIds.has(shot.shotId) || !shot.script?.trim() || !shot.videoPrompt?.trim())
+      throw new Error('素材分镜参数无效')
+    if (shot.soundType === 'onscreen' && (!shot.speakerId?.trim() || !shot.dialogueText?.trim() || !shot.dialogueEmotion?.trim()))
+      throw new Error(`${shot.shotId} 缺少确认的对白角色、原文或情绪`)
+    shotIds.add(shot.shotId)
+  }
   const videoPath = assertRunAsset(params.runId, params.videoPath)
   const video = await fs.promises.readFile(videoPath)
   if (video.byteLength > 90 * 1024 * 1024) throw new Error('单镜视频过大，无法提交分析')
   const sourceDurationMs = Math.round((await mediaDuration(videoPath)) * 1000)
-  const prompt = `分析这一条独立分镜视频，并严格对照下面的导演分镜，找出完整覆盖目标动作的最小连续区间。时间单位只能是毫秒，范围必须在 0 到 ${sourceDurationMs} 之间。
+  const transcriptJsonPath = assertRunAsset(params.runId, params.transcriptJsonPath)
+  const transcriptSrtPath = assertRunAsset(params.runId, params.transcriptSrtPath)
+  const transcript = validateMaterialTranscript(JSON.parse(await fs.promises.readFile(transcriptJsonPath, 'utf8')))
+  if (transcript.mediaId !== params.mediaId || transcript.sourceMediaPath !== relativeRunAsset(params.runId, videoPath))
+    throw new Error('素材转录与视频来源不匹配')
+  const srt = await fs.promises.readFile(transcriptSrtPath, 'utf8')
+  const prompt = `分析这一条原始视频，并严格对照确认剧本与完整导演分镜。每个 shot 找出完整覆盖导演要求动作的最小连续区间。时间单位只能是毫秒，范围必须在 0 到 ${sourceDurationMs} 之间。不要改写确认剧本、台词、情绪或视频提示词。通过素材 SRT 和确认剧本确定稳定 speakerId；通过画面确定对白以外的戏剧动作和真实剪辑点。
 
-导演分镜：
-${JSON.stringify(params.shot)}
+确认剧本：
+${params.approvedScript}
 
-只返回以下 JSON：
-{
-  "trimStartMs": 0,
-  "trimEndMs": ${sourceDurationMs},
-  "needsReview": false,
-  "dialogue": null
+素材转录 JSON：
+${JSON.stringify(transcript)}
+
+素材 SRT：
+${srt}
+
+完整分镜：
+${JSON.stringify(params.shots)}
+
+只返回以下 JSON，不要解释：
+{"shots":[{"shotId":"${params.shots[0].shotId}","trimStartMs":0,"trimEndMs":${sourceDurationMs},"observedContent":"","subtitleCueIds":[],"speakerIds":[],"confidence":0,"needsReview":true,"dialogue":null}]}
+返回所有 shot，不能遗漏。画面内对白的 dialogue 必须包含 sourceStartMs、sourceEndMs；其他镜头 dialogue 必须为 null。无法可靠定位时返回完整区间并 needsReview=true。`
+  let value: any
+  try {
+    const output = await withRunAbort(params.runId, (signal) =>
+      generateJsonResponse(
+        '你是短视频剪辑分析器。只根据原始视频、确认剧本、完整导演分镜和素材 SRT 判断时间与证据，不输出解释。',
+        [
+          { type: 'file', file: { filename: path.basename(videoPath), file_data: `data:video/mp4;base64,${video.toString('base64')}` } },
+          { type: 'text', text: prompt },
+        ],
+        'gemini-3.6-flash',
+        signal,
+        2_000,
+      ),
+    )
+    value = parseJson(output)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/API Key|任务已停止/.test(message)) throw error
+    value = { shots: [], error: message }
+  }
+  const returned = new Map((Array.isArray(value?.shots) ? value.shots : []).map((shot: any) => [String(shot?.shotId || ''), shot]))
+  return {
+    mediaId: params.mediaId,
+    analyses: params.shots.map((shot) => normalizeMaterialShot(params, shot, returned.get(shot.shotId), sourceDurationMs, value?.error, transcript)),
+  }
 }
 
-如果 soundType 是 onscreen，dialogue 必须包含 sourceStartMs、sourceEndMs；否则 dialogue 必须是 null。无法可靠定位时返回完整区间并将 needsReview 设为 true。`
-  const output = await withRunAbort(params.runId, (signal) =>
-    generateJsonResponse(
-      '你是短视频剪辑分析器。只根据原始视频和导演分镜判断时间，不改写分镜，不输出解释。',
-      [
-        {
-          type: 'file',
-          file: {
-            filename: path.basename(videoPath),
-            file_data: `data:video/mp4;base64,${video.toString('base64')}`,
-          },
-        },
-        { type: 'text', text: prompt },
-      ],
-      'gemini-3.6-flash',
-      signal,
-      2_000,
-    ),
-  )
-  const value = parseJson(output)
+function normalizeMaterialShot(
+  params: AnalyzeMaterialVideoParams,
+  shot: AnalyzeMaterialVideoParams['shots'][number],
+  value: any,
+  sourceDurationMs: number,
+  error?: string,
+  transcript?: import('../src/runtime/productionContract.ts').MaterialTranscript,
+): ShotVideoAnalysisResult {
   const proposedStart = Number(value?.trimStartMs)
   const proposedEnd = Number(value?.trimEndMs)
-  const validTrim =
-    Number.isFinite(proposedStart) &&
-    Number.isFinite(proposedEnd) &&
-    proposedStart >= 0 &&
-    proposedStart < proposedEnd &&
-    proposedEnd <= sourceDurationMs
+  const validTrim = Number.isFinite(proposedStart) && Number.isFinite(proposedEnd) && proposedStart >= 0 && proposedStart < proposedEnd && proposedEnd <= sourceDurationMs
   const trimStartMs = validTrim ? Math.round(proposedStart) : 0
   const trimEndMs = validTrim ? Math.round(proposedEnd) : sourceDurationMs
-  const dialogueValue = value?.dialogue
-  const dialogueStart = Number(dialogueValue?.sourceStartMs)
-  const dialogueEnd = Number(dialogueValue?.sourceEndMs)
-  const validDialogue =
-    params.shot.soundType === 'onscreen' &&
-    Number.isFinite(dialogueStart) &&
-    Number.isFinite(dialogueEnd) &&
-    dialogueStart >= trimStartMs &&
-    dialogueStart < dialogueEnd &&
-    dialogueEnd <= trimEndMs
+  const validCueIds = new Set((transcript?.cues || []).map((cue) => cue.cueId))
+  const requestedCueIds = Array.isArray(value?.subtitleCueIds) ? value.subtitleCueIds.map(String) : []
+  const subtitleCueIds = requestedCueIds.filter((id: string) => {
+    return id && validCueIds.has(id)
+  })
+  const unknownCue = requestedCueIds.some((id: string) => !validCueIds.has(id))
+  const requestedSpeakers = Array.isArray(value?.speakerIds) ? value.speakerIds.map(String) : []
+  const expectedSpeaker = String(shot.speakerId || '').trim()
+  const speakerIds = requestedSpeakers.filter((id: string) => id === expectedSpeaker)
+  const unknownSpeaker = requestedSpeakers.some((id: string) => id !== expectedSpeaker)
+  const missingSpeaker = shot.soundType === 'onscreen' && !speakerIds.includes(expectedSpeaker)
+  const dialogueStart = Number(value?.dialogue?.sourceStartMs)
+  const dialogueEnd = Number(value?.dialogue?.sourceEndMs)
+  const validDialogue = shot.soundType === 'onscreen' && Number.isFinite(dialogueStart) && Number.isFinite(dialogueEnd) && dialogueStart >= trimStartMs && dialogueStart < dialogueEnd && dialogueEnd <= trimEndMs
   return {
-    shotId: params.shot.shotId,
-    sourceVideoPath: relativeRunAsset(params.runId, videoPath),
+    shotId: shot.shotId,
+    promptSegmentId: shot.shotId,
+    sourceMediaId: params.mediaId,
+    sourceVideoPath: relativeRunAsset(params.runId, assertRunAsset(params.runId, params.videoPath)),
     sourceDurationMs,
     trimStartMs,
     trimEndMs,
-    needsReview:
-      Boolean(value?.needsReview) || !validTrim || (params.shot.soundType === 'onscreen' && !validDialogue),
-    dialogue: validDialogue
-      ? {
-          speakerId: params.shot.speakerId || 'unknown',
-          text: params.shot.dialogueText || params.shot.script,
-          emotion: params.shot.dialogueEmotion || 'neutral',
-          sourceStartMs: Math.round(dialogueStart),
-          sourceEndMs: Math.round(dialogueEnd),
-          outputStartMs: 0,
-          outputEndMs: 0,
-        }
-      : undefined,
+    observedContent: String(value?.observedContent || error || '').trim(),
+    subtitleCueIds,
+    speakerIds,
+    confidence: validTrim && !unknownSpeaker ? Math.max(0, Math.min(1, Number(value?.confidence) || 0)) : 0,
+    needsReview: Boolean(error) || Boolean(value?.needsReview) || !validTrim || unknownCue || unknownSpeaker || missingSpeaker || (shot.soundType === 'onscreen' && (!validDialogue || !subtitleCueIds.length)),
+    dialogue: validDialogue ? {
+      speakerId: expectedSpeaker,
+      text: String(shot.dialogueText || shot.script).trim(),
+      emotion: String(shot.dialogueEmotion || 'neutral').trim(),
+      sourceStartMs: Math.round(dialogueStart),
+      sourceEndMs: Math.round(dialogueEnd),
+      outputStartMs: 0,
+      outputEndMs: 0,
+    } : undefined,
   }
 }
 

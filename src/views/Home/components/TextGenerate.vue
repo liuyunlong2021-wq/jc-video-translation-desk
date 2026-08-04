@@ -174,6 +174,7 @@
               </div>
             </div>
             <v-btn-toggle
+              class="local-engine-toggle"
               :model-value="mediaStore.voiceEngine"
               mandatory
               density="compact"
@@ -185,23 +186,53 @@
             </v-btn-toggle>
           </div>
           <div v-if="mediaStore.voiceEngine === 'local'" class="local-voice-status">
-            <v-chip
-              size="small"
-              variant="tonal"
-              :color="localVoiceStatus?.available ? 'success' : 'warning'"
+            <v-btn-toggle
+              :model-value="mediaStore.localVoiceEngine"
+              mandatory
+              density="compact"
+              color="primary"
+              @update:model-value="changeLocalVoiceEngine"
             >
-              {{ t(`workflow.localVoice.status.${localVoiceStatus?.reason || 'checking'}`) }}
-            </v-chip>
-            <span class="text-caption text-medium-emphasis text-truncate">
-              {{ localVoiceStatus?.modelPath || t('workflow.localVoice.model') }}
-            </span>
-            <v-btn
-              size="small"
-              variant="tonal"
-              :loading="checkingLocalVoice"
-              @click="checkLocalVoice"
-              >{{ t('workflow.localVoice.check') }}</v-btn
-            >
+              <v-btn value="qwen3-tts">Qwen3-TTS VoiceDesign</v-btn>
+              <v-btn value="indextts2">IndexTTS2</v-btn>
+            </v-btn-toggle>
+            <div class="local-voice-detail">
+              <v-chip
+                size="small"
+                variant="tonal"
+                :color="indexTtsState === 'running' || localVoiceStatus?.available ? 'success' : 'warning'"
+              >
+                {{ localVoiceStatusLabel }}
+              </v-chip>
+              <span class="text-caption text-medium-emphasis text-truncate">
+                {{ localVoiceStatus?.modelPath || t('workflow.localVoice.model') }}
+              </span>
+            </div>
+            <div class="local-voice-actions">
+              <v-btn
+                size="small"
+                variant="tonal"
+                :loading="checkingLocalVoice"
+                @click="checkLocalVoice"
+                >{{ t('workflow.localVoice.check') }}</v-btn
+              >
+              <v-btn
+                v-if="mediaStore.localVoiceEngine === 'indextts2'"
+                size="small"
+                color="primary"
+                :loading="changingIndexTts"
+                :disabled="indexTtsState === 'running'"
+                @click="startIndexTts"
+              >启动服务</v-btn>
+              <v-btn
+                v-if="mediaStore.localVoiceEngine === 'indextts2'"
+                size="small"
+                variant="tonal"
+                :loading="changingIndexTts"
+                :disabled="indexTtsState !== 'running'"
+                @click="stopIndexTts"
+              >停止服务</v-btn>
+            </div>
           </div>
         </v-card-text>
         <v-card-actions>
@@ -232,6 +263,8 @@ import {
   VISUAL_STYLE_GROUPS,
 } from '@/runtime/videoWorkflow'
 import type {
+  IndexTtsServiceStatus,
+  LocalVoiceEngine,
   LocalVoiceStatus,
   ShotPace,
   TargetDuration,
@@ -265,7 +298,8 @@ const hasApiKey = ref(false)
 const sessionOnly = ref(false)
 const testing = ref(false)
 const checkingLocalVoice = ref(false)
-const localVoiceStatus = ref<LocalVoiceStatus | null>(null)
+const changingIndexTts = ref(false)
+const localVoiceStatus = ref<LocalVoiceStatus | IndexTtsServiceStatus | null>(null)
 const showApiKey = ref(false)
 const customDuration = ref(String(mediaStore.targetDuration))
 const durationSelection = ref<TargetDuration | 'custom'>(
@@ -287,6 +321,25 @@ const styleItems = computed(() =>
 const paceItems = computed(() =>
   SHOT_PACES.map((value) => ({ title: t(`workflow.script.paces.${value}`), value })),
 )
+const localVoiceStatusLabel = computed(() => {
+  if (!localVoiceStatus.value) return '检测中'
+  if ('state' in localVoiceStatus.value) {
+    return {
+      unchecked: '未检测',
+      unavailable: '不可用',
+      stopped: '服务已停止',
+      starting: '服务启动中',
+      running: '服务运行中',
+      failed: '服务异常',
+    }[localVoiceStatus.value.state]
+  }
+  return t(`workflow.localVoice.status.${localVoiceStatus.value.reason}`)
+})
+const indexTtsState = computed(() =>
+  localVoiceStatus.value && 'state' in localVoiceStatus.value
+    ? localVoiceStatus.value.state
+    : undefined,
+)
 
 onMounted(async () => {
   hasApiKey.value = await window.electron.cloud.hasApiKey()
@@ -303,9 +356,37 @@ async function openConfig() {
 async function checkLocalVoice() {
   checkingLocalVoice.value = true
   try {
-    localVoiceStatus.value = await window.electron.cloud.localVoiceStatus()
+    localVoiceStatus.value = mediaStore.localVoiceEngine === 'indextts2'
+      ? await window.electron.cloud.indexTtsStatus()
+      : await window.electron.cloud.localVoiceStatus()
   } finally {
     checkingLocalVoice.value = false
+  }
+}
+
+async function changeLocalVoiceEngine(value: LocalVoiceEngine) {
+  if (!value || value === mediaStore.localVoiceEngine) return
+  mediaStore.localVoiceEngine = value
+  await checkLocalVoice()
+}
+
+async function startIndexTts() {
+  changingIndexTts.value = true
+  try {
+    localVoiceStatus.value = await window.electron.cloud.indexTtsStart()
+    if (localVoiceStatus.value.state !== 'running')
+      toast.error(localVoiceStatus.value.error || 'IndexTTS2 启动失败')
+  } finally {
+    changingIndexTts.value = false
+  }
+}
+
+async function stopIndexTts() {
+  changingIndexTts.value = true
+  try {
+    localVoiceStatus.value = await window.electron.cloud.indexTtsStop()
+  } finally {
+    changingIndexTts.value = false
   }
 }
 
@@ -437,8 +518,9 @@ function invalidateVisuals() {
 .local-voice-status {
   min-width: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
   gap: 8px;
 }
+.local-engine-toggle { justify-self: start; }
+.local-voice-detail { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
+.local-voice-actions { display: flex; gap: 8px; }
 </style>

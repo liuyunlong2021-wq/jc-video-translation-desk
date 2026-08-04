@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildEditingTimeline, episodeVoiceTasks, timelineSubtitleCues } from './editingTimeline.ts'
+import { adoptEditingPoint, buildEditingTimeline, episodeVoiceTasks, timelineSubtitleCues, validateEditingTimeline } from './editingTimeline.ts'
 
 test('builds a continuous timeline and keeps uncertain shots whole', () => {
   const timeline = buildEditingTimeline([
@@ -11,8 +11,32 @@ test('builds a continuous timeline and keeps uncertain shots whole', () => {
     },
     { shotId: 'shot-002', sourceVideoPath: 'clips/002.mp4', sourceDurationMs: 4000, trimStartMs: 3000, trimEndMs: 2000, needsReview: false },
   ])
-  assert.deepEqual(timeline.shots.map((shot) => [shot.trimStartMs, shot.trimEndMs, shot.outputStartMs, shot.outputEndMs]), [[1000, 5000, 0, 4000], [0, 4000, 4000, 8000]])
+  assert.deepEqual(timeline.shots.map((shot) => [shot.adoptedStartMs, shot.adoptedEndMs, shot.outputStartMs, shot.outputEndMs]), [[1000, 5000, 0, 4000], [0, 4000, 4000, 8000]])
+  assert.equal(timeline.schemaVersion, 2)
+  assert.deepEqual(timeline.shots.map((shot) => [shot.geminiStartMs, shot.geminiEndMs, shot.adoptedStartMs, shot.adoptedEndMs]), [[1000, 5000, 1000, 5000], [0, 4000, 0, 4000]])
   assert.deepEqual(timelineSubtitleCues(timeline), [{ start: 1, end: 2.5, text: '你好' }])
+})
+
+test('keeps Gemini points while adopting a user trim and rebuilding output time', () => {
+  const timeline = buildEditingTimeline([
+    { shotId: 'shot-001', sourceVideoPath: '1.mp4', sourceDurationMs: 6000, trimStartMs: 1000, trimEndMs: 5000, needsReview: false },
+    { shotId: 'shot-002', sourceVideoPath: '2.mp4', sourceDurationMs: 4000, trimStartMs: 0, trimEndMs: 4000, needsReview: false },
+  ])
+  const adopted = adoptEditingPoint(timeline, 'shot-001', 1500, 4500)
+  assert.deepEqual(
+    adopted.shots.map((shot) => [shot.geminiStartMs, shot.geminiEndMs, shot.adoptedStartMs, shot.adoptedEndMs, shot.outputStartMs, shot.outputEndMs, shot.adoptedBy, shot.revision]),
+    [[1000, 5000, 1500, 4500, 0, 3000, 'user', 1], [0, 4000, 0, 4000, 3000, 7000, 'gemini', 0]],
+  )
+})
+
+test('rejects non-finite timeline values', () => {
+  const timeline = buildEditingTimeline([
+    { shotId: 'shot-001', sourceVideoPath: '1.mp4', sourceDurationMs: 6000, trimStartMs: 0, trimEndMs: 4000, needsReview: false },
+  ])
+  assert.throws(() => validateEditingTimeline({
+    ...timeline,
+    shots: [{ ...timeline.shots[0], geminiStartMs: Number.NaN }],
+  }), /Gemini/)
 })
 
 test('places voiceover by director budget and onscreen dialogue by Gemini evidence', () => {

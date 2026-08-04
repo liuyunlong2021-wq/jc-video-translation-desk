@@ -2,9 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 import { useMediaTaskStore } from '../store/mediaTask.ts'
+import { confirmProjectDirectorDraft } from './projectDirector.ts'
 
 function projectDirectorPlan() {
   return {
+    productionRoute: 'drama' as const,
+    routeReason: '角色行动和冲突推动剧情',
     project: {
       title: '测试项目',
       format: '短片',
@@ -108,6 +111,13 @@ test('invalidates only the downstream media required by each regeneration level'
   assert.equal(store.scriptHash, 'hash')
 })
 
+test('keeps the selected local voice engine when a project resets', () => {
+  const store = populatedStore()
+  store.localVoiceEngine = 'indextts2'
+  store.reset()
+  assert.equal(store.localVoiceEngine, 'indextts2')
+})
+
 test('requires all three asset skills before storyboard planning', () => {
   const store = populatedStore()
   assert.equal(store.assetPlanningComplete, false)
@@ -152,6 +162,21 @@ test('routes assets through the project director gate and relocks on a replaceme
   store.selectStep('assets')
   assert.equal(store.workspaceView, 'director')
   assert.equal(store.assetPlanningComplete, false)
+})
+
+test('keeps the confirmed route until a user route change is confirmed', () => {
+  const store = populatedStore()
+  assert.equal(store.confirmedProductionRoute, 'drama')
+
+  store.setProjectDirectorRoute('narration-promo')
+  assert.equal(store.projectDirectorDraft?.productionRoute, 'narration-promo')
+  assert.equal(store.projectDirectorPlan?.productionRoute, 'drama')
+  assert.equal(store.confirmedProductionRoute, null)
+  assert.equal(store.assetPlanningComplete, false)
+
+  const confirmed = confirmProjectDirectorDraft(store.projectDirectorDraft!, store.referenceAssets)
+  store.confirmProjectDirector(confirmed.plan, confirmed.assets)
+  assert.equal(store.confirmedProductionRoute, 'narration-promo')
 })
 
 test('script and visual invalidation clear the project director plan', () => {
