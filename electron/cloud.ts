@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import axios, { AxiosError } from 'axios'
 import { app, safeStorage } from 'electron'
@@ -12,6 +13,10 @@ import type {
   ShotVideoAnalysisResult,
   TextModel,
   TranslateSubtitlesParams,
+  TranslateVideoSubtitlesParams,
+  IdentifyVideoTranslationSpeakersParams,
+  VideoTranslationContextSource,
+  VideoTranslationSpeakerDraft,
   VideoModel,
 } from './types.ts'
 import {
@@ -320,6 +325,115 @@ export async function translateSubtitles(params: TranslateSubtitlesParams) {
     }
     throw new Error(reason || '字幕翻译失败')
   })
+}
+
+export async function collectVideoTranslationContext(
+  runId: string,
+  episodeId: string,
+): Promise<VideoTranslationContextSource[]> {
+  const allowed = [
+    `wiki/文稿/${episodeId}/确认文稿.md`,
+    `wiki/项目总监/${episodeId}.md`,
+    'wiki/资产/角色/',
+    'wiki/声音/角色/',
+    'wiki/翻译/角色/',
+  ]
+  const paths = (await listProjectMarkdown(runId)).filter((item) =>
+    allowed.some((prefix) => item === prefix || item.startsWith(prefix)),
+  ).slice(0, 40)
+  const sources: VideoTranslationContextSource[] = []
+  let bytes = 0
+  for (const relativePath of paths) {
+    const document = await readProjectMarkdown(runId, relativePath)
+    const content = document.content.slice(0, 20_000)
+    bytes += Buffer.byteLength(content, 'utf8')
+    if (bytes > 300_000) break
+    sources.push({
+      path: relativePath,
+      hash: createHash('sha256').update(document.content).digest('hex'),
+      content,
+    })
+  }
+  return sources
+}
+
+export async function translateVideoSubtitles(params: TranslateVideoSubtitlesParams) {
+  if (
+    !params?.runId || !params.episodeId || !TEXT_MODELS.includes(params.textModel) ||
+    !params.sourceLanguage?.trim() || !params.targetLanguage?.trim() || !params.subtitles?.length
+  ) throw new Error('视频字幕翻译参数无效')
+  const ids = new Set<string>()
+  for (const item of params.subtitles) {
+    if (!item.cueId?.trim() || ids.has(item.cueId) || !item.text?.trim())
+      throw new Error('视频字幕条目无效')
+    ids.add(item.cueId)
+  }
+  const context = await collectVideoTranslationContext(params.runId, params.episodeId)
+  const prompt = `把字幕从 ${params.sourceLanguage} 准确翻译为 ${params.targetLanguage}。结合角色和剧本资料保持称呼、专有名词、语气一致。不得增删、合并、拆分或改变 cueId。只返回 JSON：{"subtitles":[{"cueId":"原ID","text":"译文"}]}\n\n上下文：${JSON.stringify(context)}\n\n字幕：${JSON.stringify(params.subtitles)}`
+  return withRunAbort(params.runId, async (signal) => {
+    let reason = ''
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const output = await generateJsonResponse(
+        '你是影视本地化字幕翻译器。只输出合法 JSON。',
+        `${prompt}${reason ? `\n\n上次结果无效：${reason}` : ''}`,
+        params.textModel,
+        signal,
+        8_000,
+      )
+      try {
+        const value = parseJson(output)
+        const translated = Array.isArray(value?.subtitles) ? value.subtitles : []
+        if (translated.length !== params.subtitles.length) throw new Error('译文字幕数量不一致')
+        const byId = new Map(translated.map((item: any) => [String(item?.cueId || ''), String(item?.text || '').trim()]))
+        if (byId.size !== ids.size || [...ids].some((id) => !byId.get(id)))
+          throw new Error('译文字幕 ID 或正文不完整')
+        return {
+          subtitles: params.subtitles.map((item) => ({ cueId: item.cueId, text: byId.get(item.cueId)! })),
+          contextPaths: context.map(({ path, hash }) => ({ path, hash })),
+        }
+      } catch (error) {
+        reason = error instanceof Error ? error.message : String(error)
+      }
+    }
+    throw new Error(reason || '视频字幕翻译失败')
+  })
+}
+
+export async function identifyVideoTranslationSpeakers(
+  params: IdentifyVideoTranslationSpeakersParams,
+): Promise<{ speakers: VideoTranslationSpeakerDraft[]; contextPaths: Array<{ path: string; hash: string }> }> {
+  if (!params?.runId || !params.episodeId || !params.videoPath || !params.cues?.length)
+    throw new Error('说话角色识别参数无效')
+  const videoPath = assertEpisodeAsset(params.runId, params.episodeId, params.videoPath)
+  const video = await fs.promises.readFile(videoPath)
+  if (video.byteLength > 90 * 1024 * 1024) throw new Error('原片过大，无法提交角色识别')
+  const context = await collectVideoTranslationContext(params.runId, params.episodeId)
+  const output = await withRunAbort(params.runId, (signal) => generateJsonResponse(
+    '你是影视对白说话角色识别器。只输出合法 JSON；不得改写 cueId、时间或字幕。',
+    [
+      { type: 'file', file: { filename: path.basename(videoPath), file_data: `data:video/mp4;base64,${video.toString('base64')}` } },
+      { type: 'text', text: `结合视频画面、声音、已确认角色和项目资料，为每个 cue 判断说话角色。已有角色只能返回其 translationRoleId；新人不填写 proposedRoleId，只给 proposedName 并 needsReview=true。返回 JSON：{"speakers":[{"cueId":"cue-001","proposedRoleId":"role-1","proposedName":"角色名","confidence":0.9,"evidence":"简短证据","needsReview":false}]}\n\n已有翻译角色：${JSON.stringify(params.roles)}\n\n项目资料：${JSON.stringify(context)}\n\n字幕：${JSON.stringify(params.cues)}` },
+    ],
+    params.textModel,
+    signal,
+    4_000,
+  ))
+  const value = parseJson(output)
+  const returned = new Map((Array.isArray(value?.speakers) ? value.speakers : []).map((item: any) => [String(item?.cueId || ''), item]))
+  const roleIds = new Set(params.roles.map((role) => role.translationRoleId))
+  const speakers = params.cues.map((cue): VideoTranslationSpeakerDraft => {
+    const item: any = returned.get(cue.cueId) || {}
+    const proposedRoleId = roleIds.has(String(item.proposedRoleId || '')) ? String(item.proposedRoleId) : undefined
+    return {
+      cueId: cue.cueId,
+      proposedRoleId,
+      proposedName: String(item.proposedName || '新角色').trim() || '新角色',
+      confidence: Math.max(0, Math.min(1, Number(item.confidence) || 0)),
+      evidence: String(item.evidence || '').trim(),
+      needsReview: Boolean(item.needsReview) || !proposedRoleId,
+    }
+  })
+  return { speakers, contextPaths: context.map(({ path, hash }) => ({ path, hash })) }
 }
 
 export async function analyzeMaterialVideo(

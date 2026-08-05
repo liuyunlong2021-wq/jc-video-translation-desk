@@ -111,6 +111,31 @@ test('invalidates only the downstream media required by each regeneration level'
   assert.equal(store.scriptHash, 'hash')
 })
 
+test('switches to an isolated video translation state without changing creative work', () => {
+  const store = populatedStore()
+  const creative = JSON.stringify({
+    approvedScript: store.approvedScript,
+    segments: store.segments,
+    finalPath: store.finalPath,
+    workspaceView: store.workspaceView,
+    workflowStep: store.workflowStep,
+  })
+  store.selectWorkspaceEntry('video-translate')
+  assert.equal(store.workspaceEntry, 'video-translate')
+  assert.ok(store.videoTranslation)
+  store.videoTranslation!.translationStatus = 'ready'
+  store.videoTranslation!.finalStatus = 'ready'
+  store.invalidateTranslation('translation')
+  assert.equal(store.videoTranslation!.finalStatus, 'stale')
+  assert.equal(JSON.stringify({
+    approvedScript: store.approvedScript,
+    segments: store.segments,
+    finalPath: store.finalPath,
+    workspaceView: store.workspaceView,
+    workflowStep: store.workflowStep,
+  }), creative)
+})
+
 test('keeps the selected local voice engine when a project resets', () => {
   const store = populatedStore()
   store.localVoiceEngine = 'indextts2'

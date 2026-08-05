@@ -51,6 +51,16 @@ function relativizeRun(run: any) {
   run.editingTimelinePath = relativeAsset(run.runId, run.editingTimelinePath)
   run.pictureMasterPath = relativeAsset(run.runId, run.pictureMasterPath)
   run.finalPath = relativeAsset(run.runId, run.finalPath)
+  if (run.videoTranslation) {
+    for (const key of [
+      'sourceVideoPath', 'sourceTranscriptPath', 'sourceSrtPath', 'contextPath',
+      'confirmedDialoguePath', 'seedArrangementPath', 'seedPromptPath', 'targetVoicePath',
+      'vocalPath', 'instrumentPath', 'mixedPath', 'finalVideoPath',
+    ]) run.videoTranslation[key] = relativeAsset(run.runId, run.videoTranslation[key])
+    run.videoTranslation.cues?.forEach((cue: any) => {
+      cue.voicePath = relativeAsset(run.runId, cue.voicePath)
+    })
+  }
   run.segments?.forEach((segment: any) => {
     segment.imagePath = relativeAsset(run.runId, segment.imagePath)
     segment.videoPath = relativeAsset(run.runId, segment.videoPath)
@@ -134,6 +144,22 @@ function migrateRun(run: any) {
   run.seedAudioDirectorDraftPath ||= ''
   run.seedAudioDuration = Number.isFinite(Number(run.seedAudioDuration)) ? Number(run.seedAudioDuration) : 0
   run.originalVocalRemoved = Boolean(run.originalVocalRemoved)
+  if (run.workspaceEntry !== 'video-translate') run.workspaceEntry = 'content-create'
+  if (!Array.isArray(run.videoTranslationRoles)) run.videoTranslationRoles = []
+  if (run.videoTranslation && typeof run.videoTranslation === 'object') {
+    run.videoTranslation.sourceLanguage ||= 'auto'
+    run.videoTranslation.targetLanguage ||= 'en'
+    run.videoTranslation.durationMs = Number.isFinite(Number(run.videoTranslation.durationMs))
+      ? Number(run.videoTranslation.durationMs) : 0
+    run.videoTranslation.hasAudio = Boolean(run.videoTranslation.hasAudio)
+    if (!Array.isArray(run.videoTranslation.cues)) run.videoTranslation.cues = []
+    for (const key of [
+      'transcriptStatus', 'speakerStatus', 'translationStatus', 'reviewStatus',
+      'arrangementStatus', 'voiceStatus', 'separationStatus', 'mixStatus', 'finalStatus',
+    ]) if (!['idle', 'running', 'ready', 'failed', 'stale'].includes(run.videoTranslation[key]))
+      run.videoTranslation[key] = 'idle'
+    run.videoTranslation.originalVocalRemoved = Boolean(run.videoTranslation.originalVocalRemoved)
+  } else run.videoTranslation = null
   if (
     ![
       'gemini-3.6-flash',

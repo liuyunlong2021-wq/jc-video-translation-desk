@@ -6,6 +6,7 @@ import { parseFile } from 'music-metadata'
 import type {
   ComposeGeneratedVideoParams,
   ComposePictureMasterParams,
+  ComposeVideoTranslationParams,
   AdoptInstrumentParams,
   ExecuteFFmpegResult,
   MixBackgroundAudioParams,
@@ -14,7 +15,7 @@ import type {
 } from './types.ts'
 import { generateUniqueFileName } from '../lib/tools.ts'
 import { isDev } from '../lib/is-dev.ts'
-import { assertEpisodeAsset, ensureEpisodeDir, getRunDir, getRunAssetPath, mediaDuration, relativeRunAsset, writeFinalArtifacts } from '../media-workspace.ts'
+import { assertEpisodeAsset, ensureEpisodeDir, getEpisodeDir, getRunDir, getRunAssetPath, mediaDuration, relativeRunAsset, writeFinalArtifacts } from '../media-workspace.ts'
 import type { AudioProcessingRecord } from '../../src/runtime/productionContract.ts'
 
 const isWindows = process.platform === 'win32'
@@ -190,20 +191,34 @@ export async function composePictureMaster(
 
 const DEFAULT_PEIYIN_ROOT = '/Users/by3/Documents/peiyin-pyvideotrans'
 
-function audioPaths(runId: string, episodeId: string) {
-  const dir = path.join(getRunDir(runId), 'wiki', '声音', episodeId)
+function audioPaths(
+  runId: string,
+  episodeId: string,
+  workflow: 'creative' | 'video-translation' = 'creative',
+  targetLanguage?: string,
+) {
+  const language = String(targetLanguage || '').trim()
+  if (workflow === 'video-translation' && !/^[A-Za-z0-9_-]+$/.test(language))
+    throw new Error('目标语言无效')
+  const root = workflow === 'video-translation'
+    ? path.join(getRunDir(runId), 'wiki', '翻译', episodeId, language)
+    : path.join(getRunDir(runId), 'wiki', '声音', episodeId)
+  const dir = workflow === 'video-translation' ? path.join(root, '音频') : root
   return {
     dir,
     source: path.join(dir, 'source.wav'),
     vocal: path.join(dir, 'vocal.wav'),
     instrument: path.join(dir, 'instrument.wav'),
     mixed: path.join(dir, 'mixed.wav'),
-    record: path.join(dir, '音频处理.json'),
+    record: path.join(root, '音频处理.json'),
   }
 }
 
-async function writeAudioProcessingRecord(runId: string, episodeId: string, record: AudioProcessingRecord) {
-  const target = audioPaths(runId, episodeId)
+async function writeAudioProcessingRecord(
+  params: Pick<SeparateSourceAudioParams, 'runId' | 'episodeId' | 'workflow' | 'targetLanguage'>,
+  record: AudioProcessingRecord,
+) {
+  const target = audioPaths(params.runId, params.episodeId, params.workflow, params.targetLanguage)
   await fs.promises.mkdir(target.dir, { recursive: true })
   await fs.promises.writeFile(`${target.record}.tmp`, `${JSON.stringify(record, null, 2)}\n`, 'utf8')
   await fs.promises.rename(`${target.record}.tmp`, target.record)
@@ -214,7 +229,7 @@ export async function separateSourceAudio(
   params: SeparateSourceAudioParams & { abortSignal?: AbortSignal },
 ) {
   const pictureMaster = assertEpisodeAsset(params.runId, params.episodeId, params.pictureMasterPath)
-  const target = audioPaths(params.runId, params.episodeId)
+  const target = audioPaths(params.runId, params.episodeId, params.workflow, params.targetLanguage)
   await fs.promises.mkdir(target.dir, { recursive: true })
   await executeFFmpeg([
     '-i', pictureMaster,
@@ -238,7 +253,7 @@ export async function separateSourceAudio(
   for (const file of [target.vocal, target.instrument]) {
     if (!(await fs.promises.stat(file).catch(() => null))?.size) throw new Error('人声分离没有生成有效 stem')
   }
-  return writeAudioProcessingRecord(params.runId, params.episodeId, {
+  return writeAudioProcessingRecord(params, {
     schemaVersion: 1,
     audioMode: 'replace-preserve-ambience',
     vocalPath: relativeRunAsset(params.runId, target.vocal),
@@ -252,7 +267,7 @@ export async function removeOriginalVocal(params: AdoptInstrumentParams) {
   const vocal = assertEpisodeAsset(params.runId, params.episodeId, params.vocalPath)
   const instrument = assertEpisodeAsset(params.runId, params.episodeId, params.instrumentPath)
   await Promise.all([fs.promises.access(vocal), fs.promises.access(instrument)])
-  return writeAudioProcessingRecord(params.runId, params.episodeId, {
+  return writeAudioProcessingRecord(params, {
     schemaVersion: 1,
     audioMode: 'replace-preserve-ambience',
     vocalPath: relativeRunAsset(params.runId, vocal),
@@ -269,7 +284,7 @@ export async function mixBackgroundAudio(
   const instrument = assertEpisodeAsset(params.runId, params.episodeId, params.instrumentPath)
   const voice = assertEpisodeAsset(params.runId, params.episodeId, params.voiceFile)
   await Promise.all([fs.promises.access(vocal), fs.promises.access(instrument), fs.promises.access(voice)])
-  const target = audioPaths(params.runId, params.episodeId)
+  const target = audioPaths(params.runId, params.episodeId, params.workflow, params.targetLanguage)
   await executeFFmpeg([
     '-i', instrument,
     '-i', voice,
@@ -277,7 +292,7 @@ export async function mixBackgroundAudio(
     '[0:a]aresample=48000[bg];[1:a]aresample=48000[voice];[bg][voice]amix=inputs=2:duration=first:dropout_transition=0,loudnorm=I=-16:TP=-1.5:LRA=11[out]',
     '-map', '[out]', '-c:a', 'pcm_s16le', '-y', target.mixed,
   ], params)
-  return writeAudioProcessingRecord(params.runId, params.episodeId, {
+  return writeAudioProcessingRecord(params, {
     schemaVersion: 1,
     audioMode: 'replace-preserve-ambience',
     vocalPath: relativeRunAsset(params.runId, vocal),
@@ -286,6 +301,60 @@ export async function mixBackgroundAudio(
     originalVocalRemoved: true,
     status: 'ready',
   })
+}
+
+export async function composeVideoTranslation(
+  params: ComposeVideoTranslationParams & { abortSignal?: AbortSignal },
+) {
+  if (!/^[A-Za-z0-9_-]+$/.test(params.targetLanguage)) throw new Error('目标语言无效')
+  if (!params.subtitleCues?.length) throw new Error('没有可烧录的目标语言字幕')
+  const source = assertEpisodeAsset(params.runId, params.episodeId, params.sourceVideoPath)
+  const mixed = assertEpisodeAsset(params.runId, params.episodeId, params.mixedAudioPath)
+  const duration = await mediaDuration(source)
+  const outputDir = path.join(
+    getEpisodeDir(params.runId, params.episodeId),
+    'video-translate',
+    params.targetLanguage,
+  )
+  const wikiDir = path.join(
+    getRunDir(params.runId),
+    'wiki',
+    '翻译',
+    params.episodeId,
+    params.targetLanguage,
+  )
+  await Promise.all([
+    fs.promises.mkdir(outputDir, { recursive: true }),
+    fs.promises.mkdir(wikiDir, { recursive: true }),
+  ])
+  const output = generateUniqueFileName(path.join(outputDir, 'final.mp4'))
+  const subtitlePath = path.join(wikiDir, 'target.srt')
+  await fs.promises.writeFile(subtitlePath, formatSrt(params.subtitleCues), 'utf8')
+  const escaped = subtitlePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\\\''")
+  await executeFFmpeg([
+    '-i', source,
+    '-i', mixed,
+    '-filter_complex', `[1:a]apad,atrim=0:${duration},loudnorm=I=-16:TP=-1.5:LRA=11[aout]`,
+    '-map', '0:v:0',
+    '-map', '[aout]',
+    '-vf', `subtitles='${escaped}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=90'`,
+    '-c:v', 'libx264',
+    '-preset', 'medium',
+    '-crf', '23',
+    '-c:a', 'aac',
+    '-b:a', '128k',
+    '-t', String(duration),
+    '-y', output,
+  ], params)
+  const relativeOutput = relativeRunAsset(params.runId, output)
+  const finalPage = path.join(wikiDir, '成片.md')
+  await fs.promises.writeFile(
+    `${finalPage}.tmp`,
+    `# ${params.episodeId} ${params.targetLanguage} 翻译成片\n\n- [打开成片](../../../../${relativeOutput})\n- [目标字幕](./target.srt)\n- [音频处理](./音频处理.json)\n`,
+    'utf8',
+  )
+  await fs.promises.rename(`${finalPage}.tmp`, finalPage)
+  return relativeOutput
 }
 
 function executeProcess(command: string, args: string[], abortSignal?: AbortSignal) {

@@ -32,6 +32,14 @@ import {
 } from '../runtime/videoWorkflow.ts'
 import { deserializeMediaTask, serializeMediaTask } from '../runtime/mediaPersistence.ts'
 import { DEFAULT_EPISODE_ID } from '../runtime/productionContract.ts'
+import {
+  createVideoTranslationState,
+  invalidateVideoTranslation,
+  type TranslationRole,
+  type VideoTranslationChange,
+  type VideoTranslationState,
+  type WorkspaceEntry,
+} from '../runtime/videoTranslation.ts'
 
 export type WorkflowStage =
   | 'draft'
@@ -168,6 +176,9 @@ export const useMediaTaskStore = defineStore(
     const editingTimelinePath = ref('')
     const pictureMasterPath = ref('')
     const finalPath = ref('')
+    const workspaceEntry = ref<WorkspaceEntry>('content-create')
+    const videoTranslationRoles = ref<TranslationRole[]>([])
+    const videoTranslation = ref<VideoTranslationState | null>(null)
     const busyAction = ref('')
     const cancelRequested = ref(false)
     const error = ref('')
@@ -249,6 +260,18 @@ export const useMediaTaskStore = defineStore(
       mixedAudioPath.value = ''
       audioProcessingStatus.value = keepStems && instrumentPath.value ? 'ready' : 'idle'
       finalPath.value = ''
+    }
+
+    function selectWorkspaceEntry(entry: WorkspaceEntry) {
+      workspaceEntry.value = entry
+      error.value = ''
+      if (entry === 'video-translate' && !videoTranslation.value)
+        videoTranslation.value = createVideoTranslationState()
+    }
+
+    function invalidateTranslation(change: VideoTranslationChange) {
+      if (videoTranslation.value)
+        videoTranslation.value = invalidateVideoTranslation(videoTranslation.value, change)
     }
 
     function invalidateFrom(level: 'script' | 'voice' | 'images' | 'videos') {
@@ -615,6 +638,9 @@ export const useMediaTaskStore = defineStore(
       editingTimelinePath.value = ''
       pictureMasterPath.value = ''
       finalPath.value = ''
+      workspaceEntry.value = 'content-create'
+      videoTranslationRoles.value = []
+      videoTranslation.value = null
       busyAction.value = ''
       cancelRequested.value = false
       error.value = ''
@@ -751,6 +777,9 @@ export const useMediaTaskStore = defineStore(
       editingTimelinePath,
       pictureMasterPath,
       finalPath,
+      workspaceEntry,
+      videoTranslationRoles,
+      videoTranslation,
       busyAction,
       cancelRequested,
       error,
@@ -789,6 +818,8 @@ export const useMediaTaskStore = defineStore(
       setAudioProductionRoute,
       setOutputLanguage,
       invalidateAudioProcessing,
+      selectWorkspaceEntry,
+      invalidateTranslation,
       selectShot,
       selectAsset,
       invalidateShot,

@@ -601,6 +601,37 @@ export async function resolveProjectSeedReferences(projectId: string, speakerIds
   )
 }
 
+export async function resolveSeedVoiceProfiles(
+  bindings: Array<{ speakerId: string; voiceProfileId: string }>,
+) {
+  const catalog = await loadCatalog()
+  return [...new Map(bindings.map((item) => [item.speakerId, item])).values()].map((binding) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(binding.speakerId)) throw new Error('无效的翻译角色 ID')
+    const profile = catalog.profiles.find((item) => item.voiceProfileId === binding.voiceProfileId)
+    if (!profile || profile.engine !== 'seed-audio' || !profile.referenceRelativePath)
+      throw new Error(`${binding.speakerId} 绑定的不是可用 Seed 音色`)
+    return {
+      speakerId: binding.speakerId,
+      voiceProfileId: profile.voiceProfileId,
+      referenceAudioPath: path.join(libraryDir(), profile.referenceRelativePath),
+      apiSpeakerId: profile.providerSpeakerId || profile.voiceProfileId,
+      voiceDesignPrompt: profile.voiceDesignPrompt,
+      label: profile.displayName,
+    }
+  })
+}
+
+export async function voiceProfilePreviewDataUrl(voiceProfileId: string) {
+  const profile = (await loadCatalog()).profiles.find((item) => item.voiceProfileId === voiceProfileId)
+  if (!profile?.referenceRelativePath) throw new Error('该声音没有可试听参考音')
+  const file = path.resolve(libraryDir(), profile.referenceRelativePath)
+  if (!file.startsWith(`${path.resolve(libraryDir())}${path.sep}`)) throw new Error('声音路径越界')
+  const bytes = await fs.promises.readFile(file)
+  if (bytes.length > 20 * 1024 * 1024) throw new Error('参考音过大，无法试听')
+  const mime = path.extname(file).toLowerCase() === '.mp3' ? 'audio/mpeg' : 'audio/wav'
+  return `data:${mime};base64,${bytes.toString('base64')}`
+}
+
 export function getVoiceLibraryDir() {
   return libraryDir()
 }

@@ -1,9 +1,17 @@
 # TDD-13：视频翻译工作流
 
 > 日期：2026-08-05
-> 状态：待执行
+> 状态：已实现（本地自动化与 Electron UI 验收通过；真实付费模型/Seed API 联调未执行）
 > 定位：在现有 Electron 工作台增加一个与内容创作完全隔离的视频翻译入口
 > 前置依赖：`docs/tdd/00-共享生产合同与状态机TDD.md`、`docs/tdd/02-声音引擎与角色音色绑定TDD.md`、`docs/tdd/03-素材SRTTDD.md`、`docs/tdd/05-配音字幕工作台骨架TDD.md`、`docs/tdd/06-配音与字幕TDD.md`、`docs/tdd/07-音频处理与成片TDD.md`、`docs/tdd/08-项目与剧集数据边界TDD.md`、`docs/tdd/09-项目与剧集UITDD.md`、`docs/tdd/10-Seed Audio声音设计整段配音与完整声音轨TDD.md`、`docs/tdd/12-项目存储位置与资产用途版本TDD.md`
+
+## 0. 实现记录
+
+- 已增加独立的视频翻译入口、三栏 UI、六列字幕工作台和右栏 11 个固定动作。
+- 已实现翻译状态、失效链、持久化、跨集角色库和 `wiki/翻译/` 沙箱；现有创作 Wiki 仅作只读上下文。
+- 已复用 Faster-Whisper、大模型客户端、全局声音库、Seed Audio、Spleeter 和 FFmpeg 执行器，但翻译业务状态与内容创作完全分离。
+- 已通过 `pnpm test`（165/165）、`pnpm exec vue-tsc --noEmit`、`git diff --check` 和真实 Electron 界面验收。
+- 未调用真实付费翻译模型或 Seed API；此项留给有效密钥与可控成本环境下的联调验收。
 
 ## 1. 目标
 

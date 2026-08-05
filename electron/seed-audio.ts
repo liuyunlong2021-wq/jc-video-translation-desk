@@ -76,6 +76,8 @@ export interface GenerateSeedAudioParams {
   language?: 'zh' | 'en'
   references?: SeedAudioReference[]
   outputName?: string
+  workflow?: 'creative' | 'video-translation'
+  targetLanguage?: string
 }
 
 export async function writeSeedAudioArrangement(
@@ -96,9 +98,16 @@ function outputPath(params: GenerateSeedAudioParams) {
     /[^A-Za-z0-9_-]/g,
     '-',
   )
-  return generateUniqueFileName(
-    path.join(getEpisodeDir(params.runId, params.episodeId), 'seed-audio', `${safeName}.mp3`),
-  )
+  const directory = params.workflow === 'video-translation'
+    ? path.join(getEpisodeDir(params.runId, params.episodeId), 'video-translate', safeLanguage(params.targetLanguage), 'seed-audio')
+    : path.join(getEpisodeDir(params.runId, params.episodeId), 'seed-audio')
+  return generateUniqueFileName(path.join(directory, `${safeName}.mp3`))
+}
+
+function safeLanguage(value?: string) {
+  const language = String(value || '').trim()
+  if (!/^[A-Za-z0-9_-]+$/.test(language)) throw new Error('目标语言无效')
+  return language
 }
 
 async function saveResponseAudio(data: any, target: string) {
@@ -129,7 +138,7 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
     references,
   })
   await ensureEpisodeDir(params.runId, params.episodeId)
-  const directory = path.join(getEpisodeDir(params.runId, params.episodeId), 'seed-audio')
+  const directory = path.dirname(outputPath({ ...params, outputName: 'probe' }))
   await fs.promises.mkdir(directory, { recursive: true })
   const response = await axios.post(process.env.SEED_AUDIO_URL || DEFAULT_URL, payload, {
     timeout: 300_000,
@@ -162,14 +171,9 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
     responseDuration:
       Number(response.data?.duration || response.data?.original_duration || 0) || undefined,
   }
-  const recordPath = path.join(
-    getRunDir(params.runId),
-    'wiki',
-    '声音',
-    params.episodeId,
-    'seed-audio',
-    '声音生成记录.json',
-  )
+  const recordPath = params.workflow === 'video-translation'
+    ? path.join(getRunDir(params.runId), 'wiki', '翻译', params.episodeId, safeLanguage(params.targetLanguage), '声音生成记录.json')
+    : path.join(getRunDir(params.runId), 'wiki', '声音', params.episodeId, 'seed-audio', '声音生成记录.json')
   const existing = await fs.promises
     .readFile(recordPath, 'utf8')
     .then(JSON.parse)
@@ -203,10 +207,15 @@ export async function mixSeedAudioTracks(
   episodeId: string,
   audioPaths: string[],
   durationMs: number,
+  workflow: 'creative' | 'video-translation' = 'creative',
+  targetLanguage?: string,
 ) {
   if (!audioPaths.length) throw new Error('没有可混合的 Seed Audio 音轨')
   const inputs = audioPaths.map((audioPath) => assertEpisodeAsset(runId, episodeId, audioPath))
-  const target = path.join(getEpisodeDir(runId, episodeId), 'seed-audio', '完整声音轨.wav')
+  const target = workflow === 'video-translation'
+    ? path.join(getEpisodeDir(runId, episodeId), 'video-translate', safeLanguage(targetLanguage), '目标人声.wav')
+    : path.join(getEpisodeDir(runId, episodeId), 'seed-audio', '完整声音轨.wav')
+  await fs.promises.mkdir(path.dirname(target), { recursive: true })
   if (inputs.length === 1) {
     await fs.promises.copyFile(inputs[0], target)
     return relativeRunAsset(runId, target)

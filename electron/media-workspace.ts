@@ -61,6 +61,7 @@ const SHARED_STATE_KEYS = [
   'videoModel',
   'referenceAssets',
   'assetPlanCompletedRoles',
+  'videoTranslationRoles',
 ] as const
 
 function projectSettingsPath() {
@@ -1090,6 +1091,7 @@ export function assertEpisodeAsset(runId: string, episodeId: string, filePath: s
     || relative.startsWith(`wiki/字幕/素材/${episodeId}/`)
     || relative.startsWith(`wiki/剪辑/${episodeId}/`)
     || relative.startsWith(`wiki/字幕/${episodeId}-`)
+    || relative.startsWith(`wiki/翻译/${episodeId}/`)
   if (!owned) throw new Error('素材不属于当前剧集')
   return resolved
 }

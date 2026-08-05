@@ -114,6 +114,18 @@
         :disabled="!mediaStore.runId"
         @click="showCurrentProject"
       />
+      <v-btn-toggle
+        :model-value="mediaStore.workspaceEntry"
+        mandatory
+        density="compact"
+        color="primary"
+        :disabled="Boolean(mediaStore.busyAction) || projectSwitching"
+        aria-label="工作台入口"
+        @update:model-value="selectWorkspaceEntry"
+      >
+        <v-btn value="content-create" size="small">内容创作</v-btn>
+        <v-btn value="video-translate" size="small">视频翻译</v-btn>
+      </v-btn-toggle>
       <template v-if="isDubbingWorkspace">
         <v-btn
           :icon="dubbingRightOpen ? 'mdi-chevron-double-right' : 'mdi-chevron-double-left'"
@@ -210,13 +222,26 @@
     <div
       class="workspace-grid w-full h-0 min-h-0 flex-1 grid gap-3 py-3 px-3"
       :class="{
-        'dubbing-workspace-mode': isDubbingWorkspace,
-        'left-collapsed': !leftPanelVisible,
-        'right-collapsed': !rightPanelVisible,
+        'dubbing-workspace-mode': isDubbingWorkspace && !isVideoTranslation,
+        'translation-workspace-mode': isVideoTranslation,
+        'left-collapsed': !isVideoTranslation && !leftPanelVisible,
+        'right-collapsed': !isVideoTranslation && !rightPanelVisible,
       }"
     >
-      <TextGenerate v-show="leftPanelVisible" @import-markdown="importMarkdown" />
-      <VideoManage
+      <template v-if="isVideoTranslation">
+        <VideoTranslationSidebar />
+        <VideoTranslationWorkspace
+          :selected-cue-id="selectedTranslationCueId"
+          @select-cue="selectedTranslationCueId = $event"
+        />
+        <VideoTranslationInspector
+          :selected-cue-id="selectedTranslationCueId"
+          @action="runTranslationAction"
+        />
+      </template>
+      <template v-else>
+        <TextGenerate v-show="leftPanelVisible" @import-markdown="importMarkdown" />
+        <VideoManage
         @edit-script="editScript"
         @markdown-saved="reloadStoryboardMarkdown"
         @upload-asset-reference="uploadAssetReference"
@@ -231,21 +256,21 @@
         @arrange-seed-track="arrangeSeedTrack"
         @generate-seed-track="generateSeedTrack"
         @generate-shot-plan="generateShotPlan"
-      />
-      <v-btn
+        />
+        <v-btn
         v-if="!isDubbingWorkspace && !isFinalWorkspace"
         class="inspector-toggle"
         :icon="inspectorOpen ? 'mdi-close' : 'mdi-tune-variant'"
         :aria-label="inspectorOpen ? '关闭检查器' : '打开检查器'"
         size="small"
         @click="inspectorOpen = !inspectorOpen"
-      />
-      <div
+        />
+        <div
         v-show="rightPanelVisible"
         class="inspector-column min-w-0 min-h-0"
         :class="{ open: isDubbingWorkspace ? dubbingRightOpen : inspectorOpen }"
-      >
-        <VideoRender
+        >
+          <VideoRender
           @generate-script="generateScript"
           @approve-script="approveScript"
           @generate-project-director="generateProjectDirector"
@@ -283,8 +308,9 @@
           @undo-revision="undoRevision"
           @open-final="showFinal"
           @export-final="exportFinal"
-        />
-      </div>
+          />
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -296,6 +322,9 @@ import { useTranslation } from 'i18next-vue'
 import TextGenerate from './components/TextGenerate.vue'
 import VideoManage from './components/VideoManage.vue'
 import VideoRender from './components/VideoRender.vue'
+import VideoTranslationSidebar from './components/VideoTranslationSidebar.vue'
+import VideoTranslationWorkspace from './components/VideoTranslationWorkspace.vue'
+import VideoTranslationInspector from './components/VideoTranslationInspector.vue'
 import { useMediaTaskStore } from '@/store'
 import {
   createRunId,
@@ -343,6 +372,11 @@ import {
   planSeedAudioArrangement,
   seedLinesFromScript,
 } from '@/runtime/seedAudio'
+import {
+  createVideoTranslationState,
+  planVideoTranslationSeed,
+  type VideoTranslationAction,
+} from '@/runtime/videoTranslation'
 import type {
   AssetRole,
   AssetVersion,
@@ -358,6 +392,7 @@ const isMac = window.electron.platform === 'darwin'
 const inspectorOpen = ref(false)
 const dubbingRightOpen = ref(true)
 const taskDrawerOpen = ref(false)
+const selectedTranslationCueId = ref('')
 const projects = ref<ProjectManifest[]>([])
 const projectSwitching = ref(false)
 const renameOpen = ref(false)
@@ -367,6 +402,7 @@ const currentProject = computed(() =>
 )
 const isDubbingWorkspace = computed(() => mediaStore.workspaceView === 'dubbing')
 const isFinalWorkspace = computed(() => mediaStore.workspaceView === 'final')
+const isVideoTranslation = computed(() => mediaStore.workspaceEntry === 'video-translate')
 const leftPanelVisible = computed(() => mediaStore.workspaceView === 'script')
 const rightPanelVisible = computed(
   () => !isFinalWorkspace.value && (!isDubbingWorkspace.value || dubbingRightOpen.value),
@@ -1317,6 +1353,318 @@ async function runAction(name: string, action: () => Promise<void>) {
   } finally {
     mediaStore.busyAction = ''
   }
+}
+
+function selectWorkspaceEntry(entry: 'content-create' | 'video-translate') {
+  mediaStore.selectWorkspaceEntry(entry)
+  selectedTranslationCueId.value = mediaStore.videoTranslation?.cues[0]?.cueId || ''
+}
+
+function translationState() {
+  if (!mediaStore.videoTranslation) mediaStore.videoTranslation = createVideoTranslationState()
+  return mediaStore.videoTranslation
+}
+
+type TranslationStatusKey =
+  | 'transcriptStatus'
+  | 'speakerStatus'
+  | 'translationStatus'
+  | 'reviewStatus'
+  | 'arrangementStatus'
+  | 'voiceStatus'
+  | 'separationStatus'
+  | 'mixStatus'
+  | 'finalStatus'
+
+async function runTranslationStep(
+  action: VideoTranslationAction,
+  status: TranslationStatusKey,
+  work: (state: NonNullable<typeof mediaStore.videoTranslation>) => Promise<void>,
+) {
+  await runAction(action, async () => {
+    const state = translationState()
+    state[status] = 'running'
+    try {
+      await work(state)
+      state[status] = 'ready'
+    } catch (error) {
+      state[status] = 'failed'
+      throw error
+    }
+  })
+}
+
+async function runTranslationAction(action: VideoTranslationAction) {
+  if (action === 'upload-video') return uploadTranslationVideo()
+  if (action === 'generate-source-subtitles') return generateTranslationSubtitles()
+  if (action === 'identify-speakers') return identifyTranslationSpeakers()
+  if (action === 'translate-all-subtitles') return translateVideoSubtitles()
+  if (action === 'confirm-speakers-and-subtitles') return confirmTranslationDialogue()
+  if (action === 'arrange-doubao-voice') return arrangeTranslationVoice()
+  if (action === 'generate-target-voice') return generateTranslationVoice()
+  if (action === 'separate-source-audio') return separateTranslationAudio()
+  if (action === 'remove-original-vocal') return removeTranslationVocal()
+  if (action === 'mix-background-audio') return mixTranslationAudio()
+  return burnTranslationVideo()
+}
+
+async function uploadTranslationVideo() {
+  const current = translationState()
+  if (current.sourceVideoPath && !window.confirm('更换视频会使本集翻译下游失效，是否继续？')) return
+  await runAction('upload-video', async () => {
+    const result = await window.electron.cloud.selectVideoTranslationSource(
+      mediaStore.runId,
+      mediaStore.episodeId,
+    )
+    if (!result) return
+    const next = createVideoTranslationState()
+    next.sourceLanguage = current.sourceLanguage
+    next.targetLanguage = current.targetLanguage
+    next.sourceVideoPath = result.sourceVideoPath
+    next.sourceFingerprint = result.sourceFingerprint
+    next.durationMs = result.durationMs
+    next.hasAudio = result.hasAudio
+    mediaStore.videoTranslation = next
+    selectedTranslationCueId.value = ''
+    toast.success('翻译原片已归档')
+  })
+}
+
+async function generateTranslationSubtitles() {
+  await runTranslationStep('generate-source-subtitles', 'transcriptStatus', async (state) => {
+    if (!state.sourceVideoPath) throw new Error('请先上传视频')
+    const result = await window.electron.cloud.generateMaterialTranscript({
+      runId: mediaStore.runId,
+      episodeId: mediaStore.episodeId,
+      mediaId: `translation-${mediaStore.episodeId}`,
+      videoPath: state.sourceVideoPath,
+      workflow: 'video-translation',
+    })
+    if (!result.transcript.cues.length) throw new Error('原片没有识别到有效对白')
+    state.sourceTranscriptPath = result.transcriptJsonPath
+    state.sourceSrtPath = result.transcriptSrtPath
+    state.cues = result.transcript.cues.map((cue) => ({
+      cueId: cue.cueId,
+      startMs: cue.startMs,
+      endMs: cue.endMs,
+      recognizedText: cue.recognizedText,
+      sourceText: cue.recognizedText,
+      translatedText: '',
+      needsReview: true,
+    }))
+    selectedTranslationCueId.value = state.cues[0].cueId
+    toast.success('原字幕已生成')
+  })
+}
+
+async function identifyTranslationSpeakers() {
+  await runTranslationStep('identify-speakers', 'speakerStatus', async (state) => {
+    if (!state.sourceVideoPath) throw new Error('请先上传视频')
+    const result = await window.electron.cloud.identifyVideoTranslationSpeakers({
+      runId: mediaStore.runId,
+      episodeId: mediaStore.episodeId,
+      textModel: mediaStore.textModel,
+      videoPath: state.sourceVideoPath,
+      cues: state.cues.map((cue) => ({
+        cueId: cue.cueId,
+        startMs: cue.startMs,
+        endMs: cue.endMs,
+        text: cue.sourceText,
+      })),
+      roles: mediaStore.videoTranslationRoles,
+    })
+    const byId = new Map(result.speakers.map((speaker) => [speaker.cueId, speaker]))
+    state.cues.forEach((cue) => {
+      const speaker = byId.get(cue.cueId)
+      if (!speaker) return
+      cue.translationRoleId = speaker.proposedRoleId
+      cue.proposedName = speaker.proposedName
+      cue.confidence = speaker.confidence
+      cue.evidence = speaker.evidence
+      cue.needsReview = speaker.needsReview
+    })
+    state.contextPath = await window.electron.cloud.writeVideoTranslationContext(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      result.contextPaths,
+    )
+    toast.success('说话角色候选已生成，请人工确认')
+  })
+}
+
+async function translateVideoSubtitles() {
+  await runTranslationStep('translate-all-subtitles', 'translationStatus', async (state) => {
+    const roleById = new Map(mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role.displayName]))
+    const result = await window.electron.cloud.translateVideoSubtitles({
+      runId: mediaStore.runId,
+      episodeId: mediaStore.episodeId,
+      textModel: mediaStore.textModel,
+      sourceLanguage: state.sourceLanguage,
+      targetLanguage: state.targetLanguage,
+      subtitles: state.cues.map((cue) => ({
+        cueId: cue.cueId,
+        roleName: cue.translationRoleId ? roleById.get(cue.translationRoleId) : cue.proposedName,
+        text: cue.sourceText,
+      })),
+    })
+    const byId = new Map(result.subtitles.map((subtitle) => [subtitle.cueId, subtitle.text]))
+    state.cues.forEach((cue) => { cue.translatedText = byId.get(cue.cueId) || '' })
+    state.contextPath = await window.electron.cloud.writeVideoTranslationContext(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      result.contextPaths,
+    )
+    toast.success('目标语言字幕已生成，请人工校对')
+  })
+}
+
+async function confirmTranslationDialogue() {
+  await runTranslationStep('confirm-speakers-and-subtitles', 'reviewStatus', async (state) => {
+    const used = new Set(state.cues.map((cue) => cue.translationRoleId))
+    const roles = mediaStore.videoTranslationRoles.filter((role) => used.has(role.translationRoleId))
+    roles.forEach((role) => {
+      if (!role.sourceEpisodeIds.includes(mediaStore.episodeId)) role.sourceEpisodeIds.push(mediaStore.episodeId)
+    })
+    state.confirmedDialoguePath = await window.electron.cloud.confirmVideoTranslation(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      state.sourceLanguage,
+      state.targetLanguage,
+      state.cues,
+      mediaStore.videoTranslationRoles,
+    )
+    toast.success('角色与字幕已确认')
+  })
+}
+
+async function currentTranslationSeedPlan() {
+  const state = translationState()
+  const roleIds = new Set(state.cues.map((cue) => cue.translationRoleId).filter(Boolean) as string[])
+  const roles = mediaStore.videoTranslationRoles.filter((role) => roleIds.has(role.translationRoleId))
+  const references = await window.electron.cloud.resolveSeedVoiceProfiles(
+    roles.map((role) => ({
+      speakerId: role.translationRoleId,
+      voiceProfileId: role.voiceProfileId || '',
+    })),
+  )
+  return planVideoTranslationSeed(
+    mediaStore.episodeId,
+    state.durationMs,
+    state.targetLanguage,
+    state.cues,
+    roles,
+    references,
+  )
+}
+
+async function arrangeTranslationVoice() {
+  await runTranslationStep('arrange-doubao-voice', 'arrangementStatus', async (state) => {
+    const plan = await currentTranslationSeedPlan()
+    const saved = await window.electron.cloud.writeVideoTranslationSeedPlan(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      state.targetLanguage,
+      plan.arrangement,
+      plan.promptMarkdown,
+    )
+    state.seedArrangementPath = saved.arrangementPath
+    state.seedPromptPath = saved.promptPath
+    state.seedPromptText = plan.promptMarkdown
+    toast.success(`豆包纯人声安排已生成，共 ${plan.arrangement.tasks.length} 个任务`)
+  })
+}
+
+async function generateTranslationVoice() {
+  await runTranslationStep('generate-target-voice', 'voiceStatus', async (state) => {
+    const plan = await currentTranslationSeedPlan()
+    const saved = await window.electron.cloud.writeVideoTranslationSeedPlan(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      state.targetLanguage,
+      plan.arrangement,
+      state.seedPromptText || plan.promptMarkdown,
+    )
+    state.seedArrangementPath = saved.arrangementPath
+    state.seedPromptPath = saved.promptPath
+    state.targetVoicePath = await window.electron.cloud.generateVideoTranslationTargetVoice(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      state.targetLanguage,
+    )
+    toast.success('目标语言纯人声已生成')
+  })
+}
+
+function applyTranslationAudio(
+  state: NonNullable<typeof mediaStore.videoTranslation>,
+  record: import('@/runtime/productionContract').AudioProcessingRecord,
+) {
+  state.vocalPath = record.vocalPath
+  state.instrumentPath = record.instrumentPath
+  state.mixedPath = record.mixedAudioPath
+  state.originalVocalRemoved = Boolean(record.originalVocalRemoved)
+  state.finalVideoPath = undefined
+}
+
+async function separateTranslationAudio() {
+  await runTranslationStep('separate-source-audio', 'separationStatus', async (state) => {
+    applyTranslationAudio(state, await window.electron.cloud.separateSourceAudio({
+      runId: mediaStore.runId,
+      episodeId: mediaStore.episodeId,
+      pictureMasterPath: state.sourceVideoPath!,
+      workflow: 'video-translation',
+      targetLanguage: state.targetLanguage,
+    }))
+    toast.success('原人声和背景声已分离')
+  })
+}
+
+async function removeTranslationVocal() {
+  await runAction('remove-original-vocal', async () => {
+    const state = translationState()
+    applyTranslationAudio(state, await window.electron.cloud.removeOriginalVocal({
+      runId: mediaStore.runId,
+      episodeId: mediaStore.episodeId,
+      vocalPath: state.vocalPath!,
+      instrumentPath: state.instrumentPath!,
+      workflow: 'video-translation',
+      targetLanguage: state.targetLanguage,
+    }))
+    toast.success('已采用无原人声背景轨')
+  })
+}
+
+async function mixTranslationAudio() {
+  await runTranslationStep('mix-background-audio', 'mixStatus', async (state) => {
+    applyTranslationAudio(state, await window.electron.cloud.mixBackgroundAudio({
+      runId: mediaStore.runId,
+      episodeId: mediaStore.episodeId,
+      vocalPath: state.vocalPath!,
+      instrumentPath: state.instrumentPath!,
+      voiceFile: state.targetVoicePath!,
+      workflow: 'video-translation',
+      targetLanguage: state.targetLanguage,
+    }))
+    toast.success('背景声和目标语言配音已混合')
+  })
+}
+
+async function burnTranslationVideo() {
+  await runTranslationStep('burn-subtitles-and-voice', 'finalStatus', async (state) => {
+    state.finalVideoPath = await window.electron.cloud.composeVideoTranslation({
+      runId: mediaStore.runId,
+      episodeId: mediaStore.episodeId,
+      sourceVideoPath: state.sourceVideoPath!,
+      mixedAudioPath: state.mixedPath!,
+      targetLanguage: state.targetLanguage,
+      subtitleCues: state.cues.map((cue) => ({
+        start: cue.startMs / 1000,
+        end: cue.endMs / 1000,
+        text: cue.translatedText,
+      })),
+    })
+    toast.success('视频翻译成片已生成')
+  })
 }
 
 async function generateShotPlan() {
@@ -3226,6 +3574,12 @@ watch(isDubbingWorkspace, (active) => {
   dubbingRightOpen.value = true
 })
 watch(
+  () => [mediaStore.episodeId, mediaStore.videoTranslation?.sourceFingerprint],
+  () => {
+    selectedTranslationCueId.value = mediaStore.videoTranslation?.cues[0]?.cueId || ''
+  },
+)
+watch(
   () => mediaStore.$state,
   () => {
     clearTimeout(persistTimer)
@@ -3432,6 +3786,9 @@ onBeforeUnmount(() => {
   grid-template-rows: minmax(0, 1fr);
   grid-template-columns: minmax(250px, 0.82fr) minmax(420px, 1.55fr) minmax(300px, 1fr);
 }
+.workspace-grid.translation-workspace-mode {
+  grid-template-columns: minmax(210px, 0.52fr) minmax(620px, 1.8fr) minmax(310px, 0.72fr);
+}
 .workspace-grid.left-collapsed {
   grid-template-columns: minmax(520px, 1fr) minmax(300px, 0.52fr);
 }
@@ -3451,6 +3808,13 @@ onBeforeUnmount(() => {
   .workspace-grid.left-collapsed,
   .workspace-grid.left-collapsed.right-collapsed {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace-grid.translation-workspace-mode {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: auto;
+  }
+  .workspace-grid.translation-workspace-mode > * {
+    min-height: 360px;
   }
   .inspector-toggle {
     display: inline-grid;

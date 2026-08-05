@@ -51,6 +51,26 @@ test('persists managed media as paths relative to its run', () => {
   assert.equal(persisted.history[0].finalPath, 'final.mp4')
 })
 
+test('persists video translation paths without changing creative paths', () => {
+  const runId = 'translation-run'
+  const persisted = JSON.parse(serializeMediaTask({
+    runId,
+    approvedScript: '创作文稿',
+    finalPath: `/Users/test/App/media-runs/${runId}/episodes/episode-001/final.mp4`,
+    videoTranslationRoles: [{ translationRoleId: 'role-1', displayName: '角色', aliases: [], sourceEpisodeIds: ['episode-001'], status: 'confirmed' }],
+    videoTranslation: {
+      sourceVideoPath: `/Users/test/App/media-runs/${runId}/episodes/episode-001/video-translate/source.mp4`,
+      targetVoicePath: `/Users/test/App/media-runs/${runId}/wiki/翻译/episode-001/en/目标人声.wav`,
+      cues: [{ voicePath: `/Users/test/App/media-runs/${runId}/wiki/翻译/episode-001/en/cue.wav` }],
+    },
+  }))
+  assert.equal(persisted.approvedScript, '创作文稿')
+  assert.equal(persisted.finalPath, 'episodes/episode-001/final.mp4')
+  assert.equal(persisted.videoTranslation.sourceVideoPath, 'episodes/episode-001/video-translate/source.mp4')
+  assert.equal(persisted.videoTranslation.targetVoicePath, 'wiki/翻译/episode-001/en/目标人声.wav')
+  assert.equal(persisted.videoTranslation.cues[0].voicePath, 'wiki/翻译/episode-001/en/cue.wav')
+})
+
 test('persists the project director gate and restores its center view', () => {
   const projectDirectorPlan = {
     productionRoute: 'drama',

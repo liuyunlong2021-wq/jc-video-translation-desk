@@ -79,8 +79,13 @@ export async function generateMaterialTranscript(
     output,
   )
   const root = await ensureRunDir(params.runId)
-  const jsonPath = path.join(root, 'wiki', '转录', params.episodeId, `${params.mediaId}-whisper.json`)
-  const srtPath = path.join(root, 'wiki', '字幕', '素材', params.episodeId, `${params.mediaId}-whisper.srt`)
+  const translation = params.workflow === 'video-translation'
+  const jsonPath = translation
+    ? path.join(root, 'wiki', '翻译', params.episodeId, 'source-whisper.json')
+    : path.join(root, 'wiki', '转录', params.episodeId, `${params.mediaId}-whisper.json`)
+  const srtPath = translation
+    ? path.join(root, 'wiki', '翻译', params.episodeId, 'source.srt')
+    : path.join(root, 'wiki', '字幕', '素材', params.episodeId, `${params.mediaId}-whisper.srt`)
   await replacePair([
     { path: jsonPath, content: `${JSON.stringify(transcript, null, 2)}\n` },
     { path: srtPath, content: materialTranscriptToSrt(transcript) },

@@ -88,6 +88,24 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('material-write-episode-subtitles', runId, episodeId, language, cues),
     translateSubtitles: (params: import('./types').TranslateSubtitlesParams) =>
       ipcRenderer.invoke('cloud-translate-subtitles', params),
+    selectVideoTranslationSource: (runId: string, episodeId: string) =>
+      ipcRenderer.invoke('video-translation-select-source', runId, episodeId),
+    identifyVideoTranslationSpeakers: (params: import('./types').IdentifyVideoTranslationSpeakersParams) =>
+      ipcRenderer.invoke('video-translation-identify-speakers', params),
+    translateVideoSubtitles: (params: import('./types').TranslateVideoSubtitlesParams) =>
+      ipcRenderer.invoke('video-translation-translate', params),
+    writeVideoTranslationContext: (runId: string, episodeId: string, contextPaths: Array<{ path: string; hash: string }>) =>
+      ipcRenderer.invoke('video-translation-write-context', runId, episodeId, contextPaths),
+    confirmVideoTranslation: (runId: string, episodeId: string, sourceLanguage: string, targetLanguage: string, cues: import('../src/runtime/videoTranslation').VideoTranslationCue[], roles: import('../src/runtime/videoTranslation').TranslationRole[]) =>
+      ipcRenderer.invoke('video-translation-confirm', runId, episodeId, sourceLanguage, targetLanguage, cues, roles),
+    bindVideoTranslationVoice: (runId: string, role: import('../src/runtime/videoTranslation').TranslationRole) =>
+      ipcRenderer.invoke('video-translation-bind-voice', runId, role),
+    writeVideoTranslationSeedPlan: (runId: string, episodeId: string, targetLanguage: string, arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement, promptMarkdown: string) =>
+      ipcRenderer.invoke('video-translation-write-seed-plan', runId, episodeId, targetLanguage, arrangement, promptMarkdown),
+    generateVideoTranslationTargetVoice: (runId: string, episodeId: string, targetLanguage: string) =>
+      ipcRenderer.invoke('video-translation-generate-voice', runId, episodeId, targetLanguage),
+    composeVideoTranslation: (params: import('./ffmpeg/types').ComposeVideoTranslationParams) =>
+      ipcRenderer.invoke('video-translation-compose', params),
     composePictureMaster: (params: import('./ffmpeg/types').ComposePictureMasterParams) =>
       ipcRenderer.invoke('cloud-compose-picture-master', params),
     separateSourceAudio: (params: import('./ffmpeg/types').SeparateSourceAudioParams) =>
@@ -110,6 +128,7 @@ contextBridge.exposeInMainWorld('electron', {
     voiceLibraryPath: () => ipcRenderer.invoke('voice-library-path'),
     openVoicePack: (voiceProfileId: string) => ipcRenderer.invoke('voice-library-open-pack', voiceProfileId),
     listVoiceProfiles: (query?: Record<string, unknown>) => ipcRenderer.invoke('voice-library-list', query),
+    previewVoiceProfile: (voiceProfileId: string) => ipcRenderer.invoke('voice-library-preview', voiceProfileId),
     reviewVoiceProfile: (voiceProfileId: string, patch: import('./voice-library').VoiceProfile) =>
       ipcRenderer.invoke('voice-library-review', voiceProfileId, patch),
       standardizeVoiceProfile: (voiceProfileId: string) => ipcRenderer.invoke('voice-library-standardize', voiceProfileId),
@@ -119,6 +138,8 @@ contextBridge.exposeInMainWorld('electron', {
         ipcRenderer.invoke('project-bind-seed-voice', projectId, episodeId, speakerId, voiceProfileId),
       resolveProjectSeedReferences: (projectId: string, speakerIds: string[]) =>
         ipcRenderer.invoke('voice-library-resolve-seed', projectId, speakerIds),
+      resolveSeedVoiceProfiles: (bindings: Array<{ speakerId: string; voiceProfileId: string }>) =>
+        ipcRenderer.invoke('voice-library-resolve-profiles', bindings),
     bindProjectVoice: (projectId: string, speakerId: string, voiceProfileId: string, taskId?: string) =>
       ipcRenderer.invoke('project-bind-voice', projectId, speakerId, voiceProfileId, taskId),
     createProject: (projectId: string, state: string) =>

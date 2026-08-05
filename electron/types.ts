@@ -273,6 +273,7 @@ export interface GenerateMaterialTranscriptParams {
   episodeId: string
   mediaId: string
   videoPath: string
+  workflow?: 'creative' | 'video-translation'
 }
 
 export interface MaterialTranscriptResult {
@@ -335,6 +336,53 @@ export interface TranslateSubtitlesParams {
   runId: string
   textModel: TextModel
   subtitles: Array<{ shotId: string; text: string }>
+}
+
+export interface TranslateVideoSubtitlesParams {
+  runId: string
+  episodeId: string
+  textModel: TextModel
+  sourceLanguage: string
+  targetLanguage: string
+  subtitles: Array<{ cueId: string; roleName?: string; text: string }>
+  contextPaths?: Array<{ path: string; hash: string }>
+}
+
+export interface IdentifyVideoTranslationSpeakersParams {
+  runId: string
+  episodeId: string
+  textModel: TextModel
+  videoPath: string
+  cues: Array<{ cueId: string; startMs: number; endMs: number; text: string }>
+  roles: Array<{
+    translationRoleId: string
+    displayName: string
+    aliases: string[]
+    linkedCreativeRoleId?: string
+  }>
+}
+
+export interface VideoTranslationSpeakerDraft {
+  cueId: string
+  proposedRoleId?: string
+  proposedName: string
+  confidence: number
+  evidence: string
+  needsReview: boolean
+}
+
+export interface VideoTranslationContextSource {
+  path: string
+  hash: string
+  content: string
+}
+
+export interface VideoTranslationUploadResult {
+  sourceVideoPath: string
+  rawSnapshotPath: string
+  sourceFingerprint: string
+  durationMs: number
+  hasAudio: boolean
 }
 
 export interface EpisodeSubtitleCue {

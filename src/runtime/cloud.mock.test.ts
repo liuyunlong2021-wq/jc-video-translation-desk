@@ -168,7 +168,7 @@ for (const projectId of [
   'nonempty-confirmed-script', 'revision-project', 'storyboard-transaction',
   'interrupted-wiki-run', 'wiki-tool-result', 'wiki-no-write', 'resume-run', 'cancel-run',
   'media-contract-run', 'shot-analysis-run', 'grok-analysis-fallback', 'prop-search-run',
-  'reference-run', 'subtitle-wiki-run',
+  'reference-run', 'subtitle-wiki-run', 'translation-context-run', 'other-context-run',
 ]) await workspace.registerProjectRoot(projectId, projectRoot(projectId), false)
 
 after(() => fs.rmSync(userData, { recursive: true, force: true }))
@@ -1112,4 +1112,27 @@ test('writes deterministic episode SRT into the project Wiki', async () => {
     fs.readFileSync(path.join(projectRoot('subtitle-wiki-run'), relative), 'utf8'),
     '1\n00:00:01,234 --> 00:00:04,567\n第一句\n',
   )
+})
+
+test('video translation context reads only allowed Wiki files from the current project', async () => {
+  const currentRoot = projectRoot('translation-context-run')
+  const otherRoot = projectRoot('other-context-run')
+  const files = [
+    ['wiki/文稿/episode-001/确认文稿.md', '# 当前项目剧本'],
+    ['wiki/资产/角色/role-1.md', '# 当前项目角色'],
+    ['wiki/index.md', '# 不应读取'],
+  ]
+  for (const [relative, content] of files) {
+    fs.mkdirSync(path.dirname(path.join(currentRoot, relative)), { recursive: true })
+    fs.writeFileSync(path.join(currentRoot, relative), content)
+  }
+  fs.mkdirSync(path.join(otherRoot, 'wiki', '资产', '角色'), { recursive: true })
+  fs.writeFileSync(path.join(otherRoot, 'wiki', '资产', '角色', 'secret.md'), '# 其他项目角色')
+
+  const context = await cloud.collectVideoTranslationContext('translation-context-run', episodeId)
+  assert.deepEqual(context.map((item) => item.path), [
+    'wiki/文稿/episode-001/确认文稿.md',
+    'wiki/资产/角色/role-1.md',
+  ])
+  assert.doesNotMatch(JSON.stringify(context), /其他项目|不应读取/)
 })

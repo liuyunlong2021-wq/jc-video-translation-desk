@@ -119,6 +119,48 @@ interface Window {
       translateSubtitles: (
         params: import('./types').TranslateSubtitlesParams,
       ) => Promise<Array<{ shotId: string; text: string }>>
+      selectVideoTranslationSource: (
+        runId: string,
+        episodeId: string,
+      ) => Promise<import('./types').VideoTranslationUploadResult | null>
+      identifyVideoTranslationSpeakers: (
+        params: import('./types').IdentifyVideoTranslationSpeakersParams,
+      ) => Promise<{ speakers: import('./types').VideoTranslationSpeakerDraft[]; contextPaths: Array<{ path: string; hash: string }> }>
+      translateVideoSubtitles: (
+        params: import('./types').TranslateVideoSubtitlesParams,
+      ) => Promise<{ subtitles: Array<{ cueId: string; text: string }>; contextPaths: Array<{ path: string; hash: string }> }>
+      writeVideoTranslationContext: (
+        runId: string,
+        episodeId: string,
+        contextPaths: Array<{ path: string; hash: string }>,
+      ) => Promise<string>
+      confirmVideoTranslation: (
+        runId: string,
+        episodeId: string,
+        sourceLanguage: string,
+        targetLanguage: string,
+        cues: import('../src/runtime/videoTranslation').VideoTranslationCue[],
+        roles: import('../src/runtime/videoTranslation').TranslationRole[],
+      ) => Promise<string>
+      bindVideoTranslationVoice: (
+        runId: string,
+        role: import('../src/runtime/videoTranslation').TranslationRole,
+      ) => Promise<string>
+      writeVideoTranslationSeedPlan: (
+        runId: string,
+        episodeId: string,
+        targetLanguage: string,
+        arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement,
+        promptMarkdown: string,
+      ) => Promise<{ arrangementPath: string; promptPath: string }>
+      generateVideoTranslationTargetVoice: (
+        runId: string,
+        episodeId: string,
+        targetLanguage: string,
+      ) => Promise<string>
+      composeVideoTranslation: (
+        params: import('./ffmpeg/types').ComposeVideoTranslationParams,
+      ) => Promise<string>
       composePictureMaster: (
         params: import('./ffmpeg/types').ComposePictureMasterParams,
       ) => Promise<string>
@@ -156,6 +198,7 @@ interface Window {
       voiceLibraryPath: () => Promise<string>
       openVoicePack: (voiceProfileId: string) => Promise<string>
       listVoiceProfiles: (query?: Record<string, unknown>) => Promise<import('./voice-library').VoiceProfile[]>
+      previewVoiceProfile: (voiceProfileId: string) => Promise<string>
       reviewVoiceProfile: (
         voiceProfileId: string,
         patch: import('./voice-library').VoiceProfile,
@@ -174,6 +217,9 @@ interface Window {
         projectId: string,
         speakerIds: string[],
       ) => ReturnType<typeof import('./voice-library').resolveProjectSeedReferences>
+      resolveSeedVoiceProfiles: (
+        bindings: Array<{ speakerId: string; voiceProfileId: string }>,
+      ) => ReturnType<typeof import('./voice-library').resolveSeedVoiceProfiles>
       bindProjectVoice: (
         projectId: string,
         speakerId: string,

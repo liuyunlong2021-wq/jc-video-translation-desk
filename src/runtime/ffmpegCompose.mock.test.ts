@@ -24,6 +24,7 @@ process.env.VITE_DEV_SERVER_URL = 'test'
 const {
   composeGeneratedVideo,
   composePictureMaster,
+  composeVideoTranslation,
   mixBackgroundAudio,
   removeOriginalVocal,
   separateSourceAudio,
@@ -31,7 +32,7 @@ const {
 const { ensureEpisodeDir, getRunAssetPath, registerProjectRoot, writeEditingTimeline } = await import('../../electron/media-workspace.ts')
 const episodeId = 'episode-001'
 const projectRoot = (projectId: string) => path.join(userData, 'projects', projectId)
-for (const projectId of ['compose-run', 'audio-processing-run', 'picture-master-run', 'timeline-only-run'])
+for (const projectId of ['compose-run', 'audio-processing-run', 'picture-master-run', 'timeline-only-run', 'translation-compose-run', 'translation-audio-run'])
   await registerProjectRoot(projectId, projectRoot(projectId), false)
 
 after(() => fs.rmSync(userData, { recursive: true, force: true }))
@@ -270,4 +271,60 @@ test('persists editing timeline before FFmpeg creates a picture master', async (
   assert.equal(relativePath, 'wiki/剪辑/episode-001/editing-timeline.json')
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(projectRoot(runId), relativePath), 'utf8')), timeline)
   assert.equal(fs.existsSync(getRunAssetPath(runId, episodeId, 'picture-master')), false)
+})
+
+test('video translation audio and final output stay outside creative Wiki paths', async () => {
+  const runId = 'translation-audio-run'
+  const base = projectRoot(runId)
+  const audioDir = path.join(base, 'wiki', '翻译', episodeId, 'en', '音频')
+  fs.mkdirSync(audioDir, { recursive: true })
+  const vocal = path.join(audioDir, 'vocal.wav')
+  const instrument = path.join(audioDir, 'instrument.wav')
+  const voice = path.join(base, 'episodes', episodeId, 'video-translate', 'en', '目标人声.wav')
+  fs.mkdirSync(path.dirname(voice), { recursive: true })
+  for (const [file, frequency] of [[vocal, '220'], [instrument, '330'], [voice, '880']])
+    ffmpeg(['-f', 'lavfi', '-i', `sine=frequency=${frequency}:duration=0.4`, '-c:a', 'pcm_s16le', '-y', file])
+
+  const adopted = await removeOriginalVocal({
+    runId, episodeId, vocalPath: vocal, instrumentPath: instrument,
+    workflow: 'video-translation', targetLanguage: 'en',
+  })
+  const mixed = await mixBackgroundAudio({
+    runId, episodeId, vocalPath: adopted.vocalPath!, instrumentPath: adopted.instrumentPath!,
+    voiceFile: voice, workflow: 'video-translation', targetLanguage: 'en',
+  })
+  assert.equal(mixed.mixedAudioPath, `wiki/翻译/${episodeId}/en/音频/mixed.wav`)
+  assert.ok(fs.existsSync(path.join(base, 'wiki', '翻译', episodeId, 'en', '音频处理.json')))
+  assert.equal(fs.existsSync(path.join(base, 'wiki', '声音')), false)
+})
+
+test('burns translation subtitles on the complete uploaded source without creative final artifacts', async () => {
+  const runId = 'translation-compose-run'
+  const base = projectRoot(runId)
+  const source = path.join(base, 'episodes', episodeId, 'video-translate', 'source.mp4')
+  const mixed = path.join(base, 'wiki', '翻译', episodeId, 'en', '音频', 'mixed.wav')
+  fs.mkdirSync(path.dirname(source), { recursive: true })
+  fs.mkdirSync(path.dirname(mixed), { recursive: true })
+  ffmpeg([
+    '-f', 'lavfi', '-i', 'color=blue:s=320x180:d=0.4',
+    '-f', 'lavfi', '-i', 'sine=frequency=220:duration=0.4',
+    '-shortest', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-y', source,
+  ])
+  ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=880:duration=0.4', '-c:a', 'pcm_s16le', '-y', mixed])
+
+  const output = await composeVideoTranslation({
+    runId,
+    episodeId,
+    sourceVideoPath: source,
+    mixedAudioPath: mixed,
+    targetLanguage: 'en',
+    subtitleCues: [{ start: 0, end: 0.3, text: 'Hello' }],
+  })
+  assert.match(output, /^episodes\/episode-001\/video-translate\/en\/final/)
+  const probe = spawnSync(ffmpegPath, ['-hide_banner', '-i', path.join(base, output)], { encoding: 'utf8' }).stderr
+  assert.match(probe, /320x180/)
+  assert.ok(fs.existsSync(path.join(base, 'wiki', '翻译', episodeId, 'en', '成片.md')))
+  assert.equal(fs.existsSync(path.join(base, 'wiki', '成片')), false)
+  assert.equal(fs.existsSync(path.join(base, 'wiki', '制作')), false)
+  assert.equal(fs.existsSync(path.join(base, 'wiki', '剪辑')), false)
 })

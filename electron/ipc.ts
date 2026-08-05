@@ -6,6 +6,7 @@ import { sqBulkInsertOrUpdate, sqDelete, sqInsert, sqQuery, sqUpdate } from './s
 import { OpenExternalParams, StatEventParams } from './types'
 import {
   composeGeneratedVideo,
+  composeVideoTranslation,
   composePictureMaster,
   mixBackgroundAudio,
   removeOriginalVocal,
@@ -32,6 +33,8 @@ import {
   abandonCloudTask,
   analyzeMaterialVideo,
   translateSubtitles,
+  translateVideoSubtitles,
+  identifyVideoTranslationSpeakers,
   withRunAbort,
 } from './cloud'
 import { cancelLocalVoice, generateLocalVoice, getLocalVoiceStatus } from './local-tts'
@@ -69,7 +72,7 @@ import {
   writeEditingTimeline,
   writeEpisodeSubtitles,
 } from './media-workspace'
-import { bindProjectSeedVoice, bindProjectVoice, getVoiceLibraryDir, getVoicePackDir, listVoiceProfiles, registerSeedVoiceProfile, resolveProjectSeedReferences, reviewVoiceProfile, scanVoiceLibrary, standardizeVoiceProfile } from './voice-library'
+import { bindProjectSeedVoice, bindProjectVoice, getVoiceLibraryDir, getVoicePackDir, listVoiceProfiles, registerSeedVoiceProfile, resolveProjectSeedReferences, resolveSeedVoiceProfiles, reviewVoiceProfile, scanVoiceLibrary, standardizeVoiceProfile, voiceProfilePreviewDataUrl } from './voice-library'
 import { generateMaterialTranscript } from './material-transcript'
 import {
   generateSeedAudio,
@@ -79,6 +82,14 @@ import {
   writeSeedDialogueTimeline,
   writeSeedAudioArrangement,
 } from './seed-audio'
+import {
+  selectVideoTranslationSource,
+  generateVideoTranslationTargetVoice,
+  writeConfirmedVideoTranslation,
+  writeVideoTranslationSeedPlan,
+  writeTranslationVoiceBinding,
+  writeVideoTranslationContext,
+} from './video-translation'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let windowMaximizedByApp = false
@@ -262,6 +273,33 @@ export default function initIPC() {
   ipcMain.handle('material-write-editing-timeline', (_event, runId: string, episodeId: string, timeline) => writeEditingTimeline(runId, episodeId, timeline))
   ipcMain.handle('material-write-episode-subtitles', (_event, runId: string, episodeId: string, language, cues) => writeEpisodeSubtitles(runId, episodeId, language, cues))
   ipcMain.handle('cloud-translate-subtitles', (_event, params) => translateSubtitles(params))
+  ipcMain.handle('video-translation-select-source', (_event, runId, episodeId) =>
+    selectVideoTranslationSource(runId, episodeId),
+  )
+  ipcMain.handle('video-translation-identify-speakers', (_event, params) =>
+    identifyVideoTranslationSpeakers(params),
+  )
+  ipcMain.handle('video-translation-translate', (_event, params) =>
+    translateVideoSubtitles(params),
+  )
+  ipcMain.handle('video-translation-write-context', (_event, runId, episodeId, contextPaths) =>
+    writeVideoTranslationContext(runId, episodeId, contextPaths),
+  )
+  ipcMain.handle('video-translation-confirm', (_event, runId, episodeId, sourceLanguage, targetLanguage, cues, roles) =>
+    writeConfirmedVideoTranslation(runId, episodeId, sourceLanguage, targetLanguage, cues, roles),
+  )
+  ipcMain.handle('video-translation-bind-voice', (_event, runId, role) =>
+    writeTranslationVoiceBinding(runId, role),
+  )
+  ipcMain.handle('video-translation-write-seed-plan', (_event, runId, episodeId, targetLanguage, arrangement, promptMarkdown) =>
+    writeVideoTranslationSeedPlan(runId, episodeId, targetLanguage, arrangement, promptMarkdown),
+  )
+  ipcMain.handle('video-translation-generate-voice', (_event, runId, episodeId, targetLanguage) =>
+    generateVideoTranslationTargetVoice(runId, episodeId, targetLanguage),
+  )
+  ipcMain.handle('video-translation-compose', (_event, params) =>
+    withRunAbort(params.runId, (signal) => composeVideoTranslation({ ...params, abortSignal: signal })),
+  )
   ipcMain.handle('cloud-compose-picture-master', (_event, params) =>
     withRunAbort(params.runId, (signal) =>
       composePictureMaster({ ...params, abortSignal: signal }),
@@ -306,6 +344,7 @@ export default function initIPC() {
   ipcMain.handle('voice-library-path', () => getVoiceLibraryDir())
   ipcMain.handle('voice-library-open-pack', (_event, voiceProfileId: string) => shell.openPath(getVoicePackDir(voiceProfileId)))
   ipcMain.handle('voice-library-list', (_event, query) => listVoiceProfiles(query))
+  ipcMain.handle('voice-library-preview', (_event, voiceProfileId) => voiceProfilePreviewDataUrl(voiceProfileId))
   ipcMain.handle('voice-library-review', (_event, voiceProfileId, patch) => reviewVoiceProfile(voiceProfileId, patch))
   ipcMain.handle('voice-library-standardize', (_event, voiceProfileId: string) => standardizeVoiceProfile(voiceProfileId))
   ipcMain.handle('voice-library-register-seed', (_event, params) => registerSeedVoiceProfile(params))
@@ -314,6 +353,9 @@ export default function initIPC() {
   )
   ipcMain.handle('voice-library-resolve-seed', (_event, projectId, speakerIds) =>
     resolveProjectSeedReferences(projectId, speakerIds),
+  )
+  ipcMain.handle('voice-library-resolve-profiles', (_event, bindings) =>
+    resolveSeedVoiceProfiles(bindings),
   )
   ipcMain.handle(
     'project-bind-voice',

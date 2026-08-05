@@ -26,6 +26,8 @@ export interface SeparateSourceAudioParams {
   runId: string
   episodeId: string
   pictureMasterPath: string
+  workflow?: 'creative' | 'video-translation'
+  targetLanguage?: string
 }
 
 export interface AdoptInstrumentParams {
@@ -33,6 +35,8 @@ export interface AdoptInstrumentParams {
   episodeId: string
   vocalPath: string
   instrumentPath: string
+  workflow?: 'creative' | 'video-translation'
+  targetLanguage?: string
 }
 
 export interface MixBackgroundAudioParams extends AdoptInstrumentParams {
@@ -43,4 +47,13 @@ export interface SubtitleCue {
   start: number
   end: number
   text: string
+}
+
+export interface ComposeVideoTranslationParams {
+  runId: string
+  episodeId: string
+  sourceVideoPath: string
+  mixedAudioPath: string
+  targetLanguage: string
+  subtitleCues: SubtitleCue[]
 }
