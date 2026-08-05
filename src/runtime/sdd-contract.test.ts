@@ -13,6 +13,11 @@ const pinterestReference = read('electron/pinterest-reference.ts')
 const pinterestAudit = read('electron/pinterest-audit.ts')
 const baseStyle = read('src/assets/base.scss')
 const homeUi = read('src/views/Home/index.vue')
+const mediaStoreSource = read('src/store/mediaTask.ts')
+const mediaPersistence = read('src/runtime/mediaPersistence.ts')
+const productionContract = read('src/runtime/productionContract.ts')
+const materialTranscriptMain = read('electron/material-transcript.ts')
+const indexTts = read('electron/index-tts.ts')
 const main = read('electron/main.ts')
 const rendererI18n = read('src/lib/i18n.ts')
 const textUi = read('src/views/Home/components/TextGenerate.vue')
@@ -45,6 +50,7 @@ test('locks the API and selectable text and video models to the SDD values', () 
     'veo-3.1-generate-preview',
     'veo-3.0-generate-001',
     'rh-grok-image-video',
+    'rh-seedance2',
   ]) {
     assert.match(cloud, new RegExp(model.replace(/\./g, '\\.')))
     assert.match(textUi, new RegExp(model.replace(/\./g, '\\.')))
@@ -147,17 +153,16 @@ test('adds the project director gate without changing the seven-stage workflow',
   assert.match(mediaUi, /value="narration-promo"/)
   assert.match(mediaUi, /value="drama"/)
   assert.match(mediaUi, /setProjectDirectorRoute/)
-  assert.match(renderUi, /repeat\(7,\s*minmax\(0,\s*1fr\)\)/)
-  assert.doesNotMatch(renderUi, /repeat\(8,\s*minmax\(0,\s*1fr\)\)/)
+  assert.equal((mediaUi.match(/<v-tab\b/g) || []).length, 8)
+  assert.doesNotMatch(renderUi, /class="stage-progress"/)
   assert.match(renderUi, /inspector-scroll/)
   assert.match(renderUi, /action-bar/)
-  assert.match(renderUi, /label="修改意见"/)
+  assert.match(renderUi, /修改角色音色提示词/)
   assert.match(renderUi, /确认修改/)
   assert.doesNotMatch(renderUi, /撤销上次 AI 修改|资产生图提示词|文稿状态/)
   assert.match(revisionSkill, /requiresReplan/)
   assert.doesNotMatch(homeUi, /TtsControl/)
   assert.ok(mediaUi.indexOf('value="assets"') < mediaUi.indexOf('value="storyboard"'))
-  assert.ok(renderUi.indexOf("key: 'assets'") < renderUi.indexOf("key: 'shots'"))
   assert.match(mediaUi, /parent-label="返回分镜总表"/)
   assert.doesNotMatch(mediaUi, /v-if="false"/)
   assert.match(renderUi, /type: 'asset-prompt'/)
@@ -171,7 +176,8 @@ test('adds the project director gate without changing the seven-stage workflow',
   assert.equal((renderTemplate.match(/>生成资产设计 JSON</g) || []).length, 1)
   assert.equal((renderTemplate.match(/搜索下载参考图/g) || []).length, 1)
   assert.equal((renderTemplate.match(/>生成资产图</g) || []).length, 1)
-  assert.equal((renderTemplate.match(/>转分镜</g) || []).length, 1)
+  assert.match(renderTemplate, /seed-full-track' \? '全局配音' : '转分镜'/)
+  assert.match(renderUi, /openNextFromAssets/)
   assert.doesNotMatch(renderTemplate, />进入分镜</)
   assert.match(mediaUi, /添加参考图/)
   assert.match(mediaUi, /uploadAssetReference/)
@@ -192,7 +198,10 @@ test('adds the project director gate without changing the seven-stage workflow',
   assert.match(referenceSearchSkill, /search_and_download/)
   assert.doesNotMatch(referenceSearchSkill, /generationPrompt|生成资产图/)
   assert.match(homeUi, /validPropDesign/)
-  assert.match(homeUi, /design: withProjectDesign\([\s\S]*asset\.design \|\| existing\?\.design[\s\S]*mediaStore\.ratio/)
+  assert.match(
+    homeUi,
+    /design: withProjectDesign\([\s\S]*asset\.design \|\| existing\?\.design[\s\S]*mediaStore\.ratio/,
+  )
   assert.match(homeUi, /searchQuery: asset\.searchQuery \|\| existing\?\.searchQuery/)
   assert.match(homeUi, /searchAssets/)
   assert.match(mediaUi, /removeAssetReferenceVersion/)
@@ -211,8 +220,14 @@ test('adds the project director gate without changing the seven-stage workflow',
   )
   assert.doesNotMatch(textUi, /创作结果会显示在中间工作区/)
   assert.match(textUi, /v-model="mediaStore\.videoModel"\s+class="text-model-select"/)
-  assert.match(homeUi, /task\.kind === 'video'\) mediaStore\.invalidateShot\(segment\.index, 'video'\)/)
-  assert.match(homeUi, /cloudTasks\.every\(\(item\) => item\.status === 'success'\).*taskDrawerOpen\.value = false/)
+  assert.match(
+    homeUi,
+    /task\.kind === 'video'\) mediaStore\.invalidateShot\(segment\.index, 'video'\)/,
+  )
+  assert.match(
+    homeUi,
+    /cloudTasks\.every\(\(item\) => item\.status === 'success'\).*taskDrawerOpen\.value = false/,
+  )
   assert.doesNotMatch(videoGeneration, /analyzeMaterialVideo|analyzeShotVideo/)
   assert.match(homeUi, /generateMaterialSrts/)
   assert.match(homeUi, /generateEditingTimeline/)
@@ -242,11 +257,17 @@ test('keeps asset generation recoverable and validates every professional design
   assert.match(pinterestReference, /capturePage/)
   assert.match(pinterestReference, /document\.images\[0\]/)
   assert.match(pinterestReference, /i\.pinimg\.com/)
-  assert.doesNotMatch(workspace, /BaseSearchResource|get\/|www\.bing\.com\/images\/search|commons\.wikimedia\.org/)
+  assert.doesNotMatch(
+    workspace,
+    /BaseSearchResource|get\/|www\.bing\.com\/images\/search|commons\.wikimedia\.org/,
+  )
   assert.match(referenceSearchSkill, /寻找现实视觉参考/)
   assert.match(referenceSearchSkill, /不得加入韩漫、日漫、动画、插画、概念图/)
   assert.match(pinterestReference, /www\.pinterest\.com/)
-  assert.match(homeUi, /assetReferenceSearchQuery\(asset\.searchQuery!, asset\.role, mediaStore\.styleId\)/)
+  assert.match(
+    homeUi,
+    /assetReferenceSearchQuery\(asset\.searchQuery!, asset\.role, mediaStore\.styleId\)/,
+  )
   assert.doesNotMatch(homeUi, /将生成 \$\{pending\.length\} 张资产图/)
   assert.match(pinterestReference, /show: false/)
   assert.match(pinterestReference, /closeAfterBatch/)
@@ -266,7 +287,9 @@ test('writes the confirmed script before mounting its Markdown document', () => 
     homeUi.indexOf('async function approveScript'),
     homeUi.indexOf('async function runAction'),
   )
-  assert.ok(approve.indexOf('writeMarkdown(') < approve.indexOf('mediaStore.approvedScript = approved'))
+  assert.ok(
+    approve.indexOf('writeMarkdown(') < approve.indexOf('mediaStore.approvedScript = approved'),
+  )
   assert.ok(approve.indexOf('writeMarkdown(') < approve.indexOf("mediaStore.selectStep('assets')"))
   assert.match(wikiUi, /<div v-if="loaded">/)
   assert.match(workspace, /确认文稿不能为空/)
@@ -277,22 +300,23 @@ test('writes the project director Wiki before exposing its confirmed state', () 
     homeUi.indexOf('async function confirmProjectDirector'),
     homeUi.indexOf('async function runAction'),
   )
-  assert.ok(confirm.indexOf('writeMarkdown(') < confirm.indexOf('mediaStore.confirmProjectDirector('))
-  assert.match(confirm, /wiki\/项目\/制作路线\.md/)
-  assert.ok(confirm.lastIndexOf('writeMarkdown(') < confirm.indexOf('mediaStore.confirmProjectDirector('))
-  assert.ok(confirm.indexOf('writeAssetDocuments(') < confirm.indexOf('mediaStore.confirmProjectDirector('))
+  assert.ok(
+    confirm.indexOf('writeMarkdown(') < confirm.indexOf('mediaStore.confirmProjectDirector('),
+  )
+  assert.match(confirm, /wiki\/项目总监\/\$\{mediaStore\.episodeId\}-制作路线\.md/)
+  assert.ok(
+    confirm.lastIndexOf('writeMarkdown(') < confirm.indexOf('mediaStore.confirmProjectDirector('),
+  )
+  assert.ok(
+    confirm.indexOf('writeAssetDocuments(') < confirm.indexOf('mediaStore.confirmProjectDirector('),
+  )
 })
 
 test('keeps every paid stage explicit and every result visible in the media library', () => {
-  for (const action of [
-    'generateShotPlan',
-    'generateStoryboards',
-    'generateVideos',
-    'compose',
-  ]) {
+  for (const action of ['generateShotPlan', 'generateStoryboards', 'generateVideos', 'compose']) {
     assert.match(renderUi, new RegExp(action))
   }
-  assert.doesNotMatch(mediaUi, /<audio/)
+  assert.match(mediaUi, /<audio[\s\S]*?v-if="mediaStore\.seedAudioTrackPath"/)
   assert.match(mediaUi, /segment\.imagePath/)
   assert.match(mediaUi, /segment\.videoPath/)
   assert.match(mediaUi, /mediaStore\.finalPath/)
@@ -322,7 +346,7 @@ test('keeps every paid stage explicit and every result visible in the media libr
   assert.doesNotMatch(shotPlanAction, /generateStoryboard\(/)
   assert.match(storyboardAction, /shotPlanFirst/)
   assert.doesNotMatch(storyboardAction, /runSkill/)
-  assert.match(renderUi, /repeat\(7,\s*minmax\(0,\s*1fr\)\)/)
+  assert.equal((mediaUi.match(/<v-tab\b/g) || []).length, 8)
   assert.match(homeUi, /inspector-toggle[\s\S]*inspector-column\.open/)
   assert.match(shotSkill, /单一连续镜头/)
   assert.match(shotSkill, /不得重新推荐、选择或替换导演/)
@@ -371,19 +395,27 @@ test('keeps style, duration, branding, and legacy-data contracts explicit', () =
   assert.match(textUi, /durationInvalid/)
 })
 
-test('preserves trimmed source audio for the selectable final sound policy', () => {
+test('uses a separated instrument stem for the selectable final sound policy', () => {
   assert.match(ffmpeg, /concat=n=\$\{streams\.length\}:v=1:a=0/)
   assert.match(ffmpeg, /params\.audioMode === 'keep-original'/)
-  assert.match(ffmpeg, /\[original\]\[voice\]amix/)
+  assert.doesNotMatch(ffmpeg, /\[original\]\[voice\]amix/)
+  assert.match(ffmpeg, /\[bg\]\[voice\]amix/)
+  assert.match(ffmpeg, /instrumentPath/)
   assert.match(ffmpeg, /const timelineDuration = durations\.reduce/)
   assert.match(ffmpeg, /apad=pad_dur=\$\{totalDuration\}/)
   assert.match(ffmpeg, /subtitleCues/)
-  assert.match(ffmpeg, /generateUniqueFileName\(getRunAssetPath\(params\.runId, 'final'\)\)/)
+  assert.match(
+    ffmpeg,
+    /generateUniqueFileName\(getRunAssetPath\(params\.runId, params\.episodeId, 'final'\)\)/,
+  )
   assert.match(cloud, /generateUniqueFileName\(getRunAssetPath/)
 })
 
-test('stores resumable task metadata under the managed user-data directory', () => {
-  assert.match(workspace, /app\.getPath\('userData'\), 'media-runs', runId/)
+test('stores resumable task metadata under the registered project directory', () => {
+  assert.match(workspace, /function projectSettingsPath\(\)/)
+  assert.match(workspace, /media-projects\.json/)
+  assert.match(workspace, /export function resolveProjectRoot/)
+  assert.doesNotMatch(workspace, /app\.getPath\('userData'\), 'media-runs', runId/)
   assert.match(cloud, /path\.join\(getRunDir\(runId\), 'run\.json'\)/)
   assert.match(cloud, /export async function resumePendingTasks/)
   assert.match(cloud, /export async function cancelRun/)
@@ -393,6 +425,41 @@ test('stores resumable task metadata under the managed user-data directory', () 
     cloud.indexOf('export async function withRunAbort'),
   )
   assert.doesNotMatch(runJsonBlock, /apiKey|Authorization/)
+})
+
+test('does not save a stale project id before creating or opening a registered project', () => {
+  assert.match(homeUi, /function currentProjectRegistered\(\)[\s\S]*projects\.value\.some/)
+  const saveBlock = homeUi.slice(
+    homeUi.indexOf('async function saveCurrentProject'),
+    homeUi.indexOf('async function newProject'),
+  )
+  assert.match(saveBlock, /currentProjectRegistered\(\)/)
+  const persistenceWatcher = homeUi.slice(
+    homeUi.lastIndexOf('watch(\n  () => mediaStore.$state'),
+    homeUi.indexOf('let taskRefreshTimer'),
+  )
+  assert.match(persistenceWatcher, /!currentProjectRegistered\(\)/)
+})
+
+test('keeps every episode artifact path dynamic outside the one default episode constant', () => {
+  const sources = [
+    cloud,
+    localVoice,
+    ipc,
+    preload,
+    ffmpeg,
+    workspace,
+    homeUi,
+    mediaStoreSource,
+    mediaPersistence,
+    materialTranscriptMain,
+    indexTts,
+    productionContract.replace("export const DEFAULT_EPISODE_ID = 'episode-001'", ''),
+  ]
+  for (const source of sources) assert.doesNotMatch(source, /episode-001/)
+  assert.match(workspace, /getEpisodeDir\(projectId, episodeId\)/)
+  assert.match(workspace, /shared-state\.json/)
+  assert.match(mediaUi, /wiki\/文稿\/\$\{mediaStore\.episodeId\}\/确认文稿\.md/)
 })
 
 test('keeps remote Markdown outside the privileged Electron renderer', () => {

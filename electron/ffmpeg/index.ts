@@ -6,12 +6,16 @@ import { parseFile } from 'music-metadata'
 import type {
   ComposeGeneratedVideoParams,
   ComposePictureMasterParams,
+  AdoptInstrumentParams,
   ExecuteFFmpegResult,
+  MixBackgroundAudioParams,
+  SeparateSourceAudioParams,
   SubtitleCue,
 } from './types.ts'
 import { generateUniqueFileName } from '../lib/tools.ts'
 import { isDev } from '../lib/is-dev.ts'
-import { assertRunAsset, ensureRunDir, getRunAssetPath, mediaDuration } from '../media-workspace.ts'
+import { assertEpisodeAsset, ensureEpisodeDir, getRunDir, getRunAssetPath, mediaDuration, relativeRunAsset, writeFinalArtifacts } from '../media-workspace.ts'
+import type { AudioProcessingRecord } from '../../src/runtime/productionContract.ts'
 
 const isWindows = process.platform === 'win32'
 
@@ -41,12 +45,12 @@ export async function composeGeneratedVideo(
   if (durations.some((duration) => !Number.isFinite(duration) || duration <= 0)) {
     throw new Error('视频片段时长无效')
   }
-  const videoFiles = params.videoFiles.map((file) => assertRunAsset(params.runId, file))
+  const videoFiles = params.videoFiles.map((file) => assertEpisodeAsset(params.runId, params.episodeId, file))
   const sourceHasAudio = await Promise.all(videoFiles.map(hasAudioStream))
-  const voiceFile = params.voiceFile ? assertRunAsset(params.runId, params.voiceFile) : ''
+  const voiceFile = params.voiceFile ? assertEpisodeAsset(params.runId, params.episodeId, params.voiceFile) : ''
   if (params.audioMode !== 'keep-original' && !voiceFile) throw new Error('生成最终成片前必须先生成本集配音')
-  await ensureRunDir(params.runId)
-  const outputPath = generateUniqueFileName(getRunAssetPath(params.runId, 'final'))
+  await ensureEpisodeDir(params.runId, params.episodeId)
+  const outputPath = generateUniqueFileName(getRunAssetPath(params.runId, params.episodeId, 'final'))
   const [width, height] = OUTPUT_SIZES[params.ratio]
   const timelineDuration = durations.reduce((total, duration) => total + duration, 0)
   const voiceDuration = voiceFile ? await mediaDuration(voiceFile) : 0
@@ -63,7 +67,7 @@ export async function composeGeneratedVideo(
     return `[${index}:v]setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p,setsar=1,tpad=stop_mode=clone:stop_duration=${duration},trim=duration=${duration}[v${index}]`
   })
   filters.push(`[${streams.join('][')}]concat=n=${streams.length}:v=1:a=0[vout]`)
-  if (params.audioMode === 'keep-original' || params.audioMode === 'replace-preserve-ambience') {
+  if (params.audioMode === 'keep-original') {
     const originalAudio = videoFiles.map((_, index) => {
       const duration = durations[index]
       filters.push(sourceHasAudio[index]
@@ -77,9 +81,7 @@ export async function composeGeneratedVideo(
     filters.push(`[original]loudnorm=I=-16:TP=-1.5:LRA=11[aout]`)
   } else {
     filters.push(`[${videoFiles.length}:a]apad=pad_dur=${totalDuration},atrim=0:${totalDuration},asetpts=PTS-STARTPTS[voice]`)
-    filters.push(params.audioMode === 'replace-preserve-ambience'
-      ? `[original][voice]amix=inputs=2:duration=first:dropout_transition=0,loudnorm=I=-16:TP=-1.5:LRA=11[aout]`
-      : `[voice]loudnorm=I=-16:TP=-1.5:LRA=11[aout]`)
+    filters.push(`[voice]loudnorm=I=-16:TP=-1.5:LRA=11[aout]`)
   }
 
   let videoOutput = '[vout]'
@@ -118,6 +120,7 @@ export async function composeGeneratedVideo(
     outputPath,
   )
   await executeFFmpeg(args, params)
+  await writeFinalArtifacts(params.runId, params.episodeId, outputPath, params.audioMode)
   return outputPath
 }
 
@@ -128,7 +131,7 @@ export async function composePictureMaster(
   },
 ) {
   if (!params.timeline?.shots?.length) throw new Error('剪辑时间轴没有镜头')
-  const videoFiles = params.timeline.shots.map((shot) => assertRunAsset(params.runId, shot.sourceVideoPath))
+  const videoFiles = params.timeline.shots.map((shot) => assertEpisodeAsset(params.runId, params.episodeId, shot.sourceVideoPath))
   const sourceHasAudio = await Promise.all(videoFiles.map(hasAudioStream))
   const [width, height] = OUTPUT_SIZES[params.ratio]
   const filters = params.timeline.shots.flatMap((shot, index) => {
@@ -152,9 +155,9 @@ export async function composePictureMaster(
   filters.push(
     `${params.timeline.shots.map((_, index) => `[v${index}][a${index}]`).join('')}concat=n=${videoFiles.length}:v=1:a=1[vout][aout]`,
   )
-  await ensureRunDir(params.runId)
-  const outputPath = generateUniqueFileName(getRunAssetPath(params.runId, 'picture-master'))
-  const timelinePath = path.join(path.dirname(outputPath), 'wiki', '剪辑', 'episode-001', 'editing-timeline.json')
+  await ensureEpisodeDir(params.runId, params.episodeId)
+  const outputPath = generateUniqueFileName(getRunAssetPath(params.runId, params.episodeId, 'picture-master'))
+  const timelinePath = path.join(getRunDir(params.runId), 'wiki', '剪辑', params.episodeId, 'editing-timeline.json')
   await fs.promises.mkdir(path.dirname(timelinePath), { recursive: true })
   await fs.promises.writeFile(timelinePath, `${JSON.stringify(params.timeline, null, 2)}\n`, 'utf8')
   const args: string[] = []
@@ -183,6 +186,117 @@ export async function composePictureMaster(
   )
   await executeFFmpeg(args, params)
   return outputPath
+}
+
+const DEFAULT_PEIYIN_ROOT = '/Users/by3/Documents/peiyin-pyvideotrans'
+
+function audioPaths(runId: string, episodeId: string) {
+  const dir = path.join(getRunDir(runId), 'wiki', '声音', episodeId)
+  return {
+    dir,
+    source: path.join(dir, 'source.wav'),
+    vocal: path.join(dir, 'vocal.wav'),
+    instrument: path.join(dir, 'instrument.wav'),
+    mixed: path.join(dir, 'mixed.wav'),
+    record: path.join(dir, '音频处理.json'),
+  }
+}
+
+async function writeAudioProcessingRecord(runId: string, episodeId: string, record: AudioProcessingRecord) {
+  const target = audioPaths(runId, episodeId)
+  await fs.promises.mkdir(target.dir, { recursive: true })
+  await fs.promises.writeFile(`${target.record}.tmp`, `${JSON.stringify(record, null, 2)}\n`, 'utf8')
+  await fs.promises.rename(`${target.record}.tmp`, target.record)
+  return record
+}
+
+export async function separateSourceAudio(
+  params: SeparateSourceAudioParams & { abortSignal?: AbortSignal },
+) {
+  const pictureMaster = assertEpisodeAsset(params.runId, params.episodeId, params.pictureMasterPath)
+  const target = audioPaths(params.runId, params.episodeId)
+  await fs.promises.mkdir(target.dir, { recursive: true })
+  await executeFFmpeg([
+    '-i', pictureMaster,
+    '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2',
+    '-y', target.source,
+  ], params)
+
+  const root = process.env.PEIYIN_PYVIDEOTRANS_ROOT || DEFAULT_PEIYIN_ROOT
+  const python = process.env.PEIYIN_PYVIDEOTRANS_PYTHON || path.join(root, '.venv', 'bin', 'python')
+  await fs.promises.access(python, fs.constants.X_OK).catch(() => {
+    throw new Error(`未找到人声分离运行时：${python}`)
+  })
+  const script = [
+    'import sys',
+    'sys.path.insert(0, sys.argv[1])',
+    'from videotrans.process._audio_separate import vocal_bgm_spleeter',
+    'ok, error = vocal_bgm_spleeter(input_file=sys.argv[2], vocal_file=sys.argv[3], instr_file=sys.argv[4])',
+    'if not ok: raise RuntimeError(error)',
+  ].join('\n')
+  await executeProcess(python, ['-c', script, root, target.source, target.vocal, target.instrument], params.abortSignal)
+  for (const file of [target.vocal, target.instrument]) {
+    if (!(await fs.promises.stat(file).catch(() => null))?.size) throw new Error('人声分离没有生成有效 stem')
+  }
+  return writeAudioProcessingRecord(params.runId, params.episodeId, {
+    schemaVersion: 1,
+    audioMode: 'replace-preserve-ambience',
+    vocalPath: relativeRunAsset(params.runId, target.vocal),
+    instrumentPath: relativeRunAsset(params.runId, target.instrument),
+    originalVocalRemoved: false,
+    status: 'ready',
+  })
+}
+
+export async function removeOriginalVocal(params: AdoptInstrumentParams) {
+  const vocal = assertEpisodeAsset(params.runId, params.episodeId, params.vocalPath)
+  const instrument = assertEpisodeAsset(params.runId, params.episodeId, params.instrumentPath)
+  await Promise.all([fs.promises.access(vocal), fs.promises.access(instrument)])
+  return writeAudioProcessingRecord(params.runId, params.episodeId, {
+    schemaVersion: 1,
+    audioMode: 'replace-preserve-ambience',
+    vocalPath: relativeRunAsset(params.runId, vocal),
+    instrumentPath: relativeRunAsset(params.runId, instrument),
+    originalVocalRemoved: true,
+    status: 'ready',
+  })
+}
+
+export async function mixBackgroundAudio(
+  params: MixBackgroundAudioParams & { abortSignal?: AbortSignal },
+) {
+  const vocal = assertEpisodeAsset(params.runId, params.episodeId, params.vocalPath)
+  const instrument = assertEpisodeAsset(params.runId, params.episodeId, params.instrumentPath)
+  const voice = assertEpisodeAsset(params.runId, params.episodeId, params.voiceFile)
+  await Promise.all([fs.promises.access(vocal), fs.promises.access(instrument), fs.promises.access(voice)])
+  const target = audioPaths(params.runId, params.episodeId)
+  await executeFFmpeg([
+    '-i', instrument,
+    '-i', voice,
+    '-filter_complex',
+    '[0:a]aresample=48000[bg];[1:a]aresample=48000[voice];[bg][voice]amix=inputs=2:duration=first:dropout_transition=0,loudnorm=I=-16:TP=-1.5:LRA=11[out]',
+    '-map', '[out]', '-c:a', 'pcm_s16le', '-y', target.mixed,
+  ], params)
+  return writeAudioProcessingRecord(params.runId, params.episodeId, {
+    schemaVersion: 1,
+    audioMode: 'replace-preserve-ambience',
+    vocalPath: relativeRunAsset(params.runId, vocal),
+    instrumentPath: relativeRunAsset(params.runId, instrument),
+    mixedAudioPath: relativeRunAsset(params.runId, target.mixed),
+    originalVocalRemoved: true,
+    status: 'ready',
+  })
+}
+
+function executeProcess(command: string, args: string[], abortSignal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, { env: process.env })
+    let stderr = ''
+    child.stderr.on('data', (data) => { stderr += data.toString() })
+    child.on('error', reject)
+    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(stderr || `进程退出码 ${code}`)))
+    abortSignal?.addEventListener('abort', () => child.kill('SIGTERM'), { once: true })
+  })
 }
 
 async function hasAudioStream(file: string) {

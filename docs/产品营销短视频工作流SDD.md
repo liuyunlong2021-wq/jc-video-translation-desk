@@ -404,7 +404,7 @@ interface ProductStoryboardPlan extends StoryboardPlan {
 - 每段 4-8 秒且覆盖完整文稿。
 - `productVisible === true` 时必须包含全部产品资产 ID。
 - 引用 ID 必须来自当前运行资产目录。
-- 单镜头仍遵守“单一连续镜头、无切镜、无背景音乐”。
+- 单镜头仍遵守“单一连续镜头、无切镜”；声音由分镜提示词正常描述，最终采用由声音路线决定。
 - 所有引用总数不能超过 GPT Image 2 注册能力。
 
 ## 10. 产品广告视觉风格

@@ -21,8 +21,18 @@ mock.module('electron', {
 })
 ;(globalThis as any).require = require
 process.env.VITE_DEV_SERVER_URL = 'test'
-const { composeGeneratedVideo, composePictureMaster } = await import('../../electron/ffmpeg/index.ts')
-const { ensureRunDir, getRunAssetPath, writeEditingTimeline } = await import('../../electron/media-workspace.ts')
+const {
+  composeGeneratedVideo,
+  composePictureMaster,
+  mixBackgroundAudio,
+  removeOriginalVocal,
+  separateSourceAudio,
+} = await import('../../electron/ffmpeg/index.ts')
+const { ensureEpisodeDir, getRunAssetPath, registerProjectRoot, writeEditingTimeline } = await import('../../electron/media-workspace.ts')
+const episodeId = 'episode-001'
+const projectRoot = (projectId: string) => path.join(userData, 'projects', projectId)
+for (const projectId of ['compose-run', 'audio-processing-run', 'picture-master-run', 'timeline-only-run'])
+  await registerProjectRoot(projectId, projectRoot(projectId), false)
 
 after(() => fs.rmSync(userData, { recursive: true, force: true }))
 
@@ -35,10 +45,10 @@ function ffmpeg(args: string[]) {
 
 test('composes only the unified voice and matches its real duration', async () => {
   const runId = 'compose-run'
-  await ensureRunDir(runId)
-  const clip1 = getRunAssetPath(runId, 'clip', 1)
-  const clip2 = getRunAssetPath(runId, 'clip', 2)
-  const voice = getRunAssetPath(runId, 'voice')
+  await ensureEpisodeDir(runId, episodeId)
+  const clip1 = getRunAssetPath(runId, episodeId, 'clip', 1)
+  const clip2 = getRunAssetPath(runId, episodeId, 'clip', 2)
+  const voice = getRunAssetPath(runId, episodeId, 'voice')
 
   for (const [file, color, frequency] of [
     [clip1, 'red', '220'],
@@ -77,6 +87,7 @@ test('composes only the unified voice and matches its real duration', async () =
 
   const output = await composeGeneratedVideo({
     runId,
+    episodeId,
     videoFiles: [clip1, clip2],
     playDurations: [0.3, 0.3],
     voiceFile: voice,
@@ -93,6 +104,7 @@ test('composes only the unified voice and matches its real duration', async () =
 
   const subtitled = await composeGeneratedVideo({
     runId,
+    episodeId,
     videoFiles: [clip1, clip2],
     playDurations: [0.3, 0.3],
     voiceFile: voice,
@@ -124,12 +136,71 @@ test('composes only the unified voice and matches its real duration', async () =
   }
   const frequency = crossings / (pcm.length / 2 / 8000)
   assert.ok(frequency > 820 && frequency < 920, `unexpected audio frequency: ${frequency}`)
+  assert.ok(fs.existsSync(path.join(projectRoot(runId), 'wiki', '成片', 'episode-001.md')))
+  assert.ok(fs.existsSync(path.join(projectRoot(runId), 'wiki', '制作', 'episode-001.md')))
+})
+
+test('separates, adopts and mixes audio without deleting the vocal stem', async () => {
+  const runId = 'audio-processing-run'
+  await ensureEpisodeDir(runId, episodeId)
+  const pictureMaster = getRunAssetPath(runId, episodeId, 'picture-master')
+  ffmpeg([
+    '-f', 'lavfi', '-i', 'color=black:s=320x180:d=0.4',
+    '-f', 'lavfi', '-i', 'sine=frequency=220:duration=0.4',
+    '-shortest', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-y', pictureMaster,
+  ])
+
+  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-peiyin-'))
+  const processDir = path.join(fakeRoot, 'videotrans', 'process')
+  fs.mkdirSync(processDir, { recursive: true })
+  fs.writeFileSync(path.join(fakeRoot, 'videotrans', '__init__.py'), '')
+  fs.writeFileSync(path.join(processDir, '__init__.py'), '')
+  fs.writeFileSync(path.join(processDir, '_audio_separate.py'), [
+    'import shutil',
+    'def vocal_bgm_spleeter(*, input_file, vocal_file, instr_file):',
+    '    shutil.copyfile(input_file, vocal_file)',
+    '    shutil.copyfile(input_file, instr_file)',
+    '    return True, None',
+  ].join('\n'))
+  const python = spawnSync('which', ['python3'], { encoding: 'utf8' }).stdout.trim()
+  assert.ok(python)
+  process.env.PEIYIN_PYVIDEOTRANS_ROOT = fakeRoot
+  process.env.PEIYIN_PYVIDEOTRANS_PYTHON = python
+  const separated = await separateSourceAudio({ runId, episodeId, pictureMasterPath: pictureMaster }).finally(() => {
+    delete process.env.PEIYIN_PYVIDEOTRANS_ROOT
+    delete process.env.PEIYIN_PYVIDEOTRANS_PYTHON
+    fs.rmSync(fakeRoot, { recursive: true, force: true })
+  })
+
+  assert.equal(separated.originalVocalRemoved, false)
+  const adopted = await removeOriginalVocal({
+    runId,
+    episodeId,
+    vocalPath: separated.vocalPath!,
+    instrumentPath: separated.instrumentPath!,
+  })
+  assert.equal(adopted.originalVocalRemoved, true)
+  assert.ok(fs.existsSync(path.join(projectRoot(runId), adopted.vocalPath!)))
+
+  const voice = path.join(projectRoot(runId), 'wiki', '声音', 'episode-001', 'episode-voice-zh.wav')
+  ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=880:duration=0.4', '-c:a', 'pcm_s16le', '-y', voice])
+  const mixed = await mixBackgroundAudio({
+    runId,
+    episodeId,
+    vocalPath: adopted.vocalPath!,
+    instrumentPath: adopted.instrumentPath!,
+    voiceFile: voice,
+  })
+  assert.ok(mixed.mixedAudioPath)
+  assert.ok(fs.existsSync(path.join(projectRoot(runId), mixed.mixedAudioPath!)))
+  const record = JSON.parse(fs.readFileSync(path.join(projectRoot(runId), 'wiki', '声音', 'episode-001', '音频处理.json'), 'utf8'))
+  assert.equal(record.mixedAudioPath, mixed.mixedAudioPath)
 })
 
 test('trims the picture master from the persisted editing timeline', async () => {
   const runId = 'picture-master-run'
-  await ensureRunDir(runId)
-  const clip = getRunAssetPath(runId, 'clip', 1)
+  await ensureEpisodeDir(runId, episodeId)
+  const clip = getRunAssetPath(runId, episodeId, 'clip', 1)
   ffmpeg([
     '-f',
     'lavfi',
@@ -151,7 +222,7 @@ test('trims the picture master from the persisted editing timeline', async () =>
       shotId: 'shot-001',
       promptSegmentId: 'shot-001',
       sourceMediaId: 'shot-001',
-      sourceVideoPath: 'clips/001.mp4',
+      sourceVideoPath: 'episodes/episode-001/clips/001.mp4',
       sourceDurationMs: 1_000,
       geminiStartMs: 0,
       geminiEndMs: 1_000,
@@ -169,42 +240,34 @@ test('trims the picture master from the persisted editing timeline', async () =>
     }],
   }
 
-  const output = await composePictureMaster({ runId, ratio: '16:9', timeline })
+  const output = await composePictureMaster({ runId, episodeId, ratio: '16:9', timeline })
   const probe = spawnSync(ffmpegPath, ['-hide_banner', '-i', output], { encoding: 'utf8' }).stderr
   const match = probe.match(/Duration: (\d+):(\d+):(\d+\.\d+)/)
   assert.ok(match, probe)
   const duration = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
   assert.ok(Math.abs(duration - 0.5) <= 1 / 30, `unexpected duration: ${duration}`)
-  const timelinePath = path.join(
-    userData,
-    'media-runs',
-    runId,
-    'wiki',
-    '剪辑',
-    'episode-001',
-    'editing-timeline.json',
-  )
+  const timelinePath = path.join(projectRoot(runId), 'wiki', '剪辑', 'episode-001', 'editing-timeline.json')
   assert.deepEqual(JSON.parse(fs.readFileSync(timelinePath, 'utf8')), timeline)
 })
 
 test('persists editing timeline before FFmpeg creates a picture master', async () => {
   const runId = 'timeline-only-run'
-  await ensureRunDir(runId)
-  const clip = getRunAssetPath(runId, 'clip', 1)
+  await ensureEpisodeDir(runId, episodeId)
+  const clip = getRunAssetPath(runId, episodeId, 'clip', 1)
   fs.writeFileSync(clip, 'not rendered yet')
   const timeline = {
     schemaVersion: 2 as const,
     route: 'drama' as const,
     shots: [{
       shotId: 'shot-001', promptSegmentId: 'shot-001', sourceMediaId: 'media-shot-001',
-      sourceVideoPath: 'clips/001.mp4', sourceDurationMs: 1000,
+      sourceVideoPath: 'episodes/episode-001/clips/001.mp4', sourceDurationMs: 1000,
       geminiStartMs: 0, geminiEndMs: 1000, adoptedStartMs: 0, adoptedEndMs: 1000,
       adoptedBy: 'gemini' as const, revision: 0, outputStartMs: 0, outputEndMs: 1000,
       observedContent: '完整动作', subtitleCueIds: [], speakerIds: [], confidence: 1, needsReview: false,
     }],
   }
-  const relativePath = await writeEditingTimeline(runId, timeline)
+  const relativePath = await writeEditingTimeline(runId, episodeId, timeline)
   assert.equal(relativePath, 'wiki/剪辑/episode-001/editing-timeline.json')
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(userData, 'media-runs', runId, relativePath), 'utf8')), timeline)
-  assert.equal(fs.existsSync(getRunAssetPath(runId, 'picture-master')), false)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(projectRoot(runId), relativePath), 'utf8')), timeline)
+  assert.equal(fs.existsSync(getRunAssetPath(runId, episodeId, 'picture-master')), false)
 })

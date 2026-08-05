@@ -1,30 +1,20 @@
 <template>
   <v-sheet class="inspector h-full min-h-0 flex flex-col" border rounded>
-    <div class="stage-progress" aria-label="创作进度">
-      <button
-        v-for="item in stages"
-        :key="item.key"
-        type="button"
-        :class="{ done: item.done, current: item.current }"
-        :disabled="!item.enabled"
-        @click="mediaStore.selectStep(item.key)"
-      >
-        <v-icon size="13">{{ item.done ? 'mdi-check-circle' : 'mdi-circle-outline' }}</v-icon
-        ><span>{{ item.label }}</span>
-      </button>
-    </div>
-
     <div class="inspector-scroll">
-      <div v-if="revisionTarget" class="revision-input">
+      <div
+        v-if="revisionTarget"
+        class="revision-input"
+        :class="{ compact: mediaStore.workspaceView === 'seed-voice' }"
+      >
         <v-textarea
           v-model="revisionInstruction"
           autofocus
-          rows="12"
+          :rows="mediaStore.workspaceView === 'seed-voice' ? 5 : 12"
           no-resize
           hide-details
           variant="plain"
-          label="修改意见"
-          placeholder="描述你希望 AI 怎么修改当前内容"
+          :label="mediaStore.workspaceView === 'seed-voice' ? '修改角色音色提示词' : '修改意见'"
+          :placeholder="mediaStore.workspaceView === 'seed-voice' ? '描述你希望 AI 怎么修改当前角色的音色提示词' : '描述你希望 AI 怎么修改当前内容'"
           @keydown.meta.enter.prevent="sendRevision"
           @keydown.ctrl.enter.prevent="sendRevision"
         />
@@ -39,19 +29,112 @@
           >
         </div>
       </div>
+      <div v-if="mediaStore.workspaceView === 'seed-voice'" class="seed-voice-controls">
+        <strong>全局配音</strong>
+        <small v-if="selectedSeedCharacter"
+          >当前角色：{{ selectedSeedCharacter.label }}。在中栏查看和编辑提示词。</small
+        >
+        <small v-else>先在中栏选择一个角色。</small>
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-text-box-edit-outline"
+          :loading="mediaStore.busyAction === 'generate-seed-role-prompts'"
+          :disabled="Boolean(mediaStore.busyAction) || !seedCharacters.length"
+          block
+          @click="$emit('generateAllSeedRolePrompts')"
+          >生成角色提示词</v-btn
+        >
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-waveform"
+          :loading="mediaStore.busyAction === 'generate-seed-references'"
+          :disabled="Boolean(mediaStore.busyAction) || !allSeedRolePromptsReady"
+          block
+          @click="$emit('generateAllSeedReferences')"
+          >生成角色参考音</v-btn
+        >
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-format-list-checks"
+          :loading="mediaStore.busyAction === 'arrange-seed-track'"
+          :disabled="Boolean(mediaStore.busyAction) || !seedCharacters.length"
+          block
+          @click="$emit('arrangeSeedTrack')"
+          >整段配音安排</v-btn
+        >
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-auto-fix"
+          :loading="mediaStore.busyAction === 'generate-seed-prompt'"
+          :disabled="Boolean(mediaStore.busyAction) || !mediaStore.seedAudioArrangementPath"
+          block
+          @click="$emit('generateSeedPrompt')"
+          >生成全局声音提示词</v-btn
+        >
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-file-document-edit-outline"
+          :loading="mediaStore.busyAction === 'generate-seed-voice-script'"
+          :disabled="
+            Boolean(mediaStore.busyAction) ||
+            !mediaStore.apiConfigured ||
+            !mediaStore.seedAudioGlobalPrompt.trim()
+          "
+          block
+          @click="$emit('generateSeedVoiceScript')"
+          >生成豆包语音稿</v-btn
+        >
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-content-save-outline"
+          :loading="mediaStore.busyAction === 'save-seed-director-draft'"
+          :disabled="Boolean(mediaStore.busyAction) || !mediaStore.seedAudioGlobalPrompt.trim()"
+          block
+          @click="$emit('saveSeedDirectorDraft')"
+          >保存声音导演稿</v-btn
+        >
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-waveform"
+          :loading="mediaStore.busyAction === 'generate-seed-track'"
+          :disabled="
+            Boolean(mediaStore.busyAction) ||
+            !mediaStore.apiConfigured ||
+            !mediaStore.seedAudioDirectorDraftPath
+          "
+          block
+          @click="$emit('generateSeedTrack')"
+          >生成完整声音轨</v-btn
+        >
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-movie-edit-outline"
+          :loading="mediaStore.busyAction === 'shot-plan'"
+          :disabled="Boolean(mediaStore.busyAction) || !mediaStore.seedAudioDialogueTimelinePath"
+          block
+          @click="$emit('generateShotPlan')"
+          >生成分镜提示词</v-btn
+        >
+      </div>
       <div v-else-if="mediaStore.workflowStep === 'voice'" class="voice-controls">
         <strong>后期处理</strong>
-        <small>工作台中的动作将在后续 TDD 接入真实引擎。</small>
+        <small>按当前剪辑点处理音频、配音和字幕。</small>
         <v-btn
           v-for="action in dubbingActions"
-          :key="action.label"
+          :key="action.key"
+          class="dubbing-action"
           block
-          variant="tonal"
-          size="small"
-          :prepend-icon="action.icon"
-          disabled
-          :title="action.label + '（后续接入）'"
-        >{{ action.label }}</v-btn>
+          :variant="
+            action.key === nextDubbingActionKey ? 'flat' : action.done ? 'tonal' : 'outlined'
+          "
+          :color="action.enabled || action.done ? 'primary' : undefined"
+          :prepend-icon="action.done ? 'mdi-check-circle-outline' : action.icon"
+          :loading="mediaStore.busyAction === action.key"
+          :disabled="Boolean(mediaStore.busyAction) || !action.enabled"
+          :title="action.enabled ? action.label : action.title"
+          @click="action.event && emit(action.event)"
+          >{{ action.label }}</v-btn
+        >
       </div>
       <div v-else class="operation-empty" />
       <div v-if="mediaStore.error" class="text-error text-body-2">{{ displayError }}</div>
@@ -65,7 +148,12 @@
         color="primary"
         prepend-icon="mdi-text-box-edit-outline"
         :loading="mediaStore.busyAction === 'asset-prompts'"
-        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured || !mediaStore.confirmedProductionRoute || mediaStore.assetPlanningComplete"
+        :disabled="
+          Boolean(mediaStore.busyAction) ||
+          !mediaStore.apiConfigured ||
+          !mediaStore.confirmedProductionRoute ||
+          mediaStore.assetPlanningComplete
+        "
         :title="!mediaStore.confirmedProductionRoute ? '请先确认项目总监方案' : undefined"
         @click="$emit('prepareAssets')"
         >生成资产设计 JSON</v-btn
@@ -74,7 +162,10 @@
         color="primary"
         prepend-icon="mdi-image-search-outline"
         :loading="mediaStore.busyAction === 'asset-search'"
-        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.referenceAssets.some((asset) => asset.searchQuery)"
+        :disabled="
+          Boolean(mediaStore.busyAction) ||
+          !mediaStore.referenceAssets.some((asset) => asset.searchQuery)
+        "
         @click="$emit('searchAssets')"
         >搜索下载参考图</v-btn
       >
@@ -90,12 +181,22 @@
         color="primary"
         prepend-icon="mdi-movie-edit-outline"
         :loading="mediaStore.busyAction === 'shot-plan'"
-        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured || !mediaStore.allRequiredAssetsApproved"
-        @click="$emit('generateShotPlan')"
-        >转分镜</v-btn
+        :disabled="
+          Boolean(mediaStore.busyAction) ||
+          !mediaStore.allRequiredAssetsApproved
+        "
+        @click="openNextFromAssets"
+        >{{ mediaStore.audioProductionRoute === 'seed-full-track' ? '全局配音' : '转分镜' }}</v-btn
       >
     </div>
-    <div v-else-if="mediaStore.workflowStep !== 'voice'" class="action-bar">
+    <div
+      v-else-if="
+        mediaStore.workflowStep !== 'voice' &&
+        mediaStore.workspaceView !== 'final' &&
+        mediaStore.workspaceView !== 'seed-voice'
+      "
+      class="action-bar"
+    >
       <v-btn
         v-if="secondaryAction"
         variant="tonal"
@@ -128,8 +229,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useMediaTaskStore } from '@/store'
-import type { WorkspaceView } from '@/store/mediaTask'
-import { buildGrokSequences, unfinishedSegments, type RevisionTargetType } from '@/runtime/videoWorkflow'
+import {
+  buildGrokSequences,
+  isCombinedVideoModel,
+  unfinishedSegments,
+  type RevisionTargetType,
+} from '@/runtime/videoWorkflow'
 import { assetVersionMatches } from '@/runtime/storyboardMarkdown'
 
 const emit = defineEmits([
@@ -137,6 +242,13 @@ const emit = defineEmits([
   'approveScript',
   'generateProjectDirector',
   'confirmProjectDirector',
+  'generateAllSeedRolePrompts',
+  'generateAllSeedReferences',
+  'arrangeSeedTrack',
+  'generateSeedPrompt',
+  'generateSeedVoiceScript',
+  'saveSeedDirectorDraft',
+  'generateSeedTrack',
   'editScriptMode',
   'generateShotPlan',
   'prepareAssets',
@@ -146,6 +258,13 @@ const emit = defineEmits([
   'generateVideos',
   'generateSrt',
   'generateEditingTimeline',
+  'generateChineseVoice',
+  'translateSubtitles',
+  'generateEnglishVoice',
+  'separateSourceAudio',
+  'removeOriginalVocal',
+  'mixBackgroundAudio',
+  'burnVoiceAndSubtitles',
   'compose',
   'cancel',
   'retryImage',
@@ -161,6 +280,21 @@ const selectedShot = computed(() =>
 )
 const selectedReferenceAsset = computed(() =>
   mediaStore.referenceAssets.find((asset) => asset.id === mediaStore.selectedAssetId),
+)
+const seedCharacters = computed(() =>
+  mediaStore.referenceAssets.filter((asset) => asset.role === 'character'),
+)
+const selectedSeedCharacter = computed(() =>
+  mediaStore.workspaceView === 'seed-voice'
+    ? seedCharacters.value.find((asset) => asset.id === mediaStore.selectedAssetId)
+    : undefined,
+)
+const allSeedRolePromptsReady = computed(
+  () =>
+    seedCharacters.value.length > 0 &&
+    seedCharacters.value.every((asset) =>
+      Boolean(mediaStore.seedAudioRolePrompts[asset.id]?.trim()),
+    ),
 )
 const selectedAsset = computed(() => {
   const id = mediaStore.selectedAssetId
@@ -193,13 +327,21 @@ const selectedAsset = computed(() => {
               : 'pending'
         : segment.videoStatus,
     error: image ? segment.error : segment.editingError || segment.error,
-    editingFailed: !image && segment.videoStatus === 'success' && segment.editingStatus === 'failed',
+    editingFailed:
+      !image && segment.videoStatus === 'success' && segment.editingStatus === 'failed',
     index: segment.index,
   }
 })
 const revisionTarget = computed<{ type: RevisionTargetType; id: string } | null>(() => {
-  if (mediaStore.workspaceView === 'director' && (mediaStore.projectDirectorDraft || mediaStore.projectDirectorPlan))
+  if (
+    mediaStore.workspaceView === 'director' &&
+    (mediaStore.projectDirectorDraft || mediaStore.projectDirectorPlan)
+  )
     return { type: 'project-director', id: 'project-director' }
+  if (
+    selectedSeedCharacter.value
+  )
+    return { type: 'seed-role-prompt', id: selectedSeedCharacter.value.id }
   if (mediaStore.workflowStep === 'script') {
     if (mediaStore.script) return { type: 'script', id: 'script' }
   }
@@ -216,19 +358,24 @@ const revisionTarget = computed<{ type: RevisionTargetType; id: string } | null>
 })
 const pendingAssets = computed(() =>
   mediaStore.referenceAssets.filter(
-    (asset) => asset.design && !asset.versions.some((version) => assetVersionMatches(asset, version)),
+    (asset) =>
+      asset.design && !asset.versions.some((version) => assetVersionMatches(asset, version)),
   ),
 )
 const grokSequences = computed(() =>
-  mediaStore.videoModel === 'rh-grok-image-video' ? buildGrokSequences(mediaStore.segments) : [],
+  isCombinedVideoModel(mediaStore.videoModel)
+    ? buildGrokSequences(mediaStore.segments, mediaStore.videoModel)
+    : [],
 )
 const imagePending = computed(() =>
-  mediaStore.videoModel === 'rh-grok-image-video'
-    ? grokSequences.value.filter((sequence) => sequence.segments[0].imageStatus !== 'success').map((sequence) => sequence.segments[0])
+  isCombinedVideoModel(mediaStore.videoModel)
+    ? grokSequences.value
+        .filter((sequence) => sequence.segments[0].imageStatus !== 'success')
+        .map((sequence) => sequence.segments[0])
     : unfinishedSegments(mediaStore.segments, 'image'),
 )
 const videoPending = computed(() =>
-  mediaStore.videoModel === 'rh-grok-image-video'
+  isCombinedVideoModel(mediaStore.videoModel)
     ? grokSequences.value
         .filter((sequence) => sequence.segments[0].videoStatus !== 'success')
         .map((sequence) => sequence.segments[0])
@@ -259,19 +406,64 @@ const secondaryAction = computed(() => {
 })
 const primaryAction = computed(() => {
   const idle = !mediaStore.busyAction
+  if (mediaStore.workspaceView === 'final')
+    return {
+      key: 'open',
+      label: '打开成片',
+      icon: 'mdi-folder-open-outline',
+      enabled: idle && Boolean(mediaStore.finalPath),
+    }
   if (mediaStore.workspaceView === 'director') {
     if (mediaStore.projectDirectorDraft)
-      return { key: 'confirm-director', label: '确认项目总监方案', icon: 'mdi-check-circle-outline', enabled: idle }
+      return {
+        key: 'confirm-director',
+        label: '确认项目总监方案',
+        icon: 'mdi-check-circle-outline',
+        enabled: idle,
+      }
     if (!mediaStore.projectDirectorPlan)
-      return { key: 'project-director', label: '生成项目总监方案', icon: 'mdi-account-tie-outline', enabled: idle && mediaStore.apiConfigured && Boolean(mediaStore.approvedScript) }
-    return { key: 'asset-prompts', label: '生成资产设计 JSON', icon: 'mdi-text-box-edit-outline', enabled: idle && mediaStore.apiConfigured }
+      return {
+        key: 'project-director',
+        label: '生成项目总监方案',
+        icon: 'mdi-account-tie-outline',
+        enabled: idle && mediaStore.apiConfigured && Boolean(mediaStore.approvedScript),
+      }
+    return {
+      key: 'asset-prompts',
+      label: '生成资产设计 JSON',
+      icon: 'mdi-text-box-edit-outline',
+      enabled: idle && mediaStore.apiConfigured,
+    }
   }
+  if (mediaStore.workflowStep === 'seed-voice')
+    return {
+      key: 'shot-plan',
+      label: '生成分镜提示词',
+      icon: 'mdi-movie-edit-outline',
+      enabled:
+        idle && Boolean(mediaStore.seedAudioDialogueTimelinePath) && mediaStore.apiConfigured,
+    }
   if (mediaStore.workflowStep === 'script') {
     if (!mediaStore.script)
-      return { key: 'script', label: '生成文稿', icon: 'mdi-auto-fix', enabled: idle && mediaStore.apiConfigured && Boolean(mediaStore.request.trim()) }
+      return {
+        key: 'script',
+        label: '生成文稿',
+        icon: 'mdi-auto-fix',
+        enabled: idle && mediaStore.apiConfigured && Boolean(mediaStore.request.trim()),
+      }
     if (!mediaStore.approvedScript)
-      return { key: 'approve', label: '确认并进入项目总监', icon: 'mdi-arrow-right-circle-outline', enabled: idle && Boolean(mediaStore.script.trim()) }
-    return { key: 'next-director', label: '进入项目总监', icon: 'mdi-arrow-right-circle-outline', enabled: idle }
+      return {
+        key: 'approve',
+        label: '确认并进入项目总监',
+        icon: 'mdi-arrow-right-circle-outline',
+        enabled: idle && Boolean(mediaStore.script.trim()),
+      }
+    return {
+      key: 'next-director',
+      label: '进入项目总监',
+      icon: 'mdi-arrow-right-circle-outline',
+      enabled: idle,
+    }
   }
   if (!mediaStore.script)
     return {
@@ -289,7 +481,12 @@ const primaryAction = computed(() => {
     }
   if (mediaStore.workflowStep === 'voice') {
     if (!mediaStore.finalPath)
-      return { key: 'open-dubbing', label: '返回配音字幕工作台', icon: 'mdi-subtitles-outline', enabled: idle }
+      return {
+        key: 'open-dubbing',
+        label: '返回配音字幕工作台',
+        icon: 'mdi-subtitles-outline',
+        enabled: idle,
+      }
     return { key: 'open', label: '打开成片', icon: 'mdi-folder-open-outline', enabled: idle }
   }
   if (mediaStore.workflowStep === 'assets') {
@@ -308,7 +505,12 @@ const primaryAction = computed(() => {
         enabled: idle && mediaStore.apiConfigured,
       }
     if (!mediaStore.segments.length)
-      return { key: 'shot-plan', label: '转分镜', icon: 'mdi-movie-edit-outline', enabled: idle && mediaStore.apiConfigured }
+      return {
+        key: 'shot-plan',
+        label: '转分镜',
+        icon: 'mdi-movie-edit-outline',
+        enabled: idle && mediaStore.apiConfigured,
+      }
   }
   if (mediaStore.workflowStep === 'shots' && !mediaStore.segments.length)
     return {
@@ -319,7 +521,11 @@ const primaryAction = computed(() => {
           ? '请先生成资产图'
           : '转分镜',
       icon: 'mdi-movie-edit-outline',
-      enabled: idle && mediaStore.apiConfigured && mediaStore.assetPlanningComplete && mediaStore.allRequiredAssetsApproved,
+      enabled:
+        idle &&
+        mediaStore.apiConfigured &&
+        mediaStore.assetPlanningComplete &&
+        mediaStore.allRequiredAssetsApproved,
     }
   if (imagePending.value.length)
     return {
@@ -350,7 +556,12 @@ const primaryAction = computed(() => {
       enabled: idle && mediaStore.allTranscriptsReady && mediaStore.apiConfigured,
     }
   if (!mediaStore.finalPath)
-    return { key: 'open-dubbing', label: '进入配音字幕工作台', icon: 'mdi-subtitles-outline', enabled: idle }
+    return {
+      key: 'open-dubbing',
+      label: '进入配音字幕工作台',
+      icon: 'mdi-subtitles-outline',
+      enabled: idle,
+    }
   return { key: 'open', label: '打开成片', icon: 'mdi-folder-open-outline', enabled: idle }
 })
 const canStop = computed(() =>
@@ -362,6 +573,12 @@ const canStop = computed(() =>
     'resume',
     'voice',
     'generate-editing-timeline',
+    'generate-chinese-voice',
+    'translate-subtitles',
+    'generate-english-voice',
+    'separate-source-audio',
+    'mix-background-audio',
+    'burn-voice-and-subtitles',
   ].includes(mediaStore.busyAction),
 )
 const displayError = computed(() =>
@@ -370,74 +587,6 @@ const displayError = computed(() =>
     : /云端请求失败\s*\(524\)|\b524\b/.test(mediaStore.error)
       ? '当前模型响应超时，内容尚未生成。请重试或切换其他文本模型。'
       : mediaStore.error.replace(/^Error invoking remote method '[^']+': Error:\s*/, ''),
-)
-const stages = computed(
-  () =>
-    [
-      {
-        key: 'script',
-        label: '文稿',
-        view: 'script',
-        done: Boolean(mediaStore.approvedScript),
-        enabled: true,
-        current: mediaStore.workflowStep === 'script',
-      },
-      {
-        key: 'assets',
-        label: '资产',
-        view: 'assets',
-        done: mediaStore.assetPlanningComplete && mediaStore.allRequiredAssetsApproved,
-        enabled: Boolean(mediaStore.approvedScript),
-        current: mediaStore.workflowStep === 'assets',
-      },
-      {
-        key: 'shots',
-        label: '分镜',
-        view: 'storyboard',
-        done: Boolean(mediaStore.segments.length),
-        enabled: mediaStore.assetPlanningComplete && mediaStore.allRequiredAssetsApproved,
-        current: mediaStore.workflowStep === 'shots',
-      },
-      {
-        key: 'images',
-        label: '分镜图',
-        view: 'media',
-        done: mediaStore.allImagesReady,
-        enabled: mediaStore.allRequiredAssetsApproved,
-        current: mediaStore.workflowStep === 'images',
-      },
-      {
-        key: 'videos',
-        label: '视频',
-        view: 'media',
-        done: mediaStore.allVideosReady,
-        enabled: mediaStore.allImagesReady,
-        current: mediaStore.workflowStep === 'videos',
-      },
-      {
-        key: 'voice',
-        label: '配音字幕',
-        view: 'dubbing',
-        done: mediaStore.voiceReady,
-        enabled: mediaStore.allVideosReady,
-        current: mediaStore.workflowStep === 'voice',
-      },
-      {
-        key: 'final',
-        label: '成片',
-        view: 'final',
-        done: Boolean(mediaStore.finalPath),
-        enabled: mediaStore.allEditingReady && mediaStore.voiceReady,
-        current: mediaStore.workflowStep === 'final',
-      },
-    ] as {
-      key: import('@/store/mediaTask').WorkflowStep
-      label: string
-      view: WorkspaceView
-      done: boolean
-      enabled: boolean
-      current: boolean
-    }[],
 )
 function sendRevision() {
   if (!revisionTarget.value || !revisionInstruction.value.trim()) return
@@ -449,16 +598,119 @@ function sendRevision() {
   )
   revisionInstruction.value = ''
 }
-const dubbingActions = [
-  { label: '重选剪辑点', icon: 'mdi-timeline-edit-outline' },
-  { label: '生成中文配音', icon: 'mdi-microphone-plus' },
-  { label: '翻译所有字幕', icon: 'mdi-translate' },
-  { label: '生成英语配音', icon: 'mdi-microphone-plus' },
-  { label: '分离原人声和背景声', icon: 'mdi-account-voice-off-outline' },
-  { label: '去除原人声', icon: 'mdi-volume-off' },
-  { label: '混回背景声、环境声和动作音', icon: 'mdi-music-note-plus' },
-  { label: '烧录配音和字幕', icon: 'mdi-movie-open-plus' },
-]
+type DubbingAction = {
+  key: string
+  label: string
+  icon: string
+  event?:
+    | 'generateChineseVoice'
+    | 'translateSubtitles'
+    | 'generateEnglishVoice'
+    | 'separateSourceAudio'
+    | 'removeOriginalVocal'
+    | 'mixBackgroundAudio'
+    | 'burnVoiceAndSubtitles'
+  enabled: boolean
+  title: string
+  done: boolean
+}
+const dubbingActions = computed<DubbingAction[]>(() => {
+  const soundSegments = mediaStore.segments.filter(
+    (segment) => segment.soundType && segment.soundType !== 'none',
+  )
+  const selectedVoice =
+    mediaStore.outputLanguage === 'zh' ? mediaStore.voicePath : mediaStore.englishVoicePath
+  const subtitlesReady =
+    mediaStore.outputLanguage === 'zh'
+      ? soundSegments.every((segment) => segment.dialogueText?.trim())
+      : soundSegments.every((segment) => segment.englishDialogueText?.trim())
+  const translated =
+    soundSegments.length > 0 &&
+    soundSegments.every((segment) => segment.englishDialogueText?.trim())
+  const canBurn =
+    mediaStore.allEditingReady &&
+    subtitlesReady &&
+    (!soundSegments.length ||
+      (mediaStore.instrumentPath ? Boolean(mediaStore.mixedAudioPath) : Boolean(selectedVoice)))
+  return [
+    {
+      key: 'generate-chinese-voice',
+      label: '生成中文配音',
+      icon: 'mdi-microphone-plus',
+      event: 'generateChineseVoice',
+      enabled: mediaStore.allEditingReady && soundSegments.length > 0 && !mediaStore.voicePath,
+      title: '请先完成剪辑时间轴和台词',
+      done: Boolean(mediaStore.voicePath),
+    },
+    {
+      key: 'translate-subtitles',
+      label: '翻译所有字幕',
+      icon: 'mdi-translate',
+      event: 'translateSubtitles',
+      enabled:
+        mediaStore.allEditingReady &&
+        mediaStore.apiConfigured &&
+        soundSegments.some((segment) => segment.dialogueText?.trim()) &&
+        !translated,
+      title: '请先完成时间轴、中文字幕和 API 配置',
+      done: translated,
+    },
+    {
+      key: 'generate-english-voice',
+      label: '生成英语配音',
+      icon: 'mdi-microphone-plus',
+      event: 'generateEnglishVoice',
+      enabled: mediaStore.allEditingReady && translated && !mediaStore.englishVoicePath,
+      title: '请先翻译全部字幕',
+      done: Boolean(mediaStore.englishVoicePath),
+    },
+    {
+      key: 'separate-source-audio',
+      label:
+        mediaStore.audioProductionRoute === 'seed-full-track'
+          ? '分离完整声音轨的人声和背景声'
+          : '分离原人声和背景声',
+      icon: 'mdi-account-voice-off-outline',
+      event: 'separateSourceAudio',
+      enabled: mediaStore.allEditingReady && !mediaStore.instrumentPath,
+      title: '请先完成剪辑时间轴',
+      done: Boolean(mediaStore.vocalPath && mediaStore.instrumentPath),
+    },
+    {
+      key: 'remove-original-vocal',
+      label: '去除原人声',
+      icon: 'mdi-volume-off',
+      event: 'removeOriginalVocal',
+      enabled:
+        Boolean(mediaStore.vocalPath && mediaStore.instrumentPath) &&
+        !mediaStore.originalVocalRemoved,
+      title: '请先分离原人声和背景声',
+      done: mediaStore.originalVocalRemoved,
+    },
+    {
+      key: 'mix-background-audio',
+      label: '混回背景声、环境声和动作音',
+      icon: 'mdi-music-note-plus',
+      event: 'mixBackgroundAudio',
+      enabled:
+        mediaStore.originalVocalRemoved && Boolean(selectedVoice) && !mediaStore.mixedAudioPath,
+      title: '请先去除原人声并生成配音',
+      done: Boolean(mediaStore.mixedAudioPath),
+    },
+    {
+      key: 'burn-voice-and-subtitles',
+      label: '烧录配音和字幕',
+      icon: 'mdi-movie-open-plus',
+      event: 'burnVoiceAndSubtitles',
+      enabled: canBurn && !mediaStore.finalPath,
+      title: '请先完成配音、字幕和已开始的音频处理',
+      done: Boolean(mediaStore.finalPath),
+    },
+  ]
+})
+const nextDubbingActionKey = computed(
+  () => dubbingActions.value.find((action) => action.enabled && !action.done)?.key,
+)
 function runPrimary() {
   if (primaryAction.value.key === 'next-director') {
     mediaStore.selectView('director')
@@ -477,6 +729,8 @@ function runPrimary() {
     approve: 'approveScript',
     'project-director': 'generateProjectDirector',
     'confirm-director': 'confirmProjectDirector',
+    'arrange-seed-track': 'arrangeSeedTrack',
+    'generate-seed-track': 'generateSeedTrack',
     'shot-plan': 'generateShotPlan',
     'asset-prompts': 'prepareAssets',
     assets: 'generateAssets',
@@ -489,10 +743,21 @@ function runPrimary() {
   }[primaryAction.value.key]
   if (event) emit(event as any)
 }
+function openNextFromAssets() {
+  if (mediaStore.audioProductionRoute === 'seed-full-track') {
+    const first = seedCharacters.value[0]
+    if (first) mediaStore.selectedAssetId = first.id
+    mediaStore.selectView('seed-voice')
+    return
+  }
+  emit('generateShotPlan')
+}
 function runSecondary() {
   if (secondaryAction.value?.key === 'regenerate-director') emit('generateProjectDirector')
-  else if (secondaryAction.value?.key === 'retry-image') emit('retryImage', selectedAsset.value!.index)
-  else if (secondaryAction.value?.key === 'retry-video') emit('retryVideo', selectedAsset.value!.index)
+  else if (secondaryAction.value?.key === 'retry-image')
+    emit('retryImage', selectedAsset.value!.index)
+  else if (secondaryAction.value?.key === 'retry-video')
+    emit('retryVideo', selectedAsset.value!.index)
   else if (secondaryAction.value?.key === 'export') emit('exportFinal')
 }
 </script>
@@ -500,33 +765,6 @@ function runSecondary() {
 <style scoped>
 .inspector {
   overflow: hidden;
-}
-.stage-progress {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  flex: none;
-  padding: 7px 6px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-}
-.stage-progress button {
-  min-width: 0;
-  padding: 3px 1px;
-  border: 0;
-  background: transparent;
-  color: rgba(0, 0, 0, 0.42);
-  font-size: 10px;
-}
-.stage-progress button span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.stage-progress button.done {
-  color: #157a35;
-}
-.stage-progress button.current {
-  font-weight: 700;
-  color: #0f5f29;
 }
 .inspector-scroll {
   min-height: 0;
@@ -555,6 +793,10 @@ function runSecondary() {
 .revision-input :deep(.v-label) {
   margin-left: 16px;
 }
+.revision-input.compact {
+  flex: none;
+  min-height: 190px;
+}
 .revision-actions {
   display: flex;
   justify-content: flex-end;
@@ -563,11 +805,32 @@ function runSecondary() {
 .revision-actions {
   padding: 0 10px 10px;
 }
-.operation-empty { flex: 1; }
-.voice-controls { display: grid; gap: 10px; align-content: start; }
-.voice-controls .v-btn-toggle { display: grid; grid-template-columns: 1fr; height: auto; }
-.voice-controls .v-btn { justify-content: flex-start; }
-.voice-controls small { color: rgba(0,0,0,.58); line-height: 1.6; }
+.operation-empty {
+  flex: 1;
+}
+.voice-controls,
+.seed-voice-controls {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+.seed-voice-controls .v-btn {
+  min-height: 42px;
+  justify-content: flex-start;
+  border-radius: 6px;
+  letter-spacing: 0;
+}
+.voice-controls .dubbing-action {
+  min-height: 44px;
+  justify-content: flex-start;
+  border-radius: 6px;
+  letter-spacing: 0;
+}
+.voice-controls small,
+.seed-voice-controls small {
+  color: rgba(0, 0, 0, 0.58);
+  line-height: 1.6;
+}
 .action-bar {
   flex: none;
   display: flex;
@@ -581,7 +844,9 @@ function runSecondary() {
 .action-bar .v-btn:not(.v-btn--icon) {
   min-height: 42px;
 }
-.action-bar .primary-action { flex: 1; }
+.action-bar .primary-action {
+  flex: 1;
+}
 .asset-actions {
   display: grid;
   grid-template-columns: 1fr;

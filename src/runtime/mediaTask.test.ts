@@ -245,7 +245,7 @@ test('deleting the current generated asset falls back or makes only that asset p
   assert.equal(store.allRequiredAssetsApproved, false)
 })
 
-test('uploaded images remain references until an AI version is approved', () => {
+test('an uploaded image becomes ready after it is selected for current use', () => {
   const store = populatedStore()
   store.referenceAssets = [
     {
@@ -259,16 +259,15 @@ test('uploaded images remain references until an AI version is approved', () => 
       status: 'approved',
       design: { project: { visualStyle: '粘土风格', aspectRatio: '9:16' } },
       versions: [{ id: 'upload-1', source: 'upload', relativePath: 'inputs/ref.png', createdAt: '' }],
-      activeVersionId: 'upload-1',
     },
   ]
   assert.equal(store.allRequiredAssetsApproved, false)
   store.adoptAssetVersion('character-1', 'upload-1')
   assert.equal(store.referenceAssets[0].status, 'approved')
-  assert.equal(store.allRequiredAssetsApproved, false)
+  assert.equal(store.allRequiredAssetsApproved, true)
 })
 
-test('treats an existing generated asset as ready even if legacy selection state drifted', () => {
+test('requires an explicit current version even when a generated version exists', () => {
   const store = populatedStore()
   store.referenceAssets = [{
     id: 'scene-1',
@@ -281,7 +280,7 @@ test('treats an existing generated asset as ready even if legacy selection state
     status: 'design-ready',
     versions: [{ id: 'generated-1', source: 'generated', relativePath: 'assets/scene.png', createdAt: '' }],
   }]
-  assert.equal(store.allRequiredAssetsApproved, true)
+  assert.equal(store.allRequiredAssetsApproved, false)
   assert.equal(store.currentGeneratedAssetVersion('scene-1')?.id, 'generated-1')
 })
 
@@ -410,4 +409,12 @@ test('workspace selection is exclusive and one-shot invalidation preserves other
   assert.equal(store.segments[0].videoPath, '')
   assert.equal(store.segments[0].imagePath, '/run/storyboards/001.png')
   assert.equal(store.segments[1].videoPath, '/run/clips/001.mp4')
+})
+
+test('keeps the selected character while opening the Seed voice workspace', () => {
+  const store = useMediaTaskStore()
+  store.selectedAssetId = 'character-1'
+  store.selectView('seed-voice')
+  assert.equal(store.workspaceView, 'seed-voice')
+  assert.equal(store.selectedAssetId, 'character-1')
 })

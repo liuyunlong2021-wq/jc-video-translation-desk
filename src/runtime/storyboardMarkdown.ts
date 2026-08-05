@@ -169,6 +169,7 @@ export function parseStoryboardMarkdown(
   approvedScript: string,
   timelineDuration: number,
   selectedPace: 'auto' | 'slow' | 'medium' | 'fast',
+  strictDuration = true,
 ) {
   if (!shots.length) throw new Error('导演没有写入单镜 Markdown')
   const assetsById = new Map<string, ReferenceAsset>()
@@ -240,7 +241,7 @@ export function parseStoryboardMarkdown(
         actionProgression: section(content, '动作过程'),
         endState: section(content, '结束状态'),
         storyboardImagePrompt: section(content, '画面提示词'),
-        videoPrompt: `${section(content, '视频提示词')}\n\n单一连续镜头，无切镜，无转场，无背景音乐。`,
+        videoPrompt: `${section(content, '视频提示词')}\n\n单一连续镜头，无切镜，无转场。声音按分镜提示词正常生成，最终采用由声音制作路线决定。`,
       }
     })
   const pace = field(director.content, '最终节奏') as 'slow' | 'medium' | 'fast'
@@ -260,6 +261,7 @@ export function parseStoryboardMarkdown(
     approvedScript,
     timelineDuration,
     selectedPace,
+    strictDuration,
   )
   return { plan: plan as StoryboardPlan, assets: [...assetsById.values()] }
 }

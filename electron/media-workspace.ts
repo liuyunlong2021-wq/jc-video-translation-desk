@@ -4,19 +4,29 @@ import { createHash, randomUUID } from 'node:crypto'
 import { app, dialog, net } from 'electron'
 import { parseBuffer } from 'music-metadata'
 import { generateUniqueFileName } from './lib/tools.ts'
-import { productionRouteMarkdown, projectDirectorMarkdown } from '../src/runtime/projectDirector.ts'
+import { projectDirectorMarkdown } from '../src/runtime/projectDirector.ts'
 import type {
   AssetVersion,
   CoreReferenceAsset,
+  EpisodeSubtitleCue,
   ImportedMarkdown,
   ProjectManifest,
 } from './types.ts'
-import type { EditingTimeline } from '../src/runtime/productionContract.ts'
+import { DEFAULT_EPISODE_ID, type EditingTimeline } from '../src/runtime/productionContract.ts'
 import { validateEditingTimeline } from '../src/runtime/editingTimeline.ts'
 
 const RUN_ID = /^[A-Za-z0-9_-]+$/
 const stateWrites = new Map<string, Promise<void>>()
-const WIKI_VERSION = 1 as const
+const WIKI_VERSION = 2 as const
+const PROJECT_SCHEMA_VERSION = 1 as const
+const PROJECT_REGISTRY_VERSION = 1 as const
+const creatingProjectRoots = new Map<string, string>()
+
+type ProjectRegistry = {
+  schemaVersion: typeof PROJECT_REGISTRY_VERSION
+  lastOpenedProjectId?: string
+  projects: Array<{ projectId: string; rootPath: string }>
+}
 
 const WIKI_DIRS = [
   '.raw/提交记录',
@@ -24,8 +34,9 @@ const WIKI_DIRS = [
   'wiki/文稿',
   'wiki/项目',
   'wiki/声音',
-  'wiki/分镜/镜头',
-  'wiki/转录/episode-001',
+  'wiki/制作',
+  'wiki/分镜',
+  'wiki/转录',
   'wiki/字幕',
   'wiki/字幕/素材',
   'wiki/资产/角色',
@@ -36,13 +47,77 @@ const WIKI_DIRS = [
   'wiki/成片',
   'inputs',
   'assets',
-  'storyboards',
-  'clips',
 ] as const
 
+const SHARED_STATE_KEYS = [
+  'ratio',
+  'styleId',
+  'targetDuration',
+  'shotPace',
+  'voiceEngine',
+  'localVoiceEngine',
+  'voiceSource',
+  'textModel',
+  'videoModel',
+  'referenceAssets',
+  'assetPlanCompletedRoles',
+] as const
+
+function projectSettingsPath() {
+  return path.join(app.getPath('userData'), 'media-projects.json')
+}
+
+function emptyProjectRegistry(): ProjectRegistry {
+  return { schemaVersion: PROJECT_REGISTRY_VERSION, projects: [] }
+}
+
+function readProjectRegistry(): ProjectRegistry {
+  try {
+    const value = JSON.parse(fs.readFileSync(projectSettingsPath(), 'utf8'))
+    if (value?.schemaVersion !== PROJECT_REGISTRY_VERSION || !Array.isArray(value.projects))
+      return emptyProjectRegistry()
+    return {
+      schemaVersion: PROJECT_REGISTRY_VERSION,
+      lastOpenedProjectId: RUN_ID.test(value.lastOpenedProjectId) ? value.lastOpenedProjectId : undefined,
+      projects: value.projects
+        .filter((item: any) => RUN_ID.test(item?.projectId) && path.isAbsolute(item?.rootPath || ''))
+        .map((item: any) => ({ projectId: String(item.projectId), rootPath: path.resolve(item.rootPath) })),
+    }
+  } catch {
+    return emptyProjectRegistry()
+  }
+}
+
+async function writeProjectRegistry(registry: ProjectRegistry) {
+  await writeAtomic(projectSettingsPath(), `${JSON.stringify(registry, null, 2)}\n`)
+}
+
+export function resolveProjectRoot(projectId: string) {
+  if (!RUN_ID.test(projectId)) throw new Error('无效的项目 ID')
+  const creatingRoot = creatingProjectRoots.get(projectId)
+  if (creatingRoot) return creatingRoot
+  const entry = readProjectRegistry().projects.find((item) => item.projectId === projectId)
+  if (!entry) throw new Error('项目位置未注册，请重新打开项目目录')
+  return entry.rootPath
+}
+
 export function getRunDir(runId: string) {
-  if (!RUN_ID.test(runId)) throw new Error('无效的任务 ID')
-  return path.join(app.getPath('userData'), 'media-runs', runId)
+  return resolveProjectRoot(runId)
+}
+
+export function getEpisodeDir(projectId: string, episodeId: string) {
+  if (!RUN_ID.test(episodeId)) throw new Error('无效的剧集 ID')
+  return path.join(getRunDir(projectId), 'episodes', episodeId)
+}
+
+export async function ensureEpisodeDir(projectId: string, episodeId: string) {
+  const dir = getEpisodeDir(projectId, episodeId)
+  await Promise.all(
+    ['inputs', 'storyboards', 'clips'].map((name) =>
+      fs.promises.mkdir(path.join(dir, name), { recursive: true }),
+    ),
+  )
+  return dir
 }
 
 function projectMarkdownPath(projectId: string, relativePath: string) {
@@ -90,7 +165,7 @@ export async function writeProjectMarkdown(
   const target = projectMarkdownPath(projectId, relativePath)
   if (Buffer.byteLength(content, 'utf8') > 2 * 1024 * 1024) throw new Error('Markdown 不能超过 2 MB')
   if (content.includes('\u0000')) throw new Error('Markdown 包含无效字符')
-  if (target.normalized === 'wiki/文稿/确认文稿.md' && !content.replace(/^# 确认文稿\s*/m, '').trim())
+  if (/^wiki\/文稿\/[^/]+\/确认文稿\.md$/.test(target.normalized) && !content.replace(/^# 确认文稿\s*/m, '').trim())
     throw new Error('确认文稿不能为空')
   let current = ''
   let exists = true
@@ -135,9 +210,12 @@ export async function writeStoryboardMarkdownBatch(
   return documents
 }
 
-export async function finalizeStoryboardMarkdown(projectId: string, writtenPaths: string[]) {
-  const shotPaths = writtenPaths.filter((value) => value.startsWith('wiki/分镜/镜头/'))
-  if (!writtenPaths.includes('wiki/分镜/导演总览.md') || !shotPaths.length)
+export async function finalizeStoryboardMarkdown(projectId: string, episodeId: string, writtenPaths: string[]) {
+  const prefix = `wiki/分镜/${episodeId}/`
+  if (writtenPaths.some((value) => !value.startsWith(prefix)))
+    throw new Error('分镜提交包含其他剧集文件')
+  const shotPaths = writtenPaths.filter((value) => value.startsWith(`${prefix}镜头/`))
+  if (!writtenPaths.includes(`${prefix}导演总览.md`) || !shotPaths.length)
     throw new Error('本轮导演没有成功写入导演总览和单镜 Markdown')
   const keep = new Set(writtenPaths)
   const current = await listProjectMarkdown(projectId)
@@ -145,7 +223,7 @@ export async function finalizeStoryboardMarkdown(projectId: string, writtenPaths
     current
       .filter(
         (value) =>
-          value.startsWith('wiki/分镜/镜头/') && !keep.has(value),
+          value.startsWith(`${prefix}镜头/`) && !keep.has(value),
       )
       .map((value) => fs.promises.unlink(projectMarkdownPath(projectId, value).resolved)),
   )
@@ -157,33 +235,34 @@ function storyboardTransactionDir(projectId: string, transactionId: string) {
   return path.join(getRunDir(projectId), '.storyboard-transactions', transactionId)
 }
 
-export async function beginStoryboardMarkdownUpdate(projectId: string) {
+export async function beginStoryboardMarkdownUpdate(projectId: string, episodeId: string) {
+  getEpisodeDir(projectId, episodeId)
   const transactionId = randomUUID()
   const backup = storyboardTransactionDir(projectId, transactionId)
   const wiki = path.join(await ensureRunDir(projectId), 'wiki')
-  await fs.promises.mkdir(backup, { recursive: true })
-  await fs.promises.cp(path.join(wiki, '分镜'), path.join(backup, '分镜'), { recursive: true })
+  await Promise.all([
+    fs.promises.mkdir(backup, { recursive: true }),
+    fs.promises.mkdir(path.join(wiki, '分镜', episodeId), { recursive: true }),
+  ])
+  await fs.promises.cp(path.join(wiki, '分镜', episodeId), path.join(backup, '分镜'), { recursive: true })
   return transactionId
 }
 
-export async function rollbackStoryboardMarkdownUpdate(projectId: string, transactionId: string) {
+export async function rollbackStoryboardMarkdownUpdate(projectId: string, episodeId: string, transactionId: string) {
   const backup = storyboardTransactionDir(projectId, transactionId)
   const wiki = path.join(getRunDir(projectId), 'wiki')
-  await Promise.all(
-    ['分镜'].map((folder) =>
-      fs.promises.rm(path.join(wiki, folder), { recursive: true, force: true }),
-    ),
-  )
-  await fs.promises.cp(path.join(backup, '分镜'), path.join(wiki, '分镜'), { recursive: true })
+  await fs.promises.rm(path.join(wiki, '分镜', episodeId), { recursive: true, force: true })
+  await fs.promises.cp(path.join(backup, '分镜'), path.join(wiki, '分镜', episodeId), { recursive: true })
   await fs.promises.rm(backup, { recursive: true, force: true })
 }
 
 export async function commitStoryboardMarkdownUpdate(
   projectId: string,
+  episodeId: string,
   transactionId: string,
   writtenPaths: string[],
 ) {
-  await finalizeStoryboardMarkdown(projectId, writtenPaths)
+  await finalizeStoryboardMarkdown(projectId, episodeId, writtenPaths)
   await fs.promises.rm(storyboardTransactionDir(projectId, transactionId), {
     recursive: true,
     force: true,
@@ -201,11 +280,72 @@ export async function ensureRunDir(runId: string) {
   return dir
 }
 
-export async function writeEditingTimeline(runId: string, timeline: EditingTimeline) {
+export async function writeEditingTimeline(runId: string, episodeId: string, timeline: EditingTimeline) {
   validateEditingTimeline(timeline)
-  const filePath = path.join(await ensureRunDir(runId), 'wiki', '剪辑', 'episode-001', 'editing-timeline.json')
+  getEpisodeDir(runId, episodeId)
+  const filePath = path.join(await ensureRunDir(runId), 'wiki', '剪辑', episodeId, 'editing-timeline.json')
   await writeAtomic(filePath, `${JSON.stringify(timeline, null, 2)}\n`)
   return relativeRunAsset(runId, filePath)
+}
+
+function srtTime(ms: number) {
+  const value = Math.max(0, Math.round(ms))
+  const hours = Math.floor(value / 3_600_000)
+  const minutes = Math.floor((value % 3_600_000) / 60_000)
+  const seconds = Math.floor((value % 60_000) / 1000)
+  const millis = value % 1000
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`
+}
+
+export async function writeEpisodeSubtitles(
+  runId: string,
+  episodeId: string,
+  language: 'zh' | 'en',
+  cues: EpisodeSubtitleCue[],
+) {
+  if (!['zh', 'en'].includes(language)) throw new Error('字幕语言无效')
+  for (const cue of cues) {
+    if (!cue.shotId?.trim() || !cue.text?.trim() || cue.startMs < 0 || cue.endMs <= cue.startMs)
+      throw new Error(`${cue.shotId || '未知镜头'} 字幕时间轴无效`)
+  }
+  const content = cues.map((cue, index) =>
+    `${index + 1}\n${srtTime(cue.startMs)} --> ${srtTime(cue.endMs)}\n${cue.text.trim()}\n`,
+  ).join('\n')
+  getEpisodeDir(runId, episodeId)
+  const filePath = path.join(await ensureRunDir(runId), 'wiki', '字幕', `${episodeId}-${language}.srt`)
+  await writeAtomic(filePath, content)
+  return relativeRunAsset(runId, filePath)
+}
+
+export async function writeFinalArtifacts(
+  runId: string,
+  episodeId: string,
+  finalPath: string,
+  audioMode: import('../src/runtime/productionContract.ts').AudioMode,
+) {
+  const relativeFinal = relativeRunAsset(runId, finalPath)
+  const dir = await ensureRunDir(runId)
+  await Promise.all([
+    writeAtomic(
+      path.join(dir, 'wiki', '成片', `${episodeId}.md`),
+      managedPage(
+        runId,
+        'final-video',
+        episodeId,
+        `# ${episodeId} 成片\n\n- 制作索引：[[../制作/${episodeId}]]\n- 音频处理：[[../声音/${episodeId}/音频处理.json]]\n- 音频模式：${audioMode}\n- [打开成片](../../${relativeFinal})`,
+      ),
+    ),
+    writeAtomic(
+      path.join(dir, 'wiki', '制作', `${episodeId}.md`),
+      managedPage(
+        runId,
+        'episode-production',
+        episodeId,
+        `# ${episodeId} 制作索引\n\n- [[../项目总监/${episodeId}]]\n- [[../文稿/${episodeId}/确认文稿]]\n- [[../分镜/${episodeId}/导演总览]]\n- [[../剪辑/${episodeId}/editing-timeline.json]]\n- [[../声音/${episodeId}/对白资产.json]]\n- [[../声音/${episodeId}/音频处理.json]]\n- [[../字幕/${episodeId}-zh.srt]]\n- [[../字幕/${episodeId}-en.srt]]\n- [[../成片/${episodeId}|最终成片]]`,
+      ),
+    ),
+  ])
+  return relativeFinal
 }
 
 function projectManifestPath(projectId: string) {
@@ -214,72 +354,133 @@ function projectManifestPath(projectId: string) {
 
 async function writeAtomic(filePath: string, value: string) {
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
-  await fs.promises.writeFile(`${filePath}.tmp`, value, 'utf8')
-  await fs.promises.rename(`${filePath}.tmp`, filePath)
+  const tempPath = `${filePath}.${randomUUID()}.tmp`
+  await fs.promises.writeFile(tempPath, value, 'utf8')
+  await fs.promises.rename(tempPath, filePath)
 }
 
 async function readJson(filePath: string) {
   return JSON.parse(await fs.promises.readFile(filePath, 'utf8'))
 }
 
-function defaultProjectName(createdAt: string) {
-  return `未命名项目 ${createdAt.slice(0, 16).replace('T', ' ')}`
-}
-
-async function ensureProjectManifest(projectId: string, stage = 'draft') {
+async function ensureProjectManifest(projectId: string, stage = 'draft', name = '') {
   const filePath = projectManifestPath(projectId)
   try {
     const manifest = (await readJson(filePath)) as ProjectManifest
-    if (manifest.projectId === projectId) return manifest
+    if (
+      manifest.schemaVersion === PROJECT_SCHEMA_VERSION &&
+      manifest.projectId === projectId &&
+      manifest.wikiVersion === WIKI_VERSION &&
+      Array.isArray(manifest.episodes) &&
+      RUN_ID.test(manifest.lastOpenedEpisodeId)
+    ) return manifest
   } catch {
-    // Legacy runs are adopted in place below.
+    // Create a fresh unreleased-project manifest below.
   }
   const createdAt = new Date().toISOString()
   const manifest: ProjectManifest = {
+    schemaVersion: PROJECT_SCHEMA_VERSION,
     projectId,
-    name: defaultProjectName(createdAt),
+    name: name.trim() || path.basename(getRunDir(projectId)),
     createdAt,
     updatedAt: createdAt,
-    stage,
+    episodes: [{
+      episodeId: DEFAULT_EPISODE_ID,
+      episodeNumber: 1,
+      title: '第 1 集',
+      stage,
+      createdAt,
+      updatedAt: createdAt,
+    }],
+    lastOpenedEpisodeId: DEFAULT_EPISODE_ID,
     wikiVersion: WIKI_VERSION,
   }
   await writeAtomic(filePath, `${JSON.stringify(manifest, null, 2)}\n`)
   return manifest
 }
 
-export async function createProject(projectId: string, stateValue: string) {
+function validateProjectRoot(rootPath: string) {
+  const resolved = path.resolve(rootPath)
+  if (!path.isAbsolute(resolved) || resolved === path.parse(resolved).root)
+    throw new Error('请选择具体的项目文件夹')
+  if (!path.basename(resolved).trim()) throw new Error('项目名称不能为空')
+  return resolved
+}
+
+export async function registerProjectRoot(projectId: string, rootPath: string, makeCurrent = true) {
+  const resolved = validateProjectRoot(rootPath)
+  const registry = readProjectRegistry()
+  registry.projects = [
+    ...registry.projects.filter((item) => item.projectId !== projectId),
+    { projectId, rootPath: resolved },
+  ]
+  if (makeCurrent) registry.lastOpenedProjectId = projectId
+  await writeProjectRegistry(registry)
+}
+
+export async function createProjectAt(projectId: string, rootPath: string, stateValue: string) {
   const state = JSON.parse(stateValue)
   if (state?.runId !== projectId) throw new Error('项目状态与项目 ID 不匹配')
-  await ensureRunDir(projectId)
-  const manifest = await ensureProjectManifest(projectId, state.stage)
-  await initializeWiki(projectId, manifest)
-  if (state.approvedScript)
-    await writeInitial(
-      path.join(getRunDir(projectId), 'wiki/文稿/确认文稿.md'),
-      managedPage(projectId, 'script', 'approved-script', `# 确认文稿\n\n${state.approvedScript}`),
-    )
-  await saveMediaState(projectId, stateValue)
-  await setLastOpenedProject(projectId)
-  return manifest
+  if (state?.episodeId !== DEFAULT_EPISODE_ID) throw new Error('新项目必须从默认首集开始')
+  const resolved = validateProjectRoot(rootPath)
+  const rootExisted = fs.existsSync(resolved)
+  if (rootExisted) {
+    if (!fs.statSync(resolved).isDirectory()) throw new Error('请选择项目文件夹')
+    const entries = await fs.promises.readdir(resolved)
+    if (entries.includes('project.json')) throw new Error('该文件夹已经是项目，请使用“打开已有项目目录”')
+    if (entries.length) throw new Error('请选择空文件夹作为新项目目录')
+  }
+  creatingProjectRoots.set(projectId, resolved)
+  try {
+    await ensureRunDir(projectId)
+    const manifest = await ensureProjectManifest(projectId, state.stage, path.basename(resolved))
+    await initializeWiki(projectId, manifest)
+    if (state.approvedScript)
+      await writeInitial(
+        path.join(getRunDir(projectId), 'wiki', '文稿', state.episodeId, '确认文稿.md'),
+        managedPage(projectId, 'script', 'approved-script', `# 确认文稿\n\n${state.approvedScript}`),
+      )
+    await saveMediaState(projectId, state.episodeId, stateValue)
+    await registerProjectRoot(projectId, resolved)
+    return manifest
+  } catch (error) {
+    if (rootExisted) {
+      await Promise.all(
+        ['project.json', 'shared-state.json', 'run.json', 'episodes', '.raw', 'wiki', 'inputs', 'assets']
+          .map((entry) => fs.promises.rm(path.join(resolved, entry), { recursive: true, force: true })),
+      )
+    } else {
+      await fs.promises.rm(resolved, { recursive: true, force: true })
+    }
+    throw error
+  } finally {
+    creatingProjectRoots.delete(projectId)
+  }
+}
+
+export async function createProject(projectId: string, stateValue: string) {
+  const result = await dialog.showOpenDialog({
+    title: '选择或新建项目文件夹',
+    buttonLabel: '创建项目',
+    defaultPath: app.getPath('documents'),
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (result.canceled || !result.filePaths[0]) return null
+  return createProjectAt(projectId, result.filePaths[0], stateValue)
 }
 
 export async function listProjects(): Promise<ProjectManifest[]> {
-  const root = path.join(app.getPath('userData'), 'media-runs')
-  let entries: fs.Dirent[]
-  try {
-    entries = await fs.promises.readdir(root, { withFileTypes: true })
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') return []
-    throw error
-  }
   const projects = await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory() && RUN_ID.test(entry.name))
-      .map(async (entry) => {
+    readProjectRegistry().projects.map(async (entry) => {
         try {
-          const state = await readJson(path.join(root, entry.name, 'state.json'))
-          const manifest = await ensureProjectManifest(entry.name, String(state?.stage || 'draft'))
-          await initializeWiki(entry.name, manifest)
+          const manifest = (await readJson(path.join(entry.rootPath, 'project.json'))) as ProjectManifest
+          if (
+            manifest.schemaVersion !== PROJECT_SCHEMA_VERSION ||
+            manifest.projectId !== entry.projectId ||
+            manifest.wikiVersion !== WIKI_VERSION
+          )
+            return null
+          await initializeWiki(entry.projectId, manifest)
           return manifest
         } catch {
           return null
@@ -291,10 +492,18 @@ export async function listProjects(): Promise<ProjectManifest[]> {
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
-export async function loadProjectState(projectId: string) {
-  const state = await fs.promises.readFile(path.join(getRunDir(projectId), 'state.json'), 'utf8')
-  const parsed = JSON.parse(state)
-  if (parsed?.runId !== projectId) throw new Error('项目状态与项目 ID 不匹配')
+export async function loadProjectState(projectId: string, episodeId: string) {
+  const episodeState = await readJson(path.join(getEpisodeDir(projectId, episodeId), 'state.json'))
+  const sharedState = await readJson(path.join(getRunDir(projectId), 'shared-state.json'))
+  const parsed = { ...episodeState, ...sharedState, runId: projectId, episodeId }
+  if (episodeState?.runId !== projectId) throw new Error('项目状态与项目 ID 不匹配')
+  if (episodeState?.episodeId !== episodeId) throw new Error('剧集状态与剧集 ID 不匹配')
+  const manifest = await ensureProjectManifest(projectId)
+  if (!manifest.episodes.some((episode) => episode.episodeId === episodeId))
+    throw new Error('剧集不属于当前项目')
+  manifest.lastOpenedEpisodeId = episodeId
+  manifest.updatedAt = new Date().toISOString()
+  await writeAtomic(projectManifestPath(projectId), `${JSON.stringify(manifest, null, 2)}\n`)
   await setLastOpenedProject(projectId)
   return JSON.stringify(parsed)
 }
@@ -305,30 +514,79 @@ export async function renameProject(projectId: string, name: string) {
   const manifest = await ensureProjectManifest(projectId)
   const updated = { ...manifest, name: trimmed, updatedAt: new Date().toISOString() }
   await writeAtomic(projectManifestPath(projectId), `${JSON.stringify(updated, null, 2)}\n`)
-  const state = await readJson(path.join(getRunDir(projectId), 'state.json'))
+  const state = JSON.parse(await loadProjectState(projectId, updated.lastOpenedEpisodeId))
   await renderWiki(projectId, state, updated)
   return updated
 }
 
-function projectSettingsPath() {
-  return path.join(app.getPath('userData'), 'media-projects.json')
+export async function openProjectDirectory(rootPath?: string) {
+  let selected = rootPath
+  if (!selected) {
+    const result = await dialog.showOpenDialog({
+      title: '打开项目目录',
+      buttonLabel: '打开项目',
+      properties: ['openDirectory'],
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    selected = result.filePaths[0]
+  }
+  const resolved = validateProjectRoot(selected)
+  const manifest = (await readJson(path.join(resolved, 'project.json'))) as ProjectManifest
+  if (
+    manifest.schemaVersion !== PROJECT_SCHEMA_VERSION ||
+    !RUN_ID.test(manifest.projectId) ||
+    manifest.wikiVersion !== WIKI_VERSION ||
+    !Array.isArray(manifest.episodes) ||
+    !RUN_ID.test(manifest.lastOpenedEpisodeId)
+  )
+    throw new Error('所选目录不是有效的点一点项目')
+  await registerProjectRoot(manifest.projectId, resolved)
+  return manifest
+}
+
+export async function createEpisode(projectId: string, value: string) {
+  const state = JSON.parse(value)
+  if (state?.runId !== projectId) throw new Error('项目状态与项目 ID 不匹配')
+  const manifest = await ensureProjectManifest(projectId)
+  const usedIds = new Set(manifest.episodes.map((episode) => episode.episodeId))
+  const episodeNumber = Math.max(0, ...manifest.episodes.map((episode) => episode.episodeNumber)) + 1
+  let episodeId = `episode-${String(episodeNumber).padStart(3, '0')}`
+  let suffix = 1
+  while (usedIds.has(episodeId)) episodeId = `episode-${String(episodeNumber).padStart(3, '0')}-${suffix++}`
+  const now = new Date().toISOString()
+  await ensureEpisodeDir(projectId, episodeId)
+  await writeAtomic(
+    path.join(getEpisodeDir(projectId, episodeId), 'state.json'),
+    `${JSON.stringify({ ...episodeStateOf(state), runId: projectId, episodeId, stage: 'draft' }, null, 2)}\n`,
+  )
+  const updated: ProjectManifest = {
+    ...manifest,
+    episodes: [
+      ...manifest.episodes,
+      { episodeId, episodeNumber, title: `第 ${episodeNumber} 集`, stage: 'draft', createdAt: now, updatedAt: now },
+    ],
+    lastOpenedEpisodeId: episodeId,
+    updatedAt: now,
+    wikiPending: false,
+  }
+  await writeAtomic(projectManifestPath(projectId), `${JSON.stringify(updated, null, 2)}\n`)
+  return updated
 }
 
 export async function getLastOpenedProject() {
-  try {
-    const value = await readJson(projectSettingsPath())
-    return RUN_ID.test(value?.lastOpenedProjectId) ? String(value.lastOpenedProjectId) : null
-  } catch {
-    return null
-  }
+  const registry = readProjectRegistry()
+  return registry.projects.some((item) => item.projectId === registry.lastOpenedProjectId)
+    ? registry.lastOpenedProjectId || null
+    : null
 }
 
 export async function setLastOpenedProject(projectId: string) {
   if (!RUN_ID.test(projectId)) throw new Error('无效的项目 ID')
-  await writeAtomic(
-    projectSettingsPath(),
-    `${JSON.stringify({ lastOpenedProjectId: projectId }, null, 2)}\n`,
-  )
+  const registry = readProjectRegistry()
+  if (!registry.projects.some((item) => item.projectId === projectId))
+    throw new Error('项目位置未注册')
+  registry.lastOpenedProjectId = projectId
+  await writeProjectRegistry(registry)
 }
 
 const REFERENCE_TYPES = {
@@ -496,14 +754,15 @@ async function rawSourceRows(projectId: string) {
 
 async function renderWiki(projectId: string, state: any, manifest: ProjectManifest) {
   const dir = getRunDir(projectId)
+  const episodeId = String(state.episodeId || '')
+  getEpisodeDir(projectId, episodeId)
   const pages = [
     '- [[项目|项目概览]]',
     '- [[来源索引]]',
-    state.approvedScript ? '- [[文稿/确认文稿|确认文稿]]' : '',
-    state.projectDirectorPlan ? '- [[项目/项目总监|项目总监]]' : '',
-    state.projectDirectorPlan ? '- [[项目/制作路线|制作路线]]' : '',
-    state.segments?.length ? '- [[分镜/导演总览|导演分镜]]' : '',
-    state.finalPath ? '- [[成片/成片|最终成片]]' : '',
+    state.approvedScript ? `- [[文稿/${episodeId}/确认文稿|确认文稿]]` : '',
+    state.projectDirectorPlan ? `- [[项目总监/${episodeId}|项目总监]]` : '',
+    state.segments?.length ? `- [[分镜/${episodeId}/导演总览|导演分镜]]` : '',
+    state.finalPath ? `- [[成片/${episodeId}|最终成片]]` : '',
   ].filter(Boolean)
   await writeAtomic(
     path.join(dir, 'index.md'),
@@ -516,7 +775,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
       projectId,
       'project',
       projectId,
-      `# ${manifest.name}\n\n- 阶段：${String(state.stage || 'draft')}\n- 比例：${String(state.ratio || '')}\n- 目标时长：${String(state.targetDuration || '')} 秒\n- 视觉风格：${String(state.styleId || '')}`,
+      `# ${manifest.name}\n\n- 项目 ID：\`${projectId}\`\n- 项目目录：${path.basename(dir)}\n- 阶段：${String(state.stage || 'draft')}\n- 比例：${String(state.ratio || '')}\n- 目标时长：${String(state.targetDuration || '')} 秒\n- 视觉风格：${String(state.styleId || '')}`,
     ),
   )
   await writeAtomic(
@@ -530,7 +789,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
   )
   const sourceRows = await rawSourceRows(projectId)
   const directorSource = state.projectDirectorPlan
-    ? '\n\n## 项目事实链\n\n- [[项目/项目总监]] ← [[文稿/确认文稿]] + Raw 原始需求 + `jc-film-style`\n- [[项目/制作路线]] ← [[项目/项目总监]]\n'
+    ? `\n\n## 项目事实链\n\n- [[项目总监/${episodeId}]] ← [[文稿/${episodeId}/确认文稿]] + Raw 原始需求 + \`jc-film-style\`\n`
     : ''
   await writeAtomic(
     path.join(dir, 'wiki/来源索引.md'),
@@ -543,22 +802,12 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
   )
   if (state.projectDirectorPlan)
     await writeAtomic(
-      path.join(dir, 'wiki/项目/项目总监.md'),
+      path.join(dir, 'wiki', '项目总监', `${episodeId}.md`),
       managedPage(
         projectId,
+        episodeId,
         'project-director',
-        'project-director',
-        projectDirectorMarkdown(state.projectDirectorPlan),
-      ),
-    )
-  if (state.projectDirectorPlan)
-    await writeAtomic(
-      path.join(dir, 'wiki/项目/制作路线.md'),
-      managedPage(
-        projectId,
-        'production-route',
-        'production-route',
-        productionRouteMarkdown(state.projectDirectorPlan),
+        projectDirectorMarkdown(state.projectDirectorPlan, episodeId),
       ),
     )
   const referenceAssets = Array.isArray(state.referenceAssets) ? state.referenceAssets : []
@@ -574,19 +823,23 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
         .filter((shot: any) => shot.referenceAssetIds?.includes(asset.id))
         .map(
           (shot: any) =>
-            `- [[分镜/镜头/shot-${String(shot.index).padStart(3, '0')}|镜头 ${shot.index}]]`,
+            `- [[../../分镜/${episodeId}/镜头/shot-${String(shot.index).padStart(3, '0')}|镜头 ${shot.index}]]`,
         )
       const active = asset.versions?.find((version: any) => version.id === asset.activeVersionId)
       const image = active?.relativePath
         ? `\n\n![${asset.label}](${path.posix.relative(`wiki/资产/${roleFolder}`, active.relativePath)})`
         : ''
-      return writeInitial(
+      const versions = (asset.versions || []).map((version: any) => {
+        const source = { search: '搜索', upload: '上传', generated: 'AI 生成' }[version.source as string] || version.source
+        return `| ${version.id} | ${source} | ${version.id === asset.activeVersionId ? '当前使用' : '参考/历史'} | \`${version.relativePath}\` | ${version.createdAt || '-'} |`
+      })
+      return writeAtomic(
         path.join(dir, `wiki/资产/${roleFolder}/${asset.id}.md`),
         managedPage(
           projectId,
           'asset',
           asset.id,
-          `# ${asset.label}\n\n- 项目总监：[[../../项目/项目总监]]\n- 类型：${roleFolder}\n- 状态：${asset.status}\n\n${asset.description || ''}${image}\n\n## 资产设计 JSON\n\n\`\`\`json\n${JSON.stringify(asset.design || {}, null, 2)}\n\`\`\`\n\n## 参考图搜索词\n\n${asset.searchQuery || ''}\n\n## 被引用\n\n${shots.join('\n') || '无'}`,
+          `# ${asset.label}\n\n- 项目总监：[[../../项目总监/${episodeId}]]\n- 类型：${roleFolder}\n- 状态：${asset.status}\n- 当前使用版本：${asset.activeVersionId ? `\`${asset.activeVersionId}\`` : '未选择'}\n\n${asset.description || ''}${image}\n\n## 资产版本\n\n| 版本 ID | 来源 | 用途 | 项目相对路径 | 创建时间 |\n| --- | --- | --- | --- | --- |\n${versions.join('\n') || '| 暂无 | - | - | - | - |'}\n\n## 资产设计 JSON\n\n\`\`\`json\n${JSON.stringify(asset.design || {}, null, 2)}\n\`\`\`\n\n## 参考图搜索词\n\n${asset.searchQuery || ''}\n\n## 被引用\n\n${shots.join('\n') || '无'}`,
         ),
       )
     }),
@@ -595,15 +848,15 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
   if (segments.length) {
     const shotLinks = segments.map(
       (shot: any) =>
-        `- [[分镜/镜头/shot-${String(shot.index).padStart(3, '0')}|镜头 ${shot.index}]]`,
+        `- [[镜头/shot-${String(shot.index).padStart(3, '0')}|镜头 ${shot.index}]]`,
     )
     await writeInitial(
-      path.join(dir, 'wiki/分镜/导演总览.md'),
+      path.join(dir, 'wiki', '分镜', episodeId, '导演总览.md'),
       managedPage(
         projectId,
         'storyboard',
         'director-overview',
-        `# 导演分镜\n\n- 项目总监：[[../项目/项目总监]]\n\n## 全局视觉锚点\n\n${state.visualAnchor || ''}\n\n## 镜头\n\n${shotLinks.join('\n')}`,
+        `# 导演分镜\n\n- 项目总监：[[../../项目总监/${episodeId}]]\n\n## 全局视觉锚点\n\n${state.visualAnchor || ''}\n\n## 镜头\n\n${shotLinks.join('\n')}`,
       ),
     )
     await Promise.all(
@@ -622,7 +875,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
           .join('、')
         const writes: Promise<void>[] = [
           writeInitial(
-            path.join(dir, `wiki/分镜/镜头/${shotId}.md`),
+            path.join(dir, 'wiki', '分镜', episodeId, '镜头', `${shotId}.md`),
             managedPage(
               projectId,
               'shot',
@@ -634,14 +887,14 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
         if (shot.imagePath)
           writes.push(
             writeAtomic(
-              path.join(dir, `wiki/分镜图/${shotId}.md`),
+              path.join(dir, 'wiki', '分镜图', episodeId, `${shotId}.md`),
               mediaPage(projectId, '分镜图', shotId, `镜头 ${shot.index} 分镜图`, shot.imagePath),
             ),
           )
         if (shot.videoPath)
           writes.push(
             writeAtomic(
-              path.join(dir, `wiki/视频/${shotId}.md`),
+              path.join(dir, 'wiki', '视频', episodeId, `${shotId}.md`),
               mediaPage(projectId, '视频', shotId, `镜头 ${shot.index} 视频`, shot.videoPath),
             ),
           )
@@ -651,7 +904,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
   }
   if (state.finalPath) {
     await writeAtomic(
-      path.join(dir, 'wiki/成片/成片.md'),
+      path.join(dir, 'wiki', '成片', `${episodeId}.md`),
       mediaPage(projectId, '成片', 'final', '最终成片', state.finalPath),
     )
   }
@@ -689,26 +942,64 @@ export async function importMarkdown(projectId: string): Promise<ImportedMarkdow
   return {
     content,
     originalName,
-    originalPath,
     snapshotRelativePath: relativeRunAsset(projectId, snapshotPath),
     importedAt: new Date().toISOString(),
     contentHash: createHash('sha256').update(buffer).digest('hex'),
   }
 }
 
-export async function saveMediaState(runId: string, value: string) {
+function sharedStateOf(state: Record<string, unknown>) {
+  return Object.fromEntries(
+    SHARED_STATE_KEYS.filter((key) => key in state).map((key) => [key, state[key]]),
+  )
+}
+
+function episodeStateOf(state: Record<string, unknown>) {
+  const episodeState = { ...state }
+  SHARED_STATE_KEYS.forEach((key) => delete episodeState[key])
+  return episodeState
+}
+
+export async function saveMediaState(runId: string, episodeId: string, value: string) {
   const state = JSON.parse(value)
   if (state?.runId !== runId) throw new Error('任务状态与任务 ID 不匹配')
-  const previous = stateWrites.get(runId) || Promise.resolve()
+  getEpisodeDir(runId, episodeId)
+  if (state?.episodeId !== episodeId) throw new Error('剧集 ID 不匹配')
+  const writeKey = `${runId}:${episodeId}`
+  const previous = stateWrites.get(writeKey) || Promise.resolve()
   const next = previous.then(async () => {
     await ensureRunDir(runId)
-    const filePath = path.join(getRunDir(runId), 'state.json')
-    await writeAtomic(filePath, `${JSON.stringify(state, null, 2)}\n`)
+    const episodeDir = await ensureEpisodeDir(runId, episodeId)
+    const sharedPath = path.join(getRunDir(runId), 'shared-state.json')
+    const existingShared = await readJson(sharedPath).catch(() => ({}))
+    await writeAtomic(
+      sharedPath,
+      `${JSON.stringify({ ...existingShared, ...sharedStateOf(state) }, null, 2)}\n`,
+    )
+    await writeAtomic(
+      path.join(episodeDir, 'state.json'),
+      `${JSON.stringify(episodeStateOf(state), null, 2)}\n`,
+    )
     const manifest = await ensureProjectManifest(runId, state.stage)
+    const now = new Date().toISOString()
+    const currentEpisode = manifest.episodes.find((episode) => episode.episodeId === episodeId)
+    if (currentEpisode) {
+      currentEpisode.stage = String(state.stage || 'draft')
+      currentEpisode.updatedAt = now
+    } else {
+      manifest.episodes.push({
+        episodeId,
+        episodeNumber: Math.max(0, ...manifest.episodes.map((episode) => episode.episodeNumber)) + 1,
+        title: `第 ${manifest.episodes.length + 1} 集`,
+        stage: String(state.stage || 'draft'),
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
     const updated: ProjectManifest = {
       ...manifest,
-      updatedAt: new Date().toISOString(),
-      stage: String(state.stage || 'draft'),
+      updatedAt: now,
+      lastOpenedEpisodeId: episodeId,
       wikiPending: false,
     }
     try {
@@ -718,30 +1009,33 @@ export async function saveMediaState(runId: string, value: string) {
     }
     await writeAtomic(projectManifestPath(runId), `${JSON.stringify(updated, null, 2)}\n`)
   })
-  stateWrites.set(runId, next)
+  stateWrites.set(writeKey, next)
   try {
     await next
   } finally {
-    if (stateWrites.get(runId) === next) stateWrites.delete(runId)
+    if (stateWrites.get(writeKey) === next) stateWrites.delete(writeKey)
   }
 }
 
 export async function loadLatestMediaState() {
-  const root = path.join(app.getPath('userData'), 'media-runs')
-  let entries: fs.Dirent[]
-  try {
-    entries = await fs.promises.readdir(root, { withFileTypes: true })
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') return null
-    throw error
-  }
+  const registry = readProjectRegistry()
   const candidates = await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory() && RUN_ID.test(entry.name))
-      .map(async (entry) => {
-        const filePath = path.join(root, entry.name, 'state.json')
+    registry.projects.map(async (entry) => {
+        const manifestPath = path.join(entry.rootPath, 'project.json')
         try {
-          return { filePath, mtime: (await fs.promises.stat(filePath)).mtimeMs }
+          const manifest = (await readJson(manifestPath)) as ProjectManifest
+          if (
+            manifest.schemaVersion !== PROJECT_SCHEMA_VERSION ||
+            manifest.projectId !== entry.projectId ||
+            manifest.wikiVersion !== WIKI_VERSION ||
+            !RUN_ID.test(manifest.lastOpenedEpisodeId)
+          )
+            return null
+          return {
+            projectId: entry.projectId,
+            episodeId: manifest.lastOpenedEpisodeId,
+            mtime: (await fs.promises.stat(manifestPath)).mtimeMs,
+          }
         } catch {
           return null
         }
@@ -749,9 +1043,7 @@ export async function loadLatestMediaState() {
   )
   for (const candidate of candidates.filter(Boolean).sort((a, b) => b!.mtime - a!.mtime)) {
     try {
-      const value = await fs.promises.readFile(candidate!.filePath, 'utf8')
-      const state = JSON.parse(value)
-      if (RUN_ID.test(state?.runId)) return JSON.stringify(state)
+      return await loadProjectState(candidate!.projectId, candidate!.episodeId)
     } catch {
       // Try the next recoverable run.
     }
@@ -761,10 +1053,11 @@ export async function loadLatestMediaState() {
 
 export function getRunAssetPath(
   runId: string,
+  episodeId: string,
   kind: 'voice' | 'storyboard' | 'clip' | 'picture-master' | 'final',
   index = 0,
 ) {
-  const dir = getRunDir(runId)
+  const dir = getEpisodeDir(runId, episodeId)
   if (kind === 'voice') return path.join(dir, 'voice.mp3')
   if (kind === 'picture-master') return path.join(dir, 'picture-master.mp4')
   if (kind === 'final') return path.join(dir, 'final.mp4')
@@ -784,6 +1077,20 @@ export function assertRunAsset(runId: string, filePath: string) {
     ? path.resolve(filePath)
     : path.resolve(runDir, filePath)
   if (!resolved.startsWith(root)) throw new Error('素材不属于当前任务')
+  return resolved
+}
+
+export function assertEpisodeAsset(runId: string, episodeId: string, filePath: string) {
+  getEpisodeDir(runId, episodeId)
+  const resolved = assertRunAsset(runId, filePath)
+  const relative = relativeRunAsset(runId, resolved)
+  const owned = relative.startsWith(`episodes/${episodeId}/`)
+    || relative.startsWith(`wiki/声音/${episodeId}/`)
+    || relative.startsWith(`wiki/转录/${episodeId}/`)
+    || relative.startsWith(`wiki/字幕/素材/${episodeId}/`)
+    || relative.startsWith(`wiki/剪辑/${episodeId}/`)
+    || relative.startsWith(`wiki/字幕/${episodeId}-`)
+  if (!owned) throw new Error('素材不属于当前剧集')
   return resolved
 }
 

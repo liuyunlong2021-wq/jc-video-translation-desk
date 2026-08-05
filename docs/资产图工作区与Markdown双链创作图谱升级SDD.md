@@ -4,6 +4,7 @@
 > 状态：实施中
 > 目标版本：2.5
 > 依赖：`docs/三栏创作工作区与参考资产演进SDD.md`、`docs/短视频工厂AI原生创作改造SDD.md`、`docs/创作参数与品牌视觉升级SDD.md`
+> 多集扩展：项目共享资产、本集资产引用、集选择和多集 Wiki 路径以 `docs/多集项目与共享资产架构SDD.md` 为准。
 > 取代范围：`docs/三栏创作工作区与参考资产演进SDD.md` 第 4.1、4.4、8、10、12 节中的单项目选择、单核心参考与 Future 多资产方案
 > 设计参考：`/Users/by3/Documents/jiucaihezi-app/public/skills/jc-everything-wiki` 的“一项目一 Wiki、Raw 保真、来源索引、双链/回链”原则；本应用使用固定骨架，不在运行时调用该 Skill
 

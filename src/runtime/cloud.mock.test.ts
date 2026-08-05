@@ -5,6 +5,7 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { Readable } from 'node:stream'
 import test, * as nodeTest from 'node:test'
+import { buildEditingTimeline } from './editingTimeline.ts'
 
 const { after, mock } = nodeTest as any
 
@@ -159,21 +160,31 @@ mock.module('music-metadata', {
 process.env.APP_ROOT = process.cwd()
 const cloud = await import('../../electron/cloud.ts')
 const workspace = await import('../../electron/media-workspace.ts')
+const episodeId = 'episode-001'
+const projectRoot = (projectId: string) => path.join(userData, 'projects', projectId)
+for (const projectId of [
+  'retry-run', 'connection-closed-run', 'older-run', 'latest-run', 'wiki-project',
+  'episode-boundary-run', 'hundred-episode-run', 'episode-artifact-run', 'markdown-truth',
+  'nonempty-confirmed-script', 'revision-project', 'storyboard-transaction',
+  'interrupted-wiki-run', 'wiki-tool-result', 'wiki-no-write', 'resume-run', 'cancel-run',
+  'media-contract-run', 'shot-analysis-run', 'grok-analysis-fallback', 'prop-search-run',
+  'reference-run', 'subtitle-wiki-run',
+]) await workspace.registerProjectRoot(projectId, projectRoot(projectId), false)
 
 after(() => fs.rmSync(userData, { recursive: true, force: true }))
 
 test('retries a failed download without resubmitting the paid image task', async () => {
   await cloud.saveApiKey('test-key')
   const runId = 'retry-run'
-  await assert.rejects(cloud.generateStoryboardImage(runId, 1, 'prompt', '9:16'), /download failed/)
+  await assert.rejects(cloud.generateStoryboardImage(runId, episodeId, 1, 'prompt', '9:16'), /download failed/)
 
-  const pendingPath = path.join(userData, 'media-runs', runId, 'run.json')
+  const pendingPath = path.join(projectRoot(runId), 'run.json')
   const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf8')).tasks[0]
-  assert.equal(pending.outputPath, 'storyboards/001.png')
+  assert.equal(pending.outputPath, 'episodes/episode-001/storyboards/001.png')
   assert.equal(pending.resultUrl, 'https://media.example/storyboard.png')
   assert.doesNotMatch(fs.readFileSync(pendingPath, 'utf8'), /test-key/)
 
-  const output = await cloud.generateStoryboardImage(runId, 1, 'prompt', '9:16')
+  const output = await cloud.generateStoryboardImage(runId, episodeId, 1, 'prompt', '9:16')
   assert.equal(postCount, 1)
   assert.equal(requests[0].url, 'https://api.jiucaihezi.studio/v1/images/generations')
   assert.equal(requests[0].data.model, 'gpt-image-2')
@@ -186,7 +197,7 @@ test('retries a failed download without resubmitting the paid image task', async
 test('falls back to the Node downloader when Electron closes a media connection', async () => {
   downloadMode = 'connection-closed'
   const before = downloadCount
-  const output = await cloud.generateStoryboardImage('connection-closed-run', 1, 'prompt', '9:16')
+  const output = await cloud.generateStoryboardImage('connection-closed-run', episodeId, 1, 'prompt', '9:16')
   assert.equal(downloadCount, before + 2)
   assert.equal(fs.readFileSync(output).byteLength, 3)
   downloadMode = 'success'
@@ -216,11 +227,13 @@ test('uses an in-memory API key when secure storage is unavailable', async () =>
 test('recovers the latest workflow state from its media run', async () => {
   await workspace.saveMediaState(
     'older-run',
-    JSON.stringify({ runId: 'older-run', stage: 'voice-ready' }),
+    episodeId,
+    JSON.stringify({ runId: 'older-run', episodeId, stage: 'voice-ready' }),
   )
   await workspace.saveMediaState(
     'latest-run',
-    JSON.stringify({ runId: 'latest-run', stage: 'storyboards-ready' }),
+    episodeId,
+    JSON.stringify({ runId: 'latest-run', episodeId, stage: 'storyboards-ready' }),
   )
   const recovered = JSON.parse((await workspace.loadLatestMediaState())!)
   assert.equal(recovered.runId, 'latest-run')
@@ -231,13 +244,14 @@ test('creates a project wiki, preserves Raw, and restores an explicit project', 
   const projectId = 'wiki-project'
   const state = {
     runId: projectId,
+    episodeId,
     stage: 'script-approved',
     approvedScript: '确认后的文稿',
     ratio: '9:16',
     targetDuration: 15,
     segments: [],
   }
-  await workspace.createProject(projectId, JSON.stringify(state))
+  await workspace.createProjectAt(projectId, projectRoot(projectId), JSON.stringify(state))
   const rawPath = await workspace.saveRawSubmission(projectId, '用户的原始需求')
   assert.equal(rawPath, '.raw/提交记录/0001-原始需求.md')
 
@@ -247,11 +261,11 @@ test('creates a project wiki, preserves Raw, and restores an explicit project', 
   const imported = await workspace.importMarkdown(projectId)
   selectedFile = ''
   assert.equal(imported?.content, '# 外部原稿\n')
-  await workspace.saveMediaState(projectId, JSON.stringify(state))
+  await workspace.saveMediaState(projectId, episodeId, JSON.stringify(state))
 
-  const projectDir = path.join(userData, 'media-runs', projectId)
+  const projectDir = projectRoot(projectId)
   assert.equal(fs.existsSync(path.join(projectDir, 'project.json')), true)
-  assert.equal(fs.existsSync(path.join(projectDir, 'wiki/文稿/确认文稿.md')), true)
+  assert.equal(fs.existsSync(path.join(projectDir, 'wiki/文稿', episodeId, '确认文稿.md')), true)
   assert.match(fs.readFileSync(path.join(projectDir, 'wiki/index.md'), 'utf8'), /确认文稿/)
   const sourceIndex = fs.readFileSync(path.join(projectDir, 'wiki/来源索引.md'), 'utf8')
   assert.match(sourceIndex, /0001-原始需求/)
@@ -264,19 +278,198 @@ test('creates a project wiki, preserves Raw, and restores an explicit project', 
   )
   await workspace.setLastOpenedProject(projectId)
   assert.equal(await workspace.getLastOpenedProject(), projectId)
-  assert.deepEqual(JSON.parse(await workspace.loadProjectState(projectId)), state)
+  assert.deepEqual(JSON.parse(await workspace.loadProjectState(projectId, episodeId)), state)
+})
+
+test('uses the selected empty folder itself as the new project root', async () => {
+  const projectId = 'selected-folder-project'
+  const root = path.join(userData, '文稿', '功夫女友')
+  fs.mkdirSync(root, { recursive: true })
+  selectedFile = root
+  try {
+    const manifest = await workspace.createProject(projectId, JSON.stringify({
+      runId: projectId,
+      episodeId,
+      stage: 'draft',
+      segments: [],
+    }))
+    assert.equal(manifest?.name, '功夫女友')
+    assert.equal(workspace.resolveProjectRoot(projectId), root)
+    assert.equal(fs.existsSync(path.join(root, 'project.json')), true)
+    assert.equal(fs.readdirSync(root).some((entry) => /^\u65b0\u9879\u76ee-\d{8}$/.test(entry)), false)
+  } finally {
+    selectedFile = ''
+  }
+})
+
+test('rejects non-empty and existing project folders without changing their files', async () => {
+  const nonEmptyRoot = path.join(userData, '文稿', '已有资料')
+  fs.mkdirSync(nonEmptyRoot, { recursive: true })
+  fs.writeFileSync(path.join(nonEmptyRoot, '原稿.md'), '保留我')
+  await assert.rejects(
+    workspace.createProjectAt('non-empty-folder-project', nonEmptyRoot, JSON.stringify({
+      runId: 'non-empty-folder-project',
+      episodeId,
+    })),
+    /请选择空文件夹/,
+  )
+  assert.equal(fs.readFileSync(path.join(nonEmptyRoot, '原稿.md'), 'utf8'), '保留我')
+
+  const existingProjectRoot = path.join(userData, '文稿', '已有项目')
+  fs.mkdirSync(existingProjectRoot, { recursive: true })
+  fs.writeFileSync(path.join(existingProjectRoot, 'project.json'), '{}')
+  await assert.rejects(
+    workspace.createProjectAt('existing-folder-project', existingProjectRoot, JSON.stringify({
+      runId: 'existing-folder-project',
+      episodeId,
+    })),
+    /打开已有项目目录/,
+  )
+  assert.equal(fs.readFileSync(path.join(existingProjectRoot, 'project.json'), 'utf8'), '{}')
+})
+
+test('reopens a moved project without changing its stable id or Wiki content', async () => {
+  const projectId = 'movable-project'
+  const originalRoot = projectRoot(projectId)
+  await workspace.createProjectAt(projectId, originalRoot, JSON.stringify({
+    runId: projectId,
+    episodeId,
+    stage: 'draft',
+    segments: [],
+  }))
+  const wikiBefore = fs.readFileSync(path.join(originalRoot, 'wiki', 'index.md'), 'utf8')
+  const movedRoot = path.join(userData, '可读项目目录', '移动后的项目')
+  fs.mkdirSync(path.dirname(movedRoot), { recursive: true })
+  fs.renameSync(originalRoot, movedRoot)
+
+  const reopened = await workspace.openProjectDirectory(movedRoot)
+  assert.equal(reopened?.projectId, projectId)
+  assert.equal(workspace.resolveProjectRoot(projectId), movedRoot)
+  assert.equal(fs.readFileSync(path.join(movedRoot, 'wiki', 'index.md'), 'utf8'), wikiBefore)
+  assert.doesNotMatch(
+    fs.readFileSync(path.join(movedRoot, 'project.json'), 'utf8') +
+      fs.readFileSync(path.join(movedRoot, 'shared-state.json'), 'utf8') +
+      fs.readFileSync(path.join(movedRoot, 'episodes', episodeId, 'state.json'), 'utf8'),
+    new RegExp(userData.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+  )
+})
+
+test('creates a default episode and keeps episode states independent', async () => {
+  const projectId = 'episode-boundary-run'
+  const episodeId = 'episode-001'
+  await workspace.createProjectAt(projectId, projectRoot(projectId), JSON.stringify({
+    runId: projectId,
+    episodeId,
+    stage: 'draft',
+    referenceAssets: [{ id: 'shared-character' }],
+  }))
+  const projectDir = projectRoot(projectId)
+  const manifest = JSON.parse(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8'))
+  assert.equal(manifest.wikiVersion, 2)
+  assert.equal(manifest.lastOpenedEpisodeId, episodeId)
+  assert.deepEqual(manifest.episodes.map((episode: any) => episode.episodeId), [episodeId])
+  assert.equal(fs.existsSync(path.join(projectDir, 'shared-state.json')), true)
+  assert.equal(fs.existsSync(path.join(projectDir, 'episodes', episodeId, 'state.json')), true)
+
+  const firstStatePath = path.join(projectDir, 'episodes', episodeId, 'state.json')
+  const firstBefore = fs.readFileSync(firstStatePath)
+  await workspace.saveMediaState(projectId, 'episode-002', JSON.stringify({
+    runId: projectId,
+    episodeId: 'episode-002',
+    stage: 'shots-ready',
+  }))
+  assert.deepEqual(fs.readFileSync(firstStatePath), firstBefore)
+  assert.equal(
+    JSON.parse(await workspace.loadProjectState(projectId, 'episode-002')).episodeId,
+    'episode-002',
+  )
+})
+
+test('loads one selected episode from a 100 episode manifest', async () => {
+  const projectId = 'hundred-episode-run'
+  await workspace.createProjectAt(projectId, projectRoot(projectId), JSON.stringify({
+    runId: projectId,
+    episodeId: 'episode-001',
+    stage: 'draft',
+    referenceAssets: [{ id: 'shared-character' }],
+  }))
+  const projectDir = projectRoot(projectId)
+  const manifestPath = path.join(projectDir, 'project.json')
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  const createdAt = new Date().toISOString()
+  manifest.episodes = Array.from({ length: 100 }, (_, index) => ({
+    episodeId: `episode-${String(index + 1).padStart(3, '0')}`,
+    episodeNumber: index + 1,
+    title: `第 ${index + 1} 集`,
+    stage: 'draft',
+    createdAt,
+    updatedAt: createdAt,
+  }))
+  manifest.lastOpenedEpisodeId = 'episode-073'
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+  for (const episode of manifest.episodes) {
+    const episodeDir = path.join(projectDir, 'episodes', episode.episodeId)
+    fs.mkdirSync(episodeDir, { recursive: true })
+    fs.writeFileSync(path.join(episodeDir, 'state.json'), JSON.stringify({
+      runId: projectId,
+      episodeId: episode.episodeId,
+      marker: episode.episodeNumber,
+    }))
+  }
+
+  const loaded = JSON.parse(await workspace.loadProjectState(projectId, 'episode-073'))
+  assert.equal(loaded.marker, 73)
+  assert.deepEqual(loaded.referenceAssets, [{ id: 'shared-character' }])
+})
+
+test('isolates episode artifacts and validates episode ownership', async () => {
+  const projectId = 'episode-artifact-run'
+  const timeline = buildEditingTimeline([{
+      shotId: 'shot-001',
+      sourceVideoPath: 'episodes/episode-001/clips/001.mp4',
+      sourceDurationMs: 1_000,
+      trimStartMs: 0,
+      trimEndMs: 1_000,
+      confidence: 1,
+      needsReview: false,
+    }])
+  const firstTimeline = await workspace.writeEditingTimeline(projectId, 'episode-001', timeline)
+  const secondTimeline = await workspace.writeEditingTimeline(projectId, 'episode-002', {
+    ...timeline,
+    shots: timeline.shots.map((shot) => ({
+      ...shot,
+      sourceVideoPath: 'episodes/episode-002/clips/001.mp4',
+    })),
+  })
+  const firstSubtitle = await workspace.writeEpisodeSubtitles(projectId, 'episode-001', 'zh', [
+    { shotId: 'shot-001', startMs: 0, endMs: 1_000, text: '第一集' },
+  ])
+  const secondSubtitle = await workspace.writeEpisodeSubtitles(projectId, 'episode-002', 'zh', [
+    { shotId: 'shot-001', startMs: 0, endMs: 1_000, text: '第二集' },
+  ])
+  assert.notEqual(firstTimeline, secondTimeline)
+  assert.notEqual(firstSubtitle, secondSubtitle)
+  await assert.rejects(
+    workspace.saveMediaState(projectId, 'episode-002', JSON.stringify({ runId: projectId, episodeId: 'episode-001' })),
+    /剧集 ID 不匹配/,
+  )
+  await assert.rejects(
+    workspace.saveMediaState(projectId, '../outside', JSON.stringify({ runId: projectId, episodeId: '../outside' })),
+    /无效的剧集 ID/,
+  )
 })
 
 test('state persistence never overwrites an edited creative Markdown document', async () => {
   const projectId = 'markdown-truth'
   const state = {
     runId: projectId,
+    episodeId,
     stage: 'script-approved',
     approvedScript: '状态中的旧文稿',
     segments: [],
   }
-  await workspace.createProject(projectId, JSON.stringify(state))
-  for (const relativePath of ['wiki/文稿/确认文稿.md']) {
+  await workspace.createProjectAt(projectId, projectRoot(projectId), JSON.stringify(state))
+  for (const relativePath of [`wiki/文稿/${episodeId}/确认文稿.md`]) {
     const current = await workspace.readProjectMarkdown(projectId, relativePath)
     await workspace.writeProjectMarkdown(
       projectId,
@@ -285,9 +478,9 @@ test('state persistence never overwrites an edited creative Markdown document', 
       current.revision,
     )
   }
-  await workspace.saveMediaState(projectId, JSON.stringify(state))
+  await workspace.saveMediaState(projectId, episodeId, JSON.stringify(state))
   assert.match(
-    (await workspace.readProjectMarkdown(projectId, 'wiki/文稿/确认文稿.md')).content,
+    (await workspace.readProjectMarkdown(projectId, `wiki/文稿/${episodeId}/确认文稿.md`)).content,
     /用户的新文稿/,
   )
 })
@@ -297,20 +490,20 @@ test('rejects an empty confirmed script without changing the saved document', as
   await workspace.ensureRunDir(projectId)
   const created = await workspace.writeProjectMarkdown(
     projectId,
-    'wiki/文稿/确认文稿.md',
+    `wiki/文稿/${episodeId}/确认文稿.md`,
     '# 确认文稿\n\n保留正文',
   )
   await assert.rejects(
     workspace.writeProjectMarkdown(
       projectId,
-      'wiki/文稿/确认文稿.md',
+      `wiki/文稿/${episodeId}/确认文稿.md`,
       '# 确认文稿\n',
       created.revision,
     ),
     /确认文稿不能为空/,
   )
   assert.match(
-    (await workspace.readProjectMarkdown(projectId, 'wiki/文稿/确认文稿.md')).content,
+    (await workspace.readProjectMarkdown(projectId, `wiki/文稿/${episodeId}/确认文稿.md`)).content,
     /保留正文/,
   )
 })
@@ -336,30 +529,30 @@ test('requires a revision before replacing an existing Markdown file', async () 
 test('rolls back a partial storyboard update and preserves confirmed assets', async () => {
   const projectId = 'storyboard-transaction'
   await workspace.ensureRunDir(projectId)
-  await workspace.writeProjectMarkdown(projectId, 'wiki/分镜/导演总览.md', '旧导演')
-  await workspace.writeProjectMarkdown(projectId, 'wiki/分镜/镜头/shot-001.md', '旧镜头')
+  await workspace.writeProjectMarkdown(projectId, `wiki/分镜/${episodeId}/导演总览.md`, '旧导演')
+  await workspace.writeProjectMarkdown(projectId, `wiki/分镜/${episodeId}/镜头/shot-001.md`, '旧镜头')
   await workspace.writeProjectMarkdown(projectId, 'wiki/资产/角色/old.md', '旧资产')
 
-  const rollbackId = await workspace.beginStoryboardMarkdownUpdate(projectId)
-  const director = await workspace.readProjectMarkdown(projectId, 'wiki/分镜/导演总览.md')
+  const rollbackId = await workspace.beginStoryboardMarkdownUpdate(projectId, episodeId)
+  const director = await workspace.readProjectMarkdown(projectId, `wiki/分镜/${episodeId}/导演总览.md`)
   await workspace.writeProjectMarkdown(
     projectId,
     director.path,
     '半写导演',
     director.revision,
   )
-  await workspace.writeProjectMarkdown(projectId, 'wiki/分镜/镜头/shot-002.md', '半写镜头')
-  await workspace.rollbackStoryboardMarkdownUpdate(projectId, rollbackId)
+  await workspace.writeProjectMarkdown(projectId, `wiki/分镜/${episodeId}/镜头/shot-002.md`, '半写镜头')
+  await workspace.rollbackStoryboardMarkdownUpdate(projectId, episodeId, rollbackId)
   assert.equal(
     (await workspace.readProjectMarkdown(projectId, director.path)).content,
     '旧导演\n',
   )
   assert.equal(
-    (await workspace.listProjectMarkdown(projectId)).includes('wiki/分镜/镜头/shot-002.md'),
+    (await workspace.listProjectMarkdown(projectId)).includes(`wiki/分镜/${episodeId}/镜头/shot-002.md`),
     false,
   )
 
-  const commitId = await workspace.beginStoryboardMarkdownUpdate(projectId)
+  const commitId = await workspace.beginStoryboardMarkdownUpdate(projectId, episodeId)
   const currentDirector = await workspace.readProjectMarkdown(projectId, director.path)
   await workspace.writeProjectMarkdown(
     projectId,
@@ -367,9 +560,9 @@ test('rolls back a partial storyboard update and preserves confirmed assets', as
     '新导演',
     currentDirector.revision,
   )
-  const shot = await workspace.readProjectMarkdown(projectId, 'wiki/分镜/镜头/shot-001.md')
+  const shot = await workspace.readProjectMarkdown(projectId, `wiki/分镜/${episodeId}/镜头/shot-001.md`)
   await workspace.writeProjectMarkdown(projectId, shot.path, '新镜头', shot.revision)
-  await workspace.commitStoryboardMarkdownUpdate(projectId, commitId, [director.path, shot.path])
+  await workspace.commitStoryboardMarkdownUpdate(projectId, episodeId, commitId, [director.path, shot.path])
   assert.equal(
     (await workspace.listProjectMarkdown(projectId)).includes('wiki/资产/角色/old.md'),
     true,
@@ -380,7 +573,7 @@ test('rejects a Wiki model stream that ends without a completion marker', async 
   omitChatDone = true
   chatOutputs.push('未完成')
   await assert.rejects(
-    cloud.runWikiSkill('jc-script-storyboard', '测试', 'interrupted-wiki-run'),
+    cloud.runWikiSkill('jc-script-storyboard', '测试', 'interrupted-wiki-run', episodeId),
     /提前中断/,
   )
   omitChatDone = false
@@ -389,7 +582,7 @@ test('rejects a Wiki model stream that ends without a completion marker', async 
 test('accepts only successful Wiki writes as the current director result', async () => {
   const projectId = 'wiki-tool-result'
   await workspace.ensureRunDir(projectId)
-  await workspace.writeProjectMarkdown(projectId, 'wiki/分镜/导演总览.md', '旧导演')
+  await workspace.writeProjectMarkdown(projectId, `wiki/分镜/${episodeId}/导演总览.md`, '旧导演')
   chatOutputs.push(
     {
       tool_calls: [
@@ -400,8 +593,8 @@ test('accepts only successful Wiki writes as the current director result', async
             name: 'write_batch',
             arguments: JSON.stringify({
               files: [
-                { path: 'wiki/分镜/导演总览.md', content: '导演总览' },
-                { path: 'wiki/分镜/镜头/shot-001.md', content: '镜头一' },
+                { path: `wiki/分镜/${episodeId}/导演总览.md`, content: '导演总览' },
+                { path: `wiki/分镜/${episodeId}/镜头/shot-001.md`, content: '镜头一' },
               ],
             }),
           },
@@ -409,7 +602,7 @@ test('accepts only successful Wiki writes as the current director result', async
       ],
     },
   )
-  const result = await cloud.runWikiSkill('jc-script-storyboard', '测试', projectId)
+  const result = await cloud.runWikiSkill('jc-script-storyboard', '测试', projectId, episodeId)
   const request = requests.at(-1)
   assert.deepEqual(request.data.tool_choice, {
     type: 'function',
@@ -418,21 +611,21 @@ test('accepts only successful Wiki writes as the current director result', async
   assert.equal(request.data.tools.length, 1)
   assert.equal(request.data.max_tokens, 32_000)
   assert.deepEqual(result.writtenPaths, [
-    'wiki/分镜/导演总览.md',
-    'wiki/分镜/镜头/shot-001.md',
+    `wiki/分镜/${episodeId}/导演总览.md`,
+    `wiki/分镜/${episodeId}/镜头/shot-001.md`,
   ])
   assert.equal(
-    (await workspace.readProjectMarkdown(projectId, 'wiki/分镜/镜头/shot-001.md')).content,
+    (await workspace.readProjectMarkdown(projectId, `wiki/分镜/${episodeId}/镜头/shot-001.md`)).content,
     '镜头一\n',
   )
   assert.equal(
-    (await workspace.readProjectMarkdown(projectId, 'wiki/分镜/导演总览.md')).content,
+    (await workspace.readProjectMarkdown(projectId, `wiki/分镜/${episodeId}/导演总览.md`)).content,
     '导演总览\n',
   )
 
   chatOutputs.push('没有调用工具')
   await assert.rejects(
-    cloud.runWikiSkill('jc-script-storyboard', '测试', 'wiki-no-write'),
+    cloud.runWikiSkill('jc-script-storyboard', '测试', 'wiki-no-write', episodeId),
     /没有一次性提交/,
   )
 })
@@ -453,7 +646,7 @@ test('resumes persisted work and cancellation stops local download recovery', as
   downloadMode = 'fail-once'
   downloadCount = 0
   const runId = 'resume-run'
-  await assert.rejects(cloud.generateStoryboardImage(runId, 1, 'prompt', '9:16'))
+  await assert.rejects(cloud.generateStoryboardImage(runId, episodeId, 1, 'prompt', '9:16'))
   const submittedPostCount = postCount
   const [resumed] = await cloud.resumePendingTasks(runId)
   assert.equal(resumed.status, 'success')
@@ -461,16 +654,16 @@ test('resumes persisted work and cancellation stops local download recovery', as
 
   downloadMode = 'abort'
   const cancelRunId = 'cancel-run'
-  const running = cloud.generateStoryboardImage(cancelRunId, 1, 'prompt', '9:16')
+  const running = cloud.generateStoryboardImage(cancelRunId, episodeId, 1, 'prompt', '9:16')
   while (postCount < submittedPostCount + 1) await new Promise((resolve) => setTimeout(resolve, 0))
-  await cloud.stopCloudTask(cancelRunId, 'storyboard:1')
+  await cloud.stopCloudTask(cancelRunId, `${episodeId}:storyboard:1`)
   await assert.rejects(running, /停止/)
   downloadMode = 'success'
-  await cloud.resumeCloudTask(cancelRunId, 'storyboard:1')
+  await cloud.resumeCloudTask(cancelRunId, `${episodeId}:storyboard:1`)
   const runState = JSON.parse(
-    fs.readFileSync(path.join(userData, 'media-runs', cancelRunId, 'run.json'), 'utf8'),
+    fs.readFileSync(path.join(projectRoot(cancelRunId), 'run.json'), 'utf8'),
   )
-  assert.equal(runState.tasks.find((task: any) => task.id === 'storyboard:1').status, 'success')
+  assert.equal(runState.tasks.find((task: any) => task.id === `${episodeId}:storyboard:1`).status, 'success')
 })
 
 test('submits the fixed voice and selectable video contracts through controlled run assets', async () => {
@@ -478,6 +671,7 @@ test('submits the fixed voice and selectable video contracts through controlled 
   const runId = 'media-contract-run'
   const voice = await cloud.generateVoice(
     runId,
+    episodeId,
     '文稿',
     '【人设】讲解者。【音色特征】清晰。【风格】自然。【情感】亲和。【节奏】平稳。',
   )
@@ -490,9 +684,10 @@ test('submits the fixed voice and selectable video contracts through controlled 
   )
   assert.equal('language' in voiceRequest.data, false)
 
-  const imagePath = await cloud.generateStoryboardImage(runId, 1, 'prompt', '9:16')
+  const imagePath = await cloud.generateStoryboardImage(runId, episodeId, 1, 'prompt', '9:16')
   await cloud.generateSegmentVideo(
     runId,
+    episodeId,
     1,
     'veo-3.1-generate-preview',
     '无背景音乐',
@@ -520,6 +715,7 @@ test('submits the fixed voice and selectable video contracts through controlled 
   await assert.rejects(
     cloud.generateSegmentVideo(
       runId,
+      episodeId,
       2,
       'veo-3.1-generate-preview',
       '无背景音乐',
@@ -532,6 +728,7 @@ test('submits the fixed voice and selectable video contracts through controlled 
   await assert.rejects(
     cloud.generateSegmentVideo(
       runId,
+      episodeId,
       2,
       'unknown-video-model' as any,
       '无背景音乐',
@@ -542,10 +739,11 @@ test('submits the fixed voice and selectable video contracts through controlled 
     /不支持的视频模型/,
   )
 
-  const grokImagePath = await cloud.generateStoryboardImage(runId, 2, 'prompt', '9:16')
+  const grokImagePath = await cloud.generateStoryboardImage(runId, episodeId, 2, 'prompt', '9:16')
   const grokRequestStart = requests.length
   await cloud.generateSegmentVideo(
     runId,
+    episodeId,
     2,
     'rh-grok-image-video',
     '单一连续镜头',
@@ -565,10 +763,28 @@ test('submits the fixed voice and selectable video contracts through controlled 
   assert.match(grokRequest.data.images[0], /^data:image\/png;base64,/)
   assert.equal('input_reference' in grokRequest.data, false)
 
-  const veo3ImagePath = await cloud.generateStoryboardImage(runId, 3, 'prompt', '9:16')
+  const seedanceRequestStart = requests.length
+  await cloud.generateSegmentVideo(
+    runId,
+    episodeId,
+    4,
+    'rh-seedance2',
+    '单一连续镜头',
+    '9:16',
+    6,
+    grokImagePath,
+    [imagePath],
+  )
+  const seedanceRequest = requests
+    .slice(seedanceRequestStart)
+    .find((request) => request.url.endsWith('/v1/videos'))
+  assert.deepEqual(seedanceRequest.data, { ...grokRequest.data, model: 'rh-seedance2' })
+
+  const veo3ImagePath = await cloud.generateStoryboardImage(runId, episodeId, 3, 'prompt', '9:16')
   const veo3RequestStart = requests.length
   await cloud.generateSegmentVideo(
     runId,
+    episodeId,
     3,
     'veo-3.0-generate-001',
     '单一连续镜头',
@@ -586,11 +802,11 @@ test('submits the fixed voice and selectable video contracts through controlled 
 
 test('sends video, script, complete shot prompt and material SRT to Gemini once', async () => {
   const runId = 'shot-analysis-run'
-  await workspace.ensureRunDir(runId)
-  const videoPath = workspace.getRunAssetPath(runId, 'clip', 1)
+  await workspace.ensureEpisodeDir(runId, episodeId)
+  const videoPath = workspace.getRunAssetPath(runId, episodeId, 'clip', 1)
   fs.writeFileSync(videoPath, Buffer.from('mock mp4'))
-  const transcriptDir = path.join(userData, 'media-runs', runId, 'wiki', '转录', 'episode-001')
-  const subtitleDir = path.join(userData, 'media-runs', runId, 'wiki', '字幕', '素材')
+  const transcriptDir = path.join(projectRoot(runId), 'wiki', '转录', 'episode-001')
+  const subtitleDir = path.join(projectRoot(runId), 'wiki', '字幕', '素材', episodeId)
   fs.mkdirSync(transcriptDir, { recursive: true })
   fs.mkdirSync(subtitleDir, { recursive: true })
   const transcriptJsonPath = path.join(transcriptDir, 'media-shot-001-whisper.json')
@@ -598,7 +814,7 @@ test('sends video, script, complete shot prompt and material SRT to Gemini once'
   fs.writeFileSync(transcriptJsonPath, JSON.stringify({
     schemaVersion: 1,
     mediaId: 'media-shot-001',
-    sourceMediaPath: 'clips/001.mp4',
+    sourceMediaPath: 'episodes/episode-001/clips/001.mp4',
     durationMs: 12_000,
     cues: [{ cueId: 'cue-001', mediaId: 'media-shot-001', startMs: 2500, endMs: 4000, recognizedText: '你好' }],
   }))
@@ -620,6 +836,7 @@ test('sends video, script, complete shot prompt and material SRT to Gemini once'
   const requestStart = requests.length
   const result = await cloud.analyzeMaterialVideo({
     runId,
+    episodeId,
     mediaId: 'media-shot-001',
     videoPath,
     transcriptJsonPath,
@@ -663,17 +880,17 @@ test('sends video, script, complete shot prompt and material SRT to Gemini once'
 
 test('keeps every Grok shot whole when Gemini returns invalid or missing evidence', async () => {
   const runId = 'grok-analysis-fallback'
-  await workspace.ensureRunDir(runId)
-  const videoPath = workspace.getRunAssetPath(runId, 'clip', 1)
+  await workspace.ensureEpisodeDir(runId, episodeId)
+  const videoPath = workspace.getRunAssetPath(runId, episodeId, 'clip', 1)
   fs.writeFileSync(videoPath, Buffer.from('mock mp4'))
-  const transcriptJsonPath = path.join(userData, 'media-runs', runId, 'wiki', '转录', 'episode-001', 'media-shot-001-whisper.json')
-  const transcriptSrtPath = path.join(userData, 'media-runs', runId, 'wiki', '字幕', '素材', 'media-shot-001-whisper.srt')
+  const transcriptJsonPath = path.join(projectRoot(runId), 'wiki', '转录', 'episode-001', 'media-shot-001-whisper.json')
+  const transcriptSrtPath = path.join(projectRoot(runId), 'wiki', '字幕', '素材', episodeId, 'media-shot-001-whisper.srt')
   fs.mkdirSync(path.dirname(transcriptJsonPath), { recursive: true })
   fs.mkdirSync(path.dirname(transcriptSrtPath), { recursive: true })
   fs.writeFileSync(transcriptJsonPath, JSON.stringify({
     schemaVersion: 1,
     mediaId: 'media-shot-001',
-    sourceMediaPath: 'clips/001.mp4',
+    sourceMediaPath: 'episodes/episode-001/clips/001.mp4',
     durationMs: 12_000,
     cues: [],
   }))
@@ -691,6 +908,7 @@ test('keeps every Grok shot whole when Gemini returns invalid or missing evidenc
   const requestStart = requests.length
   const result = await cloud.analyzeMaterialVideo({
     runId,
+    episodeId,
     mediaId: 'media-shot-001',
     videoPath,
     transcriptJsonPath,
@@ -774,7 +992,7 @@ test('loads the complete prop template and downloads one searched reference', as
   assert.equal(version.sourceUrl, 'https://i.pinimg.com/originals/orc.jpg')
   assert.equal(version.sourcePageUrl, 'https://jp.pinterest.com/pin/12345/')
   assert.equal(
-    fs.existsSync(path.join(userData, 'media-runs', 'prop-search-run', version.relativePath)),
+    fs.existsSync(path.join(projectRoot('prop-search-run'), version.relativePath)),
     true,
   )
 })
@@ -799,6 +1017,7 @@ test('imports one managed core reference and uses GPT Image edits multipart', as
 
   await cloud.generateStoryboardImage(
     'reference-run',
+    episodeId,
     1,
     '保持主体一致',
     '9:16',
@@ -811,9 +1030,9 @@ test('imports one managed core reference and uses GPT Image edits multipart', as
 
   const secondSource = path.join(userData, 'source-2.png')
   fs.writeFileSync(secondSource, new Uint8Array([4, 5, 6]))
-  const secondPath = path.join(userData, 'media-runs', 'reference-run', 'inputs', 'second.png')
+  const secondPath = path.join(projectRoot('reference-run'), 'inputs', 'second.png')
   fs.copyFileSync(secondSource, secondPath)
-  await cloud.generateStoryboardImage('reference-run', 2, '保持两个资产一致', '9:16', [
+  await cloud.generateStoryboardImage('reference-run', episodeId, 2, '保持两个资产一致', '9:16', [
     reference.relativePath,
     'inputs/second.png',
   ])
@@ -857,4 +1076,40 @@ test('imports one managed core reference and uses GPT Image edits multipart', as
   assert.equal(Array.isArray(multiReferenceAssetRequest.data.image), true)
   assert.equal(multiReferenceAssetRequest.data.image.length, 2)
   selectedFile = ''
+})
+
+test('translates every subtitle with the selected text model and preserves shot IDs', async () => {
+  await cloud.saveApiKey('test-key')
+  chatOutputs.push(JSON.stringify({ subtitles: [{ shotId: 'shot-999', text: 'wrong' }] }))
+  chatOutputs.push(JSON.stringify({ subtitles: [
+    { shotId: 'shot-001', text: 'Hello.' },
+    { shotId: 'shot-002', text: 'Let us begin.' },
+  ] }))
+  const requestStart = requests.length
+  const result = await cloud.translateSubtitles({
+    runId: 'subtitle-run',
+    textModel: 'deepseek-v4-pro',
+    subtitles: [
+      { shotId: 'shot-001', text: '你好。' },
+      { shotId: 'shot-002', text: '开始吧。' },
+    ],
+  })
+  assert.deepEqual(result, [
+    { shotId: 'shot-001', text: 'Hello.' },
+    { shotId: 'shot-002', text: 'Let us begin.' },
+  ])
+  const calls = requests.slice(requestStart).filter((request) => request.url.endsWith('/v1/chat/completions'))
+  assert.equal(calls.length, 2)
+  assert.ok(calls.every((request) => request.data.model === 'deepseek-v4-pro'))
+})
+
+test('writes deterministic episode SRT into the project Wiki', async () => {
+  const relative = await workspace.writeEpisodeSubtitles('subtitle-wiki-run', episodeId, 'zh', [
+    { shotId: 'shot-001', startMs: 1234, endMs: 4567, text: '第一句' },
+  ])
+  assert.equal(relative, 'wiki/字幕/episode-001-zh.srt')
+  assert.equal(
+    fs.readFileSync(path.join(projectRoot('subtitle-wiki-run'), relative), 'utf8'),
+    '1\n00:00:01,234 --> 00:00:04,567\n第一句\n',
+  )
 })

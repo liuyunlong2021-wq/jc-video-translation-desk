@@ -21,6 +21,10 @@ export interface ShotAnalysis {
   speakerIds?: string[]
   confidence?: number
   dialogue?: EditingTimelineDialogue
+  adoptedStartMs?: number
+  adoptedEndMs?: number
+  adoptedBy?: 'gemini' | 'user'
+  revision?: number
 }
 
 export interface EpisodeVoiceTask {
@@ -42,6 +46,11 @@ export function buildEditingTimeline(
       && analysis.trimEndMs <= analysis.sourceDurationMs
     const geminiStartMs = !analysis.needsReview && validTrim ? analysis.trimStartMs : 0
     const geminiEndMs = !analysis.needsReview && validTrim ? analysis.trimEndMs : analysis.sourceDurationMs
+    const persistedTrim = Number.isFinite(analysis.adoptedStartMs)
+      && Number.isFinite(analysis.adoptedEndMs)
+      && Number(analysis.adoptedStartMs) >= 0
+      && Number(analysis.adoptedStartMs) < Number(analysis.adoptedEndMs)
+      && Number(analysis.adoptedEndMs) <= analysis.sourceDurationMs
     return {
       shotId: analysis.shotId,
       promptSegmentId: analysis.promptSegmentId || analysis.shotId,
@@ -50,10 +59,10 @@ export function buildEditingTimeline(
       sourceDurationMs: analysis.sourceDurationMs,
       geminiStartMs,
       geminiEndMs,
-      adoptedStartMs: geminiStartMs,
-      adoptedEndMs: geminiEndMs,
-      adoptedBy: 'gemini',
-      revision: 0,
+      adoptedStartMs: persistedTrim ? Number(analysis.adoptedStartMs) : geminiStartMs,
+      adoptedEndMs: persistedTrim ? Number(analysis.adoptedEndMs) : geminiEndMs,
+      adoptedBy: persistedTrim ? analysis.adoptedBy || 'user' : 'gemini',
+      revision: persistedTrim ? Math.max(0, Math.floor(Number(analysis.revision) || 0)) : 0,
       outputStartMs: 0,
       outputEndMs: 0,
       observedContent: analysis.observedContent || '',
@@ -116,6 +125,7 @@ export function validateEditingTimeline(timeline: EditingTimeline) {
   if (timeline.schemaVersion !== 2 || !['narration-promo', 'drama'].includes(timeline.route))
     throw new Error('剪辑时间轴合同无效')
   let cursor = 0
+  const sourceEnds = new Map<string, number>()
   for (const shot of timeline.shots) {
     if (!shot.shotId || !shot.sourceVideoPath || !Number.isFinite(shot.sourceDurationMs) || shot.sourceDurationMs <= 0)
       throw new Error('剪辑时间轴缺少有效镜头来源')
@@ -135,6 +145,10 @@ export function validateEditingTimeline(timeline: EditingTimeline) {
       shot.adoptedEndMs > shot.sourceDurationMs
     )
       throw new Error(`${shot.shotId} 采用区间无效`)
+    const sourceEnd = sourceEnds.get(shot.sourceVideoPath)
+    if (sourceEnd !== undefined && shot.adoptedStartMs < sourceEnd)
+      throw new Error(`${shot.shotId} 与同源前一镜采用区间重叠`)
+    sourceEnds.set(shot.sourceVideoPath, shot.adoptedEndMs)
     if (
       shot.outputStartMs !== cursor ||
       shot.outputEndMs !== cursor + shot.adoptedEndMs - shot.adoptedStartMs

@@ -49,6 +49,23 @@ interface Window {
       hasApiKey: () => Promise<boolean>
       saveApiKey: (apiKey: string) => Promise<boolean>
       testApiKey: () => Promise<boolean>
+      hasSeedAudioApiKey: () => Promise<boolean>
+      saveSeedAudioApiKey: (apiKey: string) => Promise<boolean>
+      generateSeedAudio: (
+        params: import('./seed-audio').GenerateSeedAudioParams,
+      ) => Promise<{ path: string; duration: number; model: string; responseDuration?: number }>
+      writeSeedAudioArrangement: (
+        runId: string,
+        episodeId: string,
+        arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement,
+      ) => Promise<string>
+      mixSeedAudioTracks: (runId: string, episodeId: string, paths: string[], durationMs: number) => Promise<string>
+      writeSeedDialogueTimeline: (
+        runId: string,
+        episodeId: string,
+        lines: import('../src/runtime/seedAudio').SeedAudioLine[],
+        transcript: import('../src/runtime/productionContract').MaterialTranscript,
+      ) => Promise<{ timelinePath: string; srtPath: string }>
       generateScript: (brief: import('./types').MediaScriptBrief) => Promise<string>
       runSkill: (
         skillName: string,
@@ -60,10 +77,12 @@ interface Window {
         skillName: string,
         input: string,
         projectId: string,
+        episodeId: string,
         textModel?: import('./types').TextModel,
       ) => Promise<{ text: string; writtenPaths: string[] }>
       generateVoice: (
         runId: string,
+        episodeId: string,
         text: string,
         voicePrompt: string,
         engine: import('./types').VoiceEngine,
@@ -74,7 +93,7 @@ interface Window {
       indexTtsStop: () => Promise<import('./types').IndexTtsServiceStatus>
       generateEpisodeVoice: (
         params: import('./types').GenerateEpisodeVoiceParams,
-      ) => Promise<{ path: string; duration: number }>
+      ) => Promise<{ path: string; duration: number; clips: Array<{ shotId: string; path: string; duration: number }> }>
       generateStoryboard: (
         params: import('./types').GenerateStoryboardImageParams,
       ) => Promise<string>
@@ -88,11 +107,30 @@ interface Window {
       ) => Promise<import('./types').MaterialVideoAnalysisResult>
       writeEditingTimeline: (
         runId: string,
+        episodeId: string,
         timeline: import('../src/runtime/productionContract').EditingTimeline,
       ) => Promise<string>
+      writeEpisodeSubtitles: (
+        runId: string,
+        episodeId: string,
+        language: 'zh' | 'en',
+        cues: import('./types').EpisodeSubtitleCue[],
+      ) => Promise<string>
+      translateSubtitles: (
+        params: import('./types').TranslateSubtitlesParams,
+      ) => Promise<Array<{ shotId: string; text: string }>>
       composePictureMaster: (
         params: import('./ffmpeg/types').ComposePictureMasterParams,
       ) => Promise<string>
+      separateSourceAudio: (
+        params: import('./ffmpeg/types').SeparateSourceAudioParams,
+      ) => Promise<import('../src/runtime/productionContract').AudioProcessingRecord>
+      removeOriginalVocal: (
+        params: import('./ffmpeg/types').AdoptInstrumentParams,
+      ) => Promise<import('../src/runtime/productionContract').AudioProcessingRecord>
+      mixBackgroundAudio: (
+        params: import('./ffmpeg/types').MixBackgroundAudioParams,
+      ) => Promise<import('../src/runtime/productionContract').AudioProcessingRecord>
       composeVideo: (
         params: import('./ffmpeg/types').ComposeGeneratedVideoParams,
       ) => Promise<string>
@@ -123,6 +161,19 @@ interface Window {
         patch: import('./voice-library').VoiceProfile,
       ) => Promise<import('./voice-library').VoiceProfile>
       standardizeVoiceProfile: (voiceProfileId: string) => Promise<string>
+      registerSeedVoiceProfile: (
+        params: import('./voice-library').RegisterSeedVoiceProfileParams,
+      ) => ReturnType<typeof import('./voice-library').registerSeedVoiceProfile>
+      bindProjectSeedVoice: (
+        projectId: string,
+        episodeId: string,
+        speakerId: string,
+        voiceProfileId: string,
+      ) => ReturnType<typeof import('./voice-library').bindProjectSeedVoice>
+      resolveProjectSeedReferences: (
+        projectId: string,
+        speakerIds: string[],
+      ) => ReturnType<typeof import('./voice-library').resolveProjectSeedReferences>
       bindProjectVoice: (
         projectId: string,
         speakerId: string,
@@ -132,12 +183,14 @@ interface Window {
       createProject: (
         projectId: string,
         state: string,
-      ) => Promise<import('./types').ProjectManifest>
+      ) => Promise<import('./types').ProjectManifest | null>
+      openProjectDirectory: () => Promise<import('./types').ProjectManifest | null>
       listProjects: () => Promise<import('./types').ProjectManifest[]>
-      loadProject: (projectId: string) => Promise<string>
+      loadProject: (projectId: string, episodeId: string) => Promise<string>
       getLastOpenedProject: () => Promise<string | null>
       setLastOpenedProject: (projectId: string) => Promise<void>
       renameProject: (projectId: string, name: string) => Promise<import('./types').ProjectManifest>
+      createEpisode: (projectId: string, value: string) => Promise<import('./types').ProjectManifest>
       showProject: (projectId: string) => Promise<string>
       saveRawSubmission: (projectId: string, content: string) => Promise<string>
       importMarkdown: (projectId: string) => Promise<import('./types').ImportedMarkdown | null>
@@ -146,20 +199,21 @@ interface Window {
         projectId: string,
         relativePath: string,
       ) => Promise<import('./types').ProjectMarkdownDocument>
-      beginStoryboardUpdate: (projectId: string) => Promise<string>
+      beginStoryboardUpdate: (projectId: string, episodeId: string) => Promise<string>
       commitStoryboardUpdate: (
         projectId: string,
+        episodeId: string,
         transactionId: string,
         writtenPaths: string[],
       ) => Promise<string[]>
-      rollbackStoryboardUpdate: (projectId: string, transactionId: string) => Promise<void>
+      rollbackStoryboardUpdate: (projectId: string, episodeId: string, transactionId: string) => Promise<void>
       writeMarkdown: (
         projectId: string,
         relativePath: string,
         content: string,
         revision?: string,
       ) => Promise<import('./types').ProjectMarkdownDocument>
-      saveState: (runId: string, value: string) => Promise<void>
+      saveState: (runId: string, episodeId: string, value: string) => Promise<void>
       cancelRun: (runId: string) => Promise<number>
       listTasks: (runId: string) => Promise<import('./types').PendingCloudTask[]>
       resumeTask: (runId: string, taskId: string) => Promise<string>

@@ -4,7 +4,7 @@ import http from 'node:http'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { app } from 'electron'
 import { executeFFmpeg } from './ffmpeg/index.ts'
-import { getRunDir, mediaDuration } from './media-workspace.ts'
+import { ensureEpisodeDir, ensureRunDir, getEpisodeDir, getRunDir, mediaDuration, relativeRunAsset } from './media-workspace.ts'
 import { getVoiceLibraryDir, getVoicePackDir } from './voice-library.ts'
 import type { GenerateEpisodeVoiceParams, IndexTtsServiceStatus } from './types.ts'
 
@@ -199,7 +199,9 @@ async function manifestFor(voiceProfileId: string, text: string) {
   }
   await visit(root)
   const chinese = /[\u3400-\u9fff]/.test(text)
-  const selected = manifests.find((item) => chinese && /[/\\]zh(?:-|[/\\])/.test(item)) || manifests[0]
+  const selected = manifests.find((item) => chinese && /[/\\]zh(?:-|[/\\])/.test(item))
+    || manifests.find((item) => !chinese && /[/\\]en(?:-|[/\\])/.test(item))
+    || manifests[0]
   if (!selected) throw new Error(`${voiceProfileId} 没有可用的 IndexTTS2 情绪包`)
   const manifest = JSON.parse(await fs.promises.readFile(selected, 'utf8'))
   if (manifest.status !== 'confirmed' || manifest.model?.id !== 'indextts-2')
@@ -212,17 +214,25 @@ async function manifestFor(voiceProfileId: string, text: string) {
 async function binding(projectId: string, speakerId: string) {
   const file = path.join(getRunDir(projectId), 'wiki', '声音', '角色', `${speakerId}.md`)
   const content = await fs.promises.readFile(file, 'utf8').catch(() => '')
-  const voiceProfileId = content.match(/^voiceProfileId:\s*([^\s]+)$/m)?.[1]
+  const voiceProfileId = content.match(/^voiceProfileId:\s*["']?([^"'\s]+)["']?\s*$/m)?.[1]
   if (!voiceProfileId) throw new Error(`请先在资产页为 ${speakerId} 绑定音色包`)
   return voiceProfileId
 }
 
 export async function generateEpisodeVoice(params: GenerateEpisodeVoiceParams) {
   if (!params.tasks.length) throw new Error('本集没有需要生成的配音任务')
-  const runDir = getRunDir(params.runId)
-  const workDir = path.join(runDir, 'voice-tasks')
-  const outputDir = path.join(workDir, 'clips')
-  await fs.promises.mkdir(outputDir, { recursive: true })
+  const language = params.language || 'zh'
+  if (!['zh', 'en'].includes(language)) throw new Error('配音语言无效')
+  if (new Set(params.tasks.map((task) => task.shotId)).size !== params.tasks.length)
+    throw new Error('配音任务镜头 ID 重复')
+  await ensureEpisodeDir(params.runId, params.episodeId)
+  const workDir = path.join(getEpisodeDir(params.runId, params.episodeId), 'voice-tasks')
+  const episodeDir = path.join(await ensureRunDir(params.runId), 'wiki', '声音', params.episodeId)
+  const outputDir = path.join(episodeDir, `clips-${language}`)
+  await Promise.all([
+    fs.promises.mkdir(workDir, { recursive: true }),
+    fs.promises.mkdir(outputDir, { recursive: true }),
+  ])
   const rows = []
   for (const task of params.tasks) {
     if (!task.text.trim() || task.startMs < 0 || task.endMs <= task.startMs) throw new Error(`${task.shotId} 配音任务无效`)
@@ -233,16 +243,18 @@ export async function generateEpisodeVoice(params: GenerateEpisodeVoiceParams) {
     if (emotionAudio) await fs.promises.access(emotionAudio, fs.constants.R_OK)
     rows.push({ text: task.text.trim(), voice: pack.reference, ...(emotionAudio ? { emotion_audio: emotionAudio } : {}) })
   }
-  const batchFile = path.join(workDir, 'episode.jsonl')
+  const batchFile = path.join(workDir, `episode-${language}.jsonl`)
   await fs.promises.writeFile(batchFile, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8')
   await run(params.runId, ['batch', '--batch-file', batchFile, '--output-dir', outputDir, '--output-prefix', 'shot', '--device', process.platform === 'darwin' ? 'mps' : 'cpu', '--force'])
   const clips = params.tasks.map((_, index) => path.join(outputDir, `shot-${String(index + 1).padStart(4, '0')}.wav`))
+  const generated: Array<{ shotId: string; path: string; duration: number }> = []
   for (let index = 0; index < clips.length; index++) {
     const duration = await mediaDuration(clips[index])
     const budget = (params.tasks[index].endMs - params.tasks[index].startMs) / 1000
     if (duration > budget + 0.1) throw new Error(`${params.tasks[index].shotId} 配音超过时间窗 ${budget.toFixed(1)} 秒，请缩短台词或调整分镜`)
+    generated.push({ shotId: params.tasks[index].shotId, path: relativeRunAsset(params.runId, clips[index]), duration })
   }
-  const output = path.join(runDir, 'episode-voice.wav')
+  const output = path.join(episodeDir, `episode-voice-${language}.wav`)
   const totalDuration = Math.max(...params.tasks.map((task) => task.endMs)) / 1000
   const filters = clips.map((_, index) => {
     const delay = params.tasks[index].startMs
@@ -253,7 +265,34 @@ export async function generateEpisodeVoice(params: GenerateEpisodeVoiceParams) {
   clips.forEach((clip) => args.push('-i', clip))
   args.push('-filter_complex', filters.join(';'), '-map', '[out]', '-c:a', 'pcm_s16le', '-y', output)
   await executeFFmpeg(args)
-  return { path: output, duration: await mediaDuration(output) }
+  const assetPath = path.join(episodeDir, '对白资产.json')
+  let existing: any = { schemaVersion: 1, assets: [] }
+  try {
+    existing = JSON.parse(await fs.promises.readFile(assetPath, 'utf8'))
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+  const assets = params.tasks.map((task, index) => ({
+    dialogueId: `${language}-${task.shotId}`,
+    editPointId: task.shotId,
+    speakerId: task.speakerId,
+    text: task.text,
+    emotion: task.emotion,
+    sourceMediaId: task.shotId,
+    targetStartMs: task.startMs,
+    targetEndMs: task.endMs,
+    audioPath: generated[index].path,
+    actualDurationMs: Math.round(generated[index].duration * 1000),
+    status: 'ready',
+    language,
+  }))
+  const document = {
+    schemaVersion: 1,
+    assets: [...(Array.isArray(existing.assets) ? existing.assets : []).filter((item: any) => item.language !== language), ...assets],
+  }
+  await fs.promises.writeFile(`${assetPath}.tmp`, `${JSON.stringify(document, null, 2)}\n`, 'utf8')
+  await fs.promises.rename(`${assetPath}.tmp`, assetPath)
+  return { path: relativeRunAsset(params.runId, output), duration: await mediaDuration(output), clips: generated }
 }
 
 export function cancelIndexTts(runId: string) {

@@ -1,0 +1,67 @@
+{
+  "skill_name": "jc-doubao-seed-audio",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "把这集两人中文短剧写成豆包音频生成提示词。女儿用@音频1，陈大发用@音频2，目标118秒；包含对白、OS、车流、车内行驶、急刹追尾、手机搜索声和低音量荒诞悬疑配乐。保留原台词和强情绪，不允许串音。",
+      "expected_output": "只输出完整声音轨提示词；两个参考音与角色映射稳定；包含对白、OS、音乐和关键音效。",
+      "files": [
+        "output/doubao-seed-audio-episode1-test-20260804/prompt_zh.txt"
+      ],
+      "assertions": [
+        "明确@音频1和@音频2各自对应的角色",
+        "固定音色与动态情绪分开描述",
+        "包含音乐压在人声下方和刹车碰撞卡点",
+        "最终产物只有提示词，没有配置或生成说明"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "给我写一个豆包提示词：30秒新能源汽车广告，@音频1是女旁白。前20秒克制，后10秒上扬；要轻电子音乐、启动提示音和城市掠过声，不能遮住旁白。",
+      "expected_output": "只输出单参考音广告提示词；Reference用途准确；声音层次和情绪转折具体。",
+      "files": [],
+      "assertions": [
+        "@音频1只负责女旁白音色",
+        "包含前20秒和后10秒的表演变化",
+        "音乐和音效位置明确且不遮挡人声",
+        "不输出音频生成结果"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "用@音频1的情绪递进，但不要它的音色。写一段角色从镇定到崩溃的中文对白提示词，前半medium，后半high，不要音乐音效。",
+      "expected_output": "只输出情绪Reference提示词；明确参考情绪和节奏，排除音色、口音与背景声。",
+      "files": [],
+      "assertions": [
+        "明确只参考情绪和节奏",
+        "明确不参考音色、口音和背景声",
+        "包含medium到high的情绪转折",
+        "明确纯人声且不输出其他说明"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "产品运行时 full-track 输入：language=zh，durationMs=42000；角色预检已通过，speakerId 去重后为 character-a、character-b、character-c；referenceIndex 分别为 1、2、3；segments 已提供不重叠时间窗、确认台词和情绪。生成剧情片整段声音轨提示词。",
+      "expected_output": "只输出一个可直接提交的完整声音轨提示词；严格使用三个既定角色和参考音映射，不输出 JSON、API 配置或角色数分析。",
+      "files": [],
+      "assertions": [
+        "@音频1到@音频3与三个 speakerId 的映射顺序不变",
+        "保留 segments 的时间顺序、确认台词和情绪要求",
+        "没有创建第四个角色或改变角色身份",
+        "最终产物只有 text_prompt 正文"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "产品运行时 voice-profile 输入：language=en；角色是 Emily，30-year-old product designer；确认剧本原句为 Emily: Everything is ready. Let us begin. 生成单人角色基准音提示词。",
+      "expected_output": "只输出英文角色基准音提示词；示例台词沿用确认剧本英文原句；单人干声且不含音乐、环境声或音效。",
+      "files": [],
+      "assertions": [
+        "角色描述和示例台词均为英文",
+        "保留 Everything is ready. Let us begin.",
+        "没有中文兜底台词",
+        "明确单人干声且没有音乐、环境声和音效"
+      ]
+    }
+  ]
+}

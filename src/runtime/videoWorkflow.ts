@@ -3,6 +3,7 @@ import type {
   ShotPace,
   ShotVideoAnalysisResult,
   TargetDuration,
+  VideoModel,
   VideoRatio,
   VisualStyleId,
   AssetRole,
@@ -292,6 +293,7 @@ export interface StoryboardSegment {
   speakerId?: string
   dialogueCharacter?: string
   dialogueText?: string
+  englishDialogueText?: string
   dialogueEmotion?: string
   emotionIntensity?: string
   speechRate?: string
@@ -323,6 +325,10 @@ export interface StoryboardSegment {
   editingStatus?: 'pending' | 'running' | 'ready' | 'failed'
   editingAnalysis?: ShotVideoAnalysisResult
   editingError?: string
+  chineseVoicePath?: string
+  chineseVoiceDuration?: number
+  englishVoicePath?: string
+  englishVoiceDuration?: number
   error?: string
 }
 
@@ -336,7 +342,7 @@ export function videoSoundInstruction(segment: Pick<StoryboardSegment,
   if (!speakerId || !dialogueText)
     throw new Error(`第 ${segment.index} 镜缺少${soundType === 'onscreen' ? '画面内对白' : '旁白'}的说话者 ID 或确认原文`)
   if (soundType === 'voiceover')
-    return `声音要求：后期旁白：“${dialogueText}”；说话者 ${speakerId}；本次视频模型不得生成人声。`
+    return `声音要求：旁白：“${dialogueText}”；说话者 ${speakerId}；按分镜提示词正常生成对应的人声、情绪、节奏和画面反应，最终采用哪条声音轨由后期声音制作路线决定。`
   return `声音要求：角色 ${speakerId} 自然说出：“${dialogueText}”；情绪 ${segment.dialogueEmotion || '自然'}，强度 ${segment.emotionIntensity || '自然'}，语速 ${segment.speechRate || '自然'}，停顿与重音 ${segment.pauseEmphasis || '自然'}；口型与台词逐字同步。`
 }
 
@@ -359,7 +365,7 @@ export interface StoryboardPlan {
   segments: StoryboardSegment[]
 }
 
-export type RevisionTargetType = 'script' | 'project-director' | 'voice-plan' | 'asset-prompt' | 'shot' | 'image' | 'video'
+export type RevisionTargetType = 'script' | 'project-director' | 'voice-plan' | 'seed-role-prompt' | 'asset-prompt' | 'shot' | 'image' | 'video'
 
 export interface RevisionProposal {
   targetType: RevisionTargetType
@@ -392,10 +398,18 @@ export function generationDurationFor(playDuration: number): 4 | 6 | 8 {
   throw new Error('单镜头播放时长超过 8 秒')
 }
 
-export function grokGenerationDuration(totalPlayDuration: number) {
+export function isCombinedVideoModel(model: VideoModel) {
+  return model === 'rh-grok-image-video' || model === 'rh-seedance2'
+}
+
+export function grokGenerationDuration(
+  totalPlayDuration: number,
+  model: VideoModel = 'rh-grok-image-video',
+) {
   if (!Number.isFinite(totalPlayDuration) || totalPlayDuration <= 0)
-    throw new Error('Grok 序列播放时长必须大于 0 秒')
-  return Math.min(30, Math.max(6, Math.ceil(totalPlayDuration)))
+    throw new Error('组合视频序列播放时长必须大于 0 秒')
+  const [minDuration, maxDuration] = model === 'rh-seedance2' ? [4, 15] : [6, 30]
+  return Math.min(maxDuration, Math.max(minDuration, Math.ceil(totalPlayDuration)))
 }
 
 export interface GrokSequence {
@@ -413,12 +427,12 @@ export interface GrokReferenceAsset {
 
 export function grokStoryboardBoardInstruction(shotCount: number) {
   if (!Number.isInteger(shotCount) || shotCount < 1 || shotCount > 9)
-    throw new Error('Grok 组合分镜板只能包含 1 到 9 个镜头')
+    throw new Error('组合分镜板只能包含 1 到 9 个镜头')
   return `请生成一张包含准确 ${shotCount} 幅画面的连续分镜板，严格按上述镜头顺序呈现。版式自行安排，不要固定网格或均分；不得增加、遗漏或重复镜头，不要文字、编号、对白气泡或画外拼贴。`
 }
 
 export function grokReferenceGuide(assets: GrokReferenceAsset[], storyboardFirst: boolean) {
-  if (assets.length > 6) throw new Error('Grok 组合最多引用 6 个资产')
+  if (assets.length > 6) throw new Error('组合视频最多引用 6 个资产')
   const purpose: Record<AssetRole, string> = {
     character: '锁定角色身份、脸部、发型和服装',
     scene: '锁定场景空间、陈设、光线和色彩',
@@ -437,15 +451,19 @@ export function grokReferenceGuide(assets: GrokReferenceAsset[], storyboardFirst
   return lines.join('\n')
 }
 
-export function buildGrokSequences(segments: StoryboardSegment[]): GrokSequence[] {
+export function buildGrokSequences(
+  segments: StoryboardSegment[],
+  model: VideoModel = 'rh-grok-image-video',
+): GrokSequence[] {
   const sequences: GrokSequence[] = []
+  const maxDuration = model === 'rh-seedance2' ? 15 : 30
   let current: StoryboardSegment[] = []
   let refs = new Set<string>()
   let duration = 0
   const flush = () => {
     if (!current.length) return
     const id = `grok-sequence-${current[0].index}`
-    sequences.push({ id, segments: current, generationDuration: grokGenerationDuration(duration), referenceAssetIds: [...refs].slice(0, 6) })
+    sequences.push({ id, segments: current, generationDuration: grokGenerationDuration(duration, model), referenceAssetIds: [...refs].slice(0, 6) })
     current = []
     refs = new Set()
     duration = 0
@@ -453,7 +471,7 @@ export function buildGrokSequences(segments: StoryboardSegment[]): GrokSequence[
   for (const segment of segments) {
     const nextRefs = new Set([...refs, ...segment.referenceAssetIds])
     const nextDuration = duration + segment.playDuration
-    if (current.length && (nextDuration > 30 || nextRefs.size > 6 || current.length >= 9)) flush()
+    if (current.length && (nextDuration > maxDuration || nextRefs.size > 6 || current.length >= 9)) flush()
     current.push(segment)
     refs = new Set([...refs, ...segment.referenceAssetIds])
     duration += segment.playDuration
@@ -587,6 +605,7 @@ export function parseStoryboardPlan(
   approvedScript: string,
   timelineDuration: number,
   selectedPace: ShotPace,
+  strictDuration = true,
 ): StoryboardPlan {
   const segments = Array.isArray(value?.segments) ? value.segments : []
   const averageShotDuration = segments.length
@@ -634,8 +653,7 @@ export function parseStoryboardPlan(
       if (
         /(?:再|然后|随后)?(?:切镜|转场)(?:到|至)|分屏|多画面/.test(videoPrompt) ||
         !videoPrompt.includes('单一连续镜头') ||
-        !videoPrompt.includes('无切镜') ||
-        !videoPrompt.includes('无背景音乐')
+        !videoPrompt.includes('无切镜')
       ) {
         throw new Error(`第 ${offset + 1} 段必须是无切镜的单一连续镜头`)
       }
@@ -693,14 +711,11 @@ export function parseStoryboardPlan(
 
   const restored = restoreApprovedScript(normalized, approvedScript)
   const total = restored.reduce((sum, segment) => sum + segment.playDuration, 0)
-  if (Math.abs(total - timelineDuration) > 0.1) throw new Error('分镜总时长与时间轴不一致')
+  if (strictDuration && Math.abs(total - timelineDuration) > 0.1)
+    throw new Error('分镜总时长与时间轴不一致')
 
   const visualAnchor = String(value?.visualAnchor || '').trim()
   if (!visualAnchor) throw new Error('分镜方案缺少全局一致性锚点')
-  if (restored.some((segment) => !segment.videoPrompt.includes('无背景音乐'))) {
-    throw new Error('视频提示词必须明确要求无背景音乐')
-  }
-
   const finalShotCount = Number(value?.finalShotCount ?? normalized.length)
   if (finalShotCount !== restored.length) throw new Error('最终镜头数与实际镜头数组不一致')
   const referenceShotCount = Number(value?.referenceShotCount)

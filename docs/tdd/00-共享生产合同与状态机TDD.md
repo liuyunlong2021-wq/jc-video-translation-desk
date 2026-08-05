@@ -54,6 +54,9 @@ src/runtime/productionContract.ts
 
 ```ts
 type ProductionRoute = 'narration-promo' | 'drama'
+type AudioProductionRoute = 'seed-full-track' | 'post-dub'
+type AudioEngine = 'seed-audio' | 'indextts2' | 'qwen3-tts'
+type VideoAudioPolicy = 'use-native' | 'use-seed-master' | 'replace-dialogue-preserve-ambience'
 type ArtifactStatus = 'idle' | 'running' | 'ready' | 'failed' | 'stale'
 type OutputLanguage = 'zh' | 'en'
 type AdoptedBy = 'gemini' | 'user'
@@ -109,6 +112,9 @@ wiki/声音/episode-001/音频处理.json
 ```ts
 interface PostProductionState {
   route: ProductionRoute
+  audioRoute: AudioProductionRoute
+  audioEngine: AudioEngine
+  videoAudioPolicy: VideoAudioPolicy
   materialSrt: ArtifactStatus
   editingTimeline: ArtifactStatus
   chineseVoice: ArtifactStatus
@@ -123,12 +129,17 @@ interface PostProductionState {
 }
 ```
 
+`ProductionRoute` 只表示内容类型和导演语义；`AudioProductionRoute` 表示声音先后顺序，必须由用户人工选择。VEO/Grok 始终照常生成视频及其原生声音，`VideoAudioPolicy` 只在后期决定最终成片采用视频原生声音、Seed 完整声音轨，还是逐句后配并保留环境声，不得反向修改视频提示词。
+
 唯一操作集合：
 
 ```text
 generate-srt
 generate-editing-timeline
 reselect-edit-point
+generate-seed-voice
+arrange-seed-track
+generate-seed-track
 generate-chinese-voice
 translate-subtitles
 generate-english-voice
@@ -140,23 +151,26 @@ burn-voice-and-subtitles
 
 门禁原则：
 
-- SRT 就绪后才允许生成剪辑时间轴。
+- Seed 路线的完整声音轨就绪后自动生成声音时间轴和 SRT；视频素材的素材 SRT 就绪后才允许生成 Gemini 剪辑时间轴。
+- 后配路线仍按 SRT 就绪后生成剪辑时间轴。
 - 剪辑时间轴就绪后才允许滑块、中文配音、翻译和人声分离。
 - 英文字幕就绪后才允许英语配音。
 - `replace-preserve-ambience` 才要求分离、去人声和混回按顺序完成。
 - `replace-all` 不分离原声，但烧录前要求对应语言配音就绪。
+- `use-native` 直接采用视频模型生成的原生声音，不强制生成 Seed 或逐句配音。
+- `use-seed-master` 采用 Seed 完整声音轨；视频原生声音保留为原始证据或备用，不在提示词阶段禁用。
 - `keep-original` 不要求生成配音或做人声分离。
 - 英文输出始终要求英文字幕就绪；需要替换配音时还要求英语配音就绪。
 - 烧录是唯一最终动作，不存在额外保存或确认状态。
 
-宣传片进入工作台前已经拥有正式旁白，因此初始化时可把 `chineseVoice` 设为 `ready`；剧情片默认是 `idle`。
+`seed-full-track` 路线在分镜前拥有完整声音轨和声音时间轴；`post-dub` 路线继续在 `editing-timeline.json` 就绪后生成逐句配音。视频模型的原生声音是否最终采用由 `videoAudioPolicy` 决定。
 
 ## 7. 失效规则
 
 | 变化 | 失效 | 保留 |
 |---|---|---|
-| 原始视频变化 | SRT、剪辑时间轴、音频处理、成片；剧情片还失效逐句配音 | 角色音色绑定、确认剧本、宣传片正式旁白 |
-| 采用剪辑点变化 | 音频处理、成片；剧情片还失效逐句配音 | 素材 SRT、Gemini 原点、宣传片正式旁白 |
+| 原始视频变化 | 素材 SRT、剪辑时间轴、音频处理、成片；后配路线还失效逐句配音 | 角色音色绑定、确认剧本、Seed 声音时间轴 |
+| 采用剪辑点变化 | 音频处理、成片；后配路线还失效逐句配音 | 素材 SRT、Gemini 原点、Seed 声音轨和声音时间轴 |
 | 中文字幕变化 | 中英文配音、英文字幕、音频处理、成片 | 视频、SRT、剪辑点 |
 | 输出语言变化 | 成片 | 所有上游产物 |
 

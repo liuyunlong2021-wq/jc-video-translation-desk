@@ -6,6 +6,7 @@ export interface ExecuteFFmpegResult {
 
 export interface ComposeGeneratedVideoParams {
   runId: string
+  episodeId: string
   videoFiles: string[]
   playDurations: number[]
   voiceFile?: string
@@ -16,8 +17,26 @@ export interface ComposeGeneratedVideoParams {
 
 export interface ComposePictureMasterParams {
   runId: string
+  episodeId: string
   ratio: import('../types').VideoRatio
   timeline: import('../../src/runtime/productionContract.ts').EditingTimeline
+}
+
+export interface SeparateSourceAudioParams {
+  runId: string
+  episodeId: string
+  pictureMasterPath: string
+}
+
+export interface AdoptInstrumentParams {
+  runId: string
+  episodeId: string
+  vocalPath: string
+  instrumentPath: string
+}
+
+export interface MixBackgroundAudioParams extends AdoptInstrumentParams {
+  voiceFile: string
 }
 
 export interface SubtitleCue {

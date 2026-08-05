@@ -166,6 +166,22 @@
             }}
           </div>
           <v-divider />
+          <div class="text-subtitle-2">Seed Audio 官方接口</div>
+          <v-text-field
+            v-model="seedAudioApiKey"
+            label="Seed Audio API Key"
+            type="password"
+            autocomplete="off"
+            hide-details
+            :placeholder="hasSeedAudioApiKey ? '已安全保存，留空保持不变' : '请输入火山引擎 Key'"
+          />
+          <div
+            class="text-caption"
+            :class="hasSeedAudioApiKey ? 'text-success' : 'text-medium-emphasis'"
+          >
+            {{ hasSeedAudioApiKey ? 'Seed Audio Key 已配置' : '只在使用豆包整段声音轨时需要' }}
+          </div>
+          <v-divider />
           <div class="flex items-center justify-between gap-3">
             <div>
               <div class="text-subtitle-2">{{ t('workflow.localVoice.title') }}</div>
@@ -288,6 +304,7 @@ const VIDEO_MODELS = [
   { title: 'Veo 3.1', value: 'veo-3.1-generate-preview' },
   { title: 'Veo 3.0', value: 'veo-3.0-generate-001' },
   { title: 'Grok Video 图生视频', value: 'rh-grok-image-video' },
+  { title: 'Seedance 2.0', value: 'rh-seedance2' },
 ]
 const mediaStore = useMediaTaskStore()
 const toast = useToast()
@@ -296,6 +313,8 @@ const configDialog = ref(false)
 const apiKey = ref('')
 const hasApiKey = ref(false)
 const sessionOnly = ref(false)
+const seedAudioApiKey = ref('')
+const hasSeedAudioApiKey = ref(false)
 const testing = ref(false)
 const checkingLocalVoice = ref(false)
 const changingIndexTts = ref(false)
@@ -343,6 +362,7 @@ const indexTtsState = computed(() =>
 
 onMounted(async () => {
   hasApiKey.value = await window.electron.cloud.hasApiKey()
+  hasSeedAudioApiKey.value = await window.electron.cloud.hasSeedAudioApiKey()
   mediaStore.apiConfigured = hasApiKey.value
   if (!hasApiKey.value) configDialog.value = true
   if (mediaStore.voiceEngine === 'local') await checkLocalVoice()
@@ -409,9 +429,13 @@ async function saveConfig() {
   }
   if (apiKey.value.trim())
     sessionOnly.value = !(await window.electron.cloud.saveApiKey(apiKey.value))
+  if (seedAudioApiKey.value.trim())
+    sessionOnly.value = !(await window.electron.cloud.saveSeedAudioApiKey(seedAudioApiKey.value)) || sessionOnly.value
   hasApiKey.value = await window.electron.cloud.hasApiKey()
+  hasSeedAudioApiKey.value = await window.electron.cloud.hasSeedAudioApiKey()
   mediaStore.apiConfigured = hasApiKey.value
   apiKey.value = ''
+  seedAudioApiKey.value = ''
   configDialog.value = false
   toast[sessionOnly.value ? 'warning' : 'success'](
     t(sessionOnly.value ? 'workflow.api.sessionOnly' : 'workflow.api.savedToast'),

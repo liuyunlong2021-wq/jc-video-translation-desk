@@ -1,6 +1,7 @@
 import { assetVersionMatches } from './storyboardMarkdown.ts'
 import { projectDirectorAssets } from './projectDirector.ts'
 import { generationDurationFor } from './videoWorkflow.ts'
+import { DEFAULT_EPISODE_ID } from './productionContract.ts'
 
 function relativeAsset(runId: string, filePath?: string) {
   if (!filePath) return filePath
@@ -35,6 +36,18 @@ function relativizeRun(run: any) {
     }),
   )
   run.voicePath = relativeAsset(run.runId, run.voicePath)
+  run.englishVoicePath = relativeAsset(run.runId, run.englishVoicePath)
+  run.vocalPath = relativeAsset(run.runId, run.vocalPath)
+  run.instrumentPath = relativeAsset(run.runId, run.instrumentPath)
+  run.mixedAudioPath = relativeAsset(run.runId, run.mixedAudioPath)
+  run.seedAudioVoicePath = relativeAsset(run.runId, run.seedAudioVoicePath)
+  run.seedAudioArrangementPath = relativeAsset(run.runId, run.seedAudioArrangementPath)
+  run.seedAudioTrackPath = relativeAsset(run.runId, run.seedAudioTrackPath)
+  run.seedAudioDialogueTimelinePath = relativeAsset(run.runId, run.seedAudioDialogueTimelinePath)
+  run.seedAudioSrtPath = relativeAsset(run.runId, run.seedAudioSrtPath)
+  if (run.seedAudioRolePrompts && typeof run.seedAudioRolePrompts === 'object') {
+    run.seedAudioRolePrompts = { ...run.seedAudioRolePrompts }
+  }
   run.editingTimelinePath = relativeAsset(run.runId, run.editingTimelinePath)
   run.pictureMasterPath = relativeAsset(run.runId, run.pictureMasterPath)
   run.finalPath = relativeAsset(run.runId, run.finalPath)
@@ -43,10 +56,13 @@ function relativizeRun(run: any) {
     segment.videoPath = relativeAsset(run.runId, segment.videoPath)
     segment.transcriptJsonPath = relativeAsset(run.runId, segment.transcriptJsonPath)
     segment.transcriptSrtPath = relativeAsset(run.runId, segment.transcriptSrtPath)
+    segment.chineseVoicePath = relativeAsset(run.runId, segment.chineseVoicePath)
+    segment.englishVoicePath = relativeAsset(run.runId, segment.englishVoicePath)
   })
 }
 
 function migrateRun(run: any) {
+  if (!/^[A-Za-z0-9_-]+$/.test(run.episodeId)) run.episodeId = DEFAULT_EPISODE_ID
   const styleMigration: Record<string, string> = {
     'live-action': 'cinematic-contrast',
     illustration: 'cel-cinematic',
@@ -99,6 +115,25 @@ function migrateRun(run: any) {
   if (!['design', 'clone'].includes(run.voiceSource)) run.voiceSource = 'clone'
   if (!['keep-original', 'replace-preserve-ambience', 'replace-all'].includes(run.audioMode))
     run.audioMode = 'replace-all'
+  if (!['seed-full-track', 'post-dub'].includes(run.audioProductionRoute))
+    run.audioProductionRoute = 'seed-full-track'
+  if (!['zh', 'en'].includes(run.outputLanguage)) run.outputLanguage = 'zh'
+  if (!['idle', 'running', 'ready', 'failed'].includes(run.audioProcessingStatus))
+    run.audioProcessingStatus = run.instrumentPath ? 'ready' : 'idle'
+  run.englishVoicePath ||= ''
+  run.vocalPath ||= ''
+  run.instrumentPath ||= ''
+  run.mixedAudioPath ||= ''
+  run.seedAudioVoicePath ||= ''
+  run.seedAudioArrangementPath ||= ''
+  run.seedAudioTrackPath ||= ''
+  run.seedAudioDialogueTimelinePath ||= ''
+  run.seedAudioSrtPath ||= ''
+  if (!run.seedAudioRolePrompts || typeof run.seedAudioRolePrompts !== 'object') run.seedAudioRolePrompts = {}
+  run.seedAudioGlobalPrompt ||= ''
+  run.seedAudioDirectorDraftPath ||= ''
+  run.seedAudioDuration = Number.isFinite(Number(run.seedAudioDuration)) ? Number(run.seedAudioDuration) : 0
+  run.originalVocalRemoved = Boolean(run.originalVocalRemoved)
   if (
     ![
       'gemini-3.6-flash',
@@ -114,12 +149,13 @@ function migrateRun(run: any) {
       'veo-3.1-generate-preview',
       'veo-3.0-generate-001',
       'rh-grok-image-video',
+      'rh-seedance2',
     ].includes(run.videoModel)
   )
     run.videoModel = 'veo-3.1-generate-preview'
-  if (!['script', 'voice', 'shots', 'assets', 'images', 'videos', 'final'].includes(run.workflowStep))
+  if (!['script', 'seed-voice', 'voice', 'shots', 'assets', 'images', 'videos', 'final'].includes(run.workflowStep))
     run.workflowStep = run.workspaceView === 'script' ? 'script' : run.workspaceView || 'script'
-  if (!['script', 'director', 'storyboard', 'assets', 'media', 'final'].includes(run.workspaceView))
+  if (!['script', 'director', 'storyboard', 'assets', 'seed-voice', 'media', 'dubbing', 'final'].includes(run.workspaceView))
     run.workspaceView = 'script'
   if (!['all', 'references', 'audio', 'storyboards', 'videos'].includes(run.mediaFilter))
     run.mediaFilter = 'all'
@@ -185,6 +221,7 @@ function migrateRun(run: any) {
     segment.timelineType = segment.timelineType === 'dialogue' ? 'dialogue' : 'action'
     segment.dialogueCharacter ||= '无'
     segment.dialogueText ||= ''
+    segment.englishDialogueText ||= ''
     segment.dialogueEmotion ||= '无'
     segment.emotionIntensity ||= '无'
     segment.speechRate ||= '无'

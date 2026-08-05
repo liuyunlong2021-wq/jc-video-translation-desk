@@ -124,7 +124,10 @@ export function projectDirectorAssets<T extends { id: string }>(
   })
 }
 
-export function projectDirectorMarkdown(plan: ProjectDirectorDraft | ProjectDirectorPlan) {
+export function projectDirectorMarkdown(
+  plan: ProjectDirectorDraft | ProjectDirectorPlan,
+  episodeId = 'episode-001',
+) {
   const routeLabel = plan.productionRoute === 'narration-promo' ? '旁白宣传片' : '剧情片'
   const groups = [
     ['角色', 'character'],
@@ -138,10 +141,15 @@ export function projectDirectorMarkdown(plan: ProjectDirectorDraft | ProjectDire
       return `- ${title}：${asset.description}；职责：${asset.storyFunction}`
     }).join('\n') || `- 无（${role === 'character' ? plan.completeness.noCharacterReason : '本项目不需要'}）`}`
   })
-  return `# 项目总监\n\n- 来源：[[文稿/确认文稿]]\n- 制作路线：[[制作路线|${routeLabel}]]\n- 项目：${plan.project.title}\n- 形式与题材：${plan.project.format} / ${plan.project.genre}\n- 国别与时代：${plan.project.countryRegion} / ${plan.project.era}\n- 媒介与比例：${plan.project.medium} / ${plan.project.aspectRatio}\n- 视觉风格：${plan.project.visualStyle}\n- 导演与参考作品：${plan.direction.director}《${plan.direction.referenceWork}》\n- 选择理由：${plan.direction.rationale}\n\n## 视觉总纲\n\n- 视觉锚点：${plan.direction.visualAnchor}\n- 色彩语言：${plan.direction.colorLanguage}\n- 镜头语言：${plan.direction.cameraLanguage}\n\n${assetSections.join('\n\n')}\n\n## 完整性检查\n\n- 行动主体：${plan.completeness.narrativeSubjectRequired ? '需要，已覆盖' : `不需要：${plan.completeness.noCharacterReason}`}\n- 警告：${plan.completeness.warnings.join('；') || '无'}\n`
+  return `# 项目总监\n\n- 来源：[[../文稿/${episodeId}/确认文稿]]\n- 制作路线：[[${episodeId}-制作路线|${routeLabel}]]\n- 项目：${plan.project.title}\n- 形式与题材：${plan.project.format} / ${plan.project.genre}\n- 国别与时代：${plan.project.countryRegion} / ${plan.project.era}\n- 媒介与比例：${plan.project.medium} / ${plan.project.aspectRatio}\n- 视觉风格：${plan.project.visualStyle}\n- 导演与参考作品：${plan.direction.director}《${plan.direction.referenceWork}》\n- 选择理由：${plan.direction.rationale}\n\n## 视觉总纲\n\n- 视觉锚点：${plan.direction.visualAnchor}\n- 色彩语言：${plan.direction.colorLanguage}\n- 镜头语言：${plan.direction.cameraLanguage}\n\n${assetSections.join('\n\n')}\n\n## 完整性检查\n\n- 行动主体：${plan.completeness.narrativeSubjectRequired ? '需要，已覆盖' : `不需要：${plan.completeness.noCharacterReason}`}\n- 警告：${plan.completeness.warnings.join('；') || '无'}\n`
 }
 
-export function productionRouteMarkdown(plan: ProjectDirectorDraft | ProjectDirectorPlan) {
+export function productionRouteMarkdown(
+  plan: ProjectDirectorDraft | ProjectDirectorPlan,
+  audioProductionRoute: 'seed-full-track' | 'post-dub' = 'post-dub',
+  episodeId = 'episode-001',
+) {
   const routeLabel = plan.productionRoute === 'narration-promo' ? '旁白宣传片' : '剧情片'
-  return `# 制作路线\n\n- 项目总监：[[项目总监]]\n- 路线：${routeLabel}\n- 路线代码：\`${plan.productionRoute}\`\n- 判断理由：${plan.routeReason}\n- 修改方式：在项目总监页切换路线并重新确认\n`
+  const audioLabel = audioProductionRoute === 'seed-full-track' ? '豆包整段声音轨' : '逐句后配'
+  return `# 制作路线\n\n- 项目总监：[[${episodeId}|项目总监]]\n- 内容类型：${routeLabel}\n- 内容类型代码：\`${plan.productionRoute}\`\n- 声音制作路线：${audioLabel}\n- 声音路线代码：\`${audioProductionRoute}\`\n- 判断理由：${plan.routeReason}\n- 修改方式：内容类型在项目总监页修改；声音路线由用户在文稿页人工选择\n`
 }

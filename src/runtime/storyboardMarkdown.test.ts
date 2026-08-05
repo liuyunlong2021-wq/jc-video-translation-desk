@@ -82,7 +82,7 @@ live action host full body cast portrait`,
   assert.equal(result.assets[0].searchQuery, 'live action host full body cast portrait')
 })
 
-test('adds fixed single-shot constraints to a natural-language video prompt', () => {
+test('adds fixed single-shot constraints without forcing a sound policy', () => {
   const director = {
     path: 'wiki/分镜/导演总览.md',
     content: `# 导演分镜总览
@@ -111,7 +111,8 @@ test('adds fixed single-shot constraints to a natural-language video prompt', ()
 镜头持续推近主持人。`,
   }
   const result = parseStoryboardMarkdown(director, [shot], [], '你好', 4, 'fast')
-  assert.match(result.plan.segments[0].videoPrompt, /单一连续镜头，无切镜，无转场，无背景音乐/)
+  assert.match(result.plan.segments[0].videoPrompt, /单一连续镜头，无切镜，无转场/)
+  assert.doesNotMatch(result.plan.segments[0].videoPrompt, /无背景音乐/)
 })
 
 test('restores approved punctuation without accepting rewritten narration', () => {

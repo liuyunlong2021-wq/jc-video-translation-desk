@@ -17,6 +17,7 @@ import {
   grokGenerationDuration,
   grokReferenceGuide,
   grokStoryboardBoardInstruction,
+  isCombinedVideoModel,
   videoSoundInstruction,
   videoPromptWithSound,
 } from './videoWorkflow.ts'
@@ -36,11 +37,20 @@ test('builds one validated sound instruction for Veo and Grok prompts', () => {
     soundType: 'voiceover',
     speakerId: 'narrator-male',
     dialogueText: '一分钟做完一条片。',
-  }), /本次视频模型不得生成人声/)
+  }), /按分镜提示词正常生成对应的人声/)
+  assert.doesNotMatch(videoSoundInstruction({
+    index: 1,
+    soundType: 'voiceover',
+    speakerId: 'narrator-male',
+    dialogueText: '一分钟做完一条片。',
+  }), /不得生成人声/)
   assert.throws(() => videoSoundInstruction({ index: 2, soundType: 'onscreen' }), /说话者 ID 或确认原文/)
 })
 
 test('groups Grok shots into bounded multi-cut sequences', () => {
+  assert.equal(isCombinedVideoModel('rh-grok-image-video'), true)
+  assert.equal(isCombinedVideoModel('rh-seedance2'), true)
+  assert.equal(isCombinedVideoModel('veo-3.1-generate-preview'), false)
   assert.equal(grokGenerationDuration(5.1), 6)
   assert.equal(grokGenerationDuration(30), 30)
   const segments = Array.from({ length: 4 }, (_, index) => ({

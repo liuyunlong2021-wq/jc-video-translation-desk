@@ -11,9 +11,11 @@ import type {
   MediaScriptBrief,
   ShotVideoAnalysisResult,
   TextModel,
+  TranslateSubtitlesParams,
   VideoModel,
 } from './types.ts'
 import {
+  assertEpisodeAsset,
   assertRunAsset,
   downloadMedia,
   ensureRunDir,
@@ -52,6 +54,7 @@ const SKILLS = new Set([
   'jc-scene-prompt',
   'jc-prop-prompt',
   'jc-asset-reference-search',
+  'jc-doubao-seed-audio',
 ])
 const runControllers = new Map<string, Set<AbortController>>()
 const taskControllers = new Map<
@@ -255,9 +258,17 @@ export async function runSkill(
       'utf8',
     )}`
   }
-  const prompt = `${input}\n\n只输出合法 JSON，不要使用 Markdown 代码块。`
+  if (skillName === 'jc-doubao-seed-audio') {
+    for (const file of ['reference-selector.md', 'prompt-standard.md', 'prompt-examples.md'])
+      system += `\n\n${await fs.promises.readFile(path.join(path.dirname(skillPath), 'references', file), 'utf8')}`
+  }
+  const plainText = skillName === 'jc-doubao-seed-audio'
+  const prompt = plainText
+    ? `${input}\n\n只输出可直接提交给 Seed Audio 的 text_prompt 正文，不要使用 Markdown 代码块。`
+    : `${input}\n\n只输出合法 JSON，不要使用 Markdown 代码块。`
   const action = async (signal?: AbortSignal) => {
     const output = await generateText(system, prompt, textModel, signal)
+    if (plainText) return { text_prompt: output.trim() }
     try {
       return parseJson(output)
     } catch (error) {
@@ -275,6 +286,42 @@ export async function runSkill(
   return runId ? withRunAbort(runId, action) : action()
 }
 
+export async function translateSubtitles(params: TranslateSubtitlesParams) {
+  if (!params?.runId || !TEXT_MODELS.includes(params.textModel) || !params.subtitles?.length)
+    throw new Error('字幕翻译参数无效')
+  const ids = new Set<string>()
+  for (const subtitle of params.subtitles) {
+    if (!subtitle.shotId?.trim() || ids.has(subtitle.shotId) || !subtitle.text?.trim())
+      throw new Error('中文字幕条目无效')
+    ids.add(subtitle.shotId)
+  }
+  const prompt = `把以下中文字幕准确翻译成自然英文。保留专有名词、语气和逐条对应关系，不增删、合并或拆分条目。只返回 JSON：{"subtitles":[{"shotId":"原ID","text":"English"}]}\n\n${JSON.stringify(params.subtitles)}`
+  return withRunAbort(params.runId, async (signal) => {
+    let reason = ''
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const output = await generateJsonResponse(
+        '你是影视字幕翻译器。只输出合法 JSON。',
+        `${prompt}${reason ? `\n\n上次结果无效：${reason}。请按原 ID 和原数量重新输出。` : ''}`,
+        params.textModel,
+        signal,
+        8_000,
+      )
+      try {
+        const value = parseJson(output)
+        const translated = Array.isArray(value?.subtitles) ? value.subtitles : []
+        if (translated.length !== params.subtitles.length) throw new Error('英文字幕数量不一致')
+        const byId = new Map(translated.map((item: any) => [String(item?.shotId || ''), String(item?.text || '').trim()]))
+        if (byId.size !== ids.size || [...ids].some((id) => !byId.get(id)))
+          throw new Error('英文字幕 ID 或正文不完整')
+        return params.subtitles.map((item) => ({ shotId: item.shotId, text: byId.get(item.shotId)! }))
+      } catch (error) {
+        reason = error instanceof Error ? error.message : String(error)
+      }
+    }
+    throw new Error(reason || '字幕翻译失败')
+  })
+}
+
 export async function analyzeMaterialVideo(
   params: AnalyzeMaterialVideoParams,
 ): Promise<MaterialVideoAnalysisResult> {
@@ -288,12 +335,16 @@ export async function analyzeMaterialVideo(
       throw new Error(`${shot.shotId} 缺少确认的对白角色、原文或情绪`)
     shotIds.add(shot.shotId)
   }
-  const videoPath = assertRunAsset(params.runId, params.videoPath)
+  const videoPath = assertEpisodeAsset(params.runId, params.episodeId, params.videoPath)
   const video = await fs.promises.readFile(videoPath)
   if (video.byteLength > 90 * 1024 * 1024) throw new Error('单镜视频过大，无法提交分析')
   const sourceDurationMs = Math.round((await mediaDuration(videoPath)) * 1000)
   const transcriptJsonPath = assertRunAsset(params.runId, params.transcriptJsonPath)
   const transcriptSrtPath = assertRunAsset(params.runId, params.transcriptSrtPath)
+  if (
+    !relativeRunAsset(params.runId, transcriptJsonPath).startsWith(`wiki/转录/${params.episodeId}/`) ||
+    !relativeRunAsset(params.runId, transcriptSrtPath).startsWith(`wiki/字幕/素材/${params.episodeId}/`)
+  ) throw new Error('素材转录不属于当前剧集')
   const transcript = validateMaterialTranscript(JSON.parse(await fs.promises.readFile(transcriptJsonPath, 'utf8')))
   if (transcript.mediaId !== params.mediaId || transcript.sourceMediaPath !== relativeRunAsset(params.runId, videoPath))
     throw new Error('素材转录与视频来源不匹配')
@@ -373,7 +424,7 @@ function normalizeMaterialShot(
     shotId: shot.shotId,
     promptSegmentId: shot.shotId,
     sourceMediaId: params.mediaId,
-    sourceVideoPath: relativeRunAsset(params.runId, assertRunAsset(params.runId, params.videoPath)),
+    sourceVideoPath: relativeRunAsset(params.runId, assertEpisodeAsset(params.runId, params.episodeId, params.videoPath)),
     sourceDurationMs,
     trimStartMs,
     trimEndMs,
@@ -423,6 +474,7 @@ export async function runWikiSkill(
   skillName: string,
   input: string,
   projectId: string,
+  episodeId: string,
   textModel: TextModel = 'gpt-5.6-sol',
 ) {
   if (!SKILLS.has(skillName)) throw new Error('未知的内置 Skill')
@@ -433,8 +485,8 @@ export async function runWikiSkill(
   )
   const contextPaths = (await listProjectMarkdown(projectId)).filter(
     (value) =>
-      value === 'wiki/项目/项目总监.md' ||
-      value === 'wiki/文稿/确认文稿.md' ||
+      value === `wiki/项目总监/${episodeId}.md` ||
+      value === `wiki/文稿/${episodeId}/确认文稿.md` ||
       value.startsWith('wiki/资产/'),
   )
   const context = await Promise.all(
@@ -455,15 +507,15 @@ export async function runWikiSkill(
     if (result.toolCalls.length !== 1 || result.toolCalls[0].function.name !== 'write_batch')
       throw new Error('导演没有一次性提交完整的分镜文件')
     const args = JSON.parse(result.toolCalls[0].function.arguments || '{}')
-    for (const file of args.files || []) assertStoryboardWritePath(file?.path)
+    for (const file of args.files || []) assertStoryboardWritePath(file?.path, episodeId)
     const documents = await writeStoryboardMarkdownBatch(projectId, args.files)
     return { text: result.text, writtenPaths: documents.map((document) => document.path) }
   })
 }
 
-function assertStoryboardWritePath(value: unknown) {
+function assertStoryboardWritePath(value: unknown, episodeId: string) {
   const target = String(value || '')
-  if (!target.startsWith('wiki/分镜/')) throw new Error('导演 Skill 只能修改分镜 Markdown')
+  if (!target.startsWith(`wiki/分镜/${episodeId}/`)) throw new Error('导演 Skill 只能修改当前剧集分镜 Markdown')
 }
 
 async function generateToolTurn(messages: any[], textModel: TextModel, signal?: AbortSignal) {
@@ -985,9 +1037,10 @@ function pendingTask(
   }
 }
 
-export async function generateVoice(runId: string, text: string, voicePrompt: string) {
+export async function generateVoice(runId: string, episodeId: string, text: string, voicePrompt: string) {
   return withRunAbort(runId, async (signal) => {
-    const existing = (await readPending(runId)).find((task) => task.id === 'voice:0')
+    const pendingId = `${episodeId}:voice:0`
+    const existing = (await readPending(runId)).find((task) => task.id === pendingId)
     if (existing) {
       const filePath = await finishPending(runId, existing, signal)
       return { path: filePath, duration: await mediaDuration(filePath) }
@@ -1023,10 +1076,11 @@ export async function generateVoice(runId: string, text: string, voicePrompt: st
       runId,
       'voice',
       0,
-      generateUniqueFileName(getRunAssetPath(runId, 'voice')),
+      generateUniqueFileName(getRunAssetPath(runId, episodeId, 'voice')),
       data,
       url,
       pollRoute,
+      pendingId,
     )
     await putPending(runId, task)
     const filePath = await finishPending(runId, task, signal)
@@ -1050,12 +1104,13 @@ function imageSize(ratio: string) {
 
 export async function generateStoryboardImage(
   runId: string,
+  episodeId: string,
   index: number,
   prompt: string,
   ratio: string,
   referencePath?: string | string[],
 ) {
-  const pendingId = `storyboard:${index}`
+  const pendingId = `${episodeId}:storyboard:${index}`
   return withTaskAbort(runId, pendingId, async (signal) => {
     const existing = (await readPending(runId)).find((task) => task.id === pendingId)
     if (existing && existing.status !== 'success' && (existing.resultUrl || existing.pollRoute))
@@ -1065,7 +1120,7 @@ export async function generateStoryboardImage(
       : referencePath
         ? [referencePath]
         : []
-    const outputPath = generateUniqueFileName(getRunAssetPath(runId, 'storyboard', index))
+    const outputPath = generateUniqueFileName(getRunAssetPath(runId, episodeId, 'storyboard', index))
     const started = pendingTask(runId, 'storyboard', index, outputPath, {}, '', undefined, pendingId)
     await putPending(runId, started)
     let data: any
@@ -1134,6 +1189,7 @@ export async function generateStoryboardImage(
       data,
       url,
       pollRoute,
+      pendingId,
     )
     await putPending(runId, task)
     if (signal.aborted) {
@@ -1250,6 +1306,7 @@ export async function generateAssetImage(
 
 export async function generateSegmentVideo(
   runId: string,
+  episodeId: string,
   index: number,
   model: VideoModel,
   prompt: string,
@@ -1263,10 +1320,11 @@ export async function generateSegmentVideo(
       'veo-3.1-generate-preview',
       'veo-3.0-generate-001',
       'rh-grok-image-video',
+      'rh-seedance2',
     ].includes(model)
   )
     throw new Error('不支持的视频模型')
-  const pendingId = `video:${index}`
+  const pendingId = `${episodeId}:video:${index}`
   return withTaskAbort(runId, pendingId, async (signal) => {
     const existing = (await readPending(runId)).find((task) => task.id === pendingId)
     if (
@@ -1277,20 +1335,22 @@ export async function generateSegmentVideo(
     )
       return finishPending(runId, existing, signal)
     imageSize(ratio)
+    const combinedVideo = model === 'rh-grok-image-video' || model === 'rh-seedance2'
     if (model === 'rh-grok-image-video') {
       if (!Number.isInteger(generationDuration) || generationDuration < 6 || generationDuration > 30)
         throw new Error('Grok 视频生成时长只能为 6 到 30 秒的整数')
+    } else if (model === 'rh-seedance2') {
+      if (!Number.isInteger(generationDuration) || generationDuration < 4 || generationDuration > 15)
+        throw new Error('Seedance 2.0 视频生成时长只能为 4 到 15 秒的整数')
     } else if (![4, 6, 8].includes(generationDuration)) throw new Error('视频生成时长只能为 4、6 或 8 秒')
     if (ratio !== '9:16' && ratio !== '16:9') throw new Error('视频模型仅支持 9:16 或 16:9')
-    const runningHub = model === 'rh-grok-image-video'
+    const runningHub = combinedVideo
     const seconds = model === 'veo-3.0-generate-001'
       ? 8
-      : model === 'rh-grok-image-video'
-        ? Math.max(6, generationDuration)
-        : generationDuration
+      : generationDuration
     const localImages = [imagePath, ...imagePaths].filter(Boolean).slice(0, 7).map((item) => assertRunAsset(runId, item))
     const localImage = localImages[0]
-    const outputPath = generateUniqueFileName(getRunAssetPath(runId, 'clip', index))
+    const outputPath = generateUniqueFileName(getRunAssetPath(runId, episodeId, 'clip', index))
     await putPending(
       runId,
       { ...pendingTask(runId, 'video', index, outputPath, {}, '', undefined, pendingId), model },
@@ -1355,7 +1415,7 @@ export async function generateSegmentVideo(
     if (!url) {
       const taskId = extractTaskId(data)
       if (!taskId) throw new Error('视频任务没有返回任务 ID')
-      pollRoute = model === 'rh-grok-image-video'
+      pollRoute = combinedVideo
         ? /^task_/.test(taskId)
           ? `/v1/videos/${encodeURIComponent(taskId)}`
           : `/rh/tasks/${encodeURIComponent(taskId)}`
@@ -1370,6 +1430,7 @@ export async function generateSegmentVideo(
       data,
       url,
       pollRoute,
+      pendingId,
     )
     task.model = model
     await putPending(runId, task)

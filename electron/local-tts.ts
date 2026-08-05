@@ -3,7 +3,7 @@ import path from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { app } from 'electron'
 import { generateUniqueFileName } from './lib/tools.ts'
-import { ensureRunDir, getRunDir, mediaDuration } from './media-workspace.ts'
+import { ensureEpisodeDir, getEpisodeDir, mediaDuration } from './media-workspace.ts'
 import type { LocalVoiceStatus } from './types.ts'
 
 const MODEL_CACHE = 'models--mlx-community--Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16'
@@ -44,13 +44,13 @@ export async function getLocalVoiceStatus(): Promise<LocalVoiceStatus> {
   }
 }
 
-export async function generateLocalVoice(runId: string, text: string, instruct: string) {
+export async function generateLocalVoice(runId: string, episodeId: string, text: string, instruct: string) {
   const status = await getLocalVoiceStatus()
   if (!status.available || !status.runtimePath || !status.modelPath) {
     throw new Error('本地配音环境不可用，请在设置中检查')
   }
-  await ensureRunDir(runId)
-  const outputPath = generateUniqueFileName(path.join(getRunDir(runId), 'voice.wav'))
+  await ensureEpisodeDir(runId, episodeId)
+  const outputPath = generateUniqueFileName(path.join(getEpisodeDir(runId, episodeId), 'voice.wav'))
   const prefix = path.basename(outputPath, path.extname(outputPath))
   const logs: string[] = []
   const child = spawn(

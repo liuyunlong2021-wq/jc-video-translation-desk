@@ -15,11 +15,16 @@ test('persists managed media as paths relative to its run', () => {
         source: 'upload',
       },
       voicePath: `/Users/test/App/media-runs/${runId}/voice(1).mp3`,
+      vocalPath: `/Users/test/App/media-runs/${runId}/wiki/声音/episode-001/vocal.wav`,
+      instrumentPath: `/Users/test/App/media-runs/${runId}/wiki/声音/episode-001/instrument.wav`,
+      mixedAudioPath: `/Users/test/App/media-runs/${runId}/wiki/声音/episode-001/mixed.wav`,
       finalPath: `C:\\App\\media-runs\\${runId}\\final.mp4`,
       segments: [
         {
           imagePath: `/Users/test/App/media-runs/${runId}/storyboards/001.png`,
           videoPath: `/Users/test/App/media-runs/${runId}/clips/001.mp4`,
+          chineseVoicePath: `/Users/test/App/media-runs/${runId}/wiki/声音/episode-001/clips-zh/shot.wav`,
+          englishVoicePath: `/Users/test/App/media-runs/${runId}/wiki/声音/episode-001/clips-en/shot.wav`,
         },
       ],
       history: [
@@ -33,10 +38,15 @@ test('persists managed media as paths relative to its run', () => {
     }),
   )
   assert.equal(persisted.voicePath, 'voice(1).mp3')
+  assert.equal(persisted.vocalPath, 'wiki/声音/episode-001/vocal.wav')
+  assert.equal(persisted.instrumentPath, 'wiki/声音/episode-001/instrument.wav')
+  assert.equal(persisted.mixedAudioPath, 'wiki/声音/episode-001/mixed.wav')
   assert.equal(persisted.finalPath, 'final.mp4')
   assert.equal(persisted.coreReference.relativePath, 'inputs/core.png')
   assert.equal(persisted.segments[0].imagePath, 'storyboards/001.png')
   assert.equal(persisted.segments[0].videoPath, 'clips/001.mp4')
+  assert.equal(persisted.segments[0].chineseVoicePath, 'wiki/声音/episode-001/clips-zh/shot.wav')
+  assert.equal(persisted.segments[0].englishVoicePath, 'wiki/声音/episode-001/clips-en/shot.wav')
   assert.equal(persisted.history[0].voicePath, 'voice.mp3')
   assert.equal(persisted.history[0].finalPath, 'final.mp4')
 })
@@ -245,6 +255,7 @@ test('keeps every supported project video model', () => {
     'veo-3.1-generate-preview',
     'veo-3.0-generate-001',
     'rh-grok-image-video',
+    'rh-seedance2',
   ]) {
     const state = deserializeMediaTask(JSON.stringify({
       runId: 'run-video-model',

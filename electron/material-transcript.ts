@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { assertRunAsset, ensureRunDir, relativeRunAsset } from './media-workspace.ts'
+import { assertEpisodeAsset, ensureRunDir, relativeRunAsset } from './media-workspace.ts'
 import type { GenerateMaterialTranscriptParams, MaterialTranscriptResult } from './types.ts'
 import {
   materialTranscriptToSrt,
@@ -53,7 +53,7 @@ export async function generateMaterialTranscript(
   params: GenerateMaterialTranscriptParams,
 ): Promise<MaterialTranscriptResult> {
   if (!MEDIA_ID.test(params.mediaId)) throw new Error('无效的素材 ID')
-  const sourcePath = assertRunAsset(params.runId, params.videoPath)
+  const sourcePath = assertEpisodeAsset(params.runId, params.episodeId, params.videoPath)
   const stat = await fs.promises.stat(sourcePath)
   if (!stat.isFile()) throw new Error('视频素材不可读')
   const python = process.env.FASTER_WHISPER_PYTHON || DEFAULT_PYTHON
@@ -79,8 +79,8 @@ export async function generateMaterialTranscript(
     output,
   )
   const root = await ensureRunDir(params.runId)
-  const jsonPath = path.join(root, 'wiki', '转录', 'episode-001', `${params.mediaId}-whisper.json`)
-  const srtPath = path.join(root, 'wiki', '字幕', '素材', `${params.mediaId}-whisper.srt`)
+  const jsonPath = path.join(root, 'wiki', '转录', params.episodeId, `${params.mediaId}-whisper.json`)
+  const srtPath = path.join(root, 'wiki', '字幕', '素材', params.episodeId, `${params.mediaId}-whisper.srt`)
   await replacePair([
     { path: jsonPath, content: `${JSON.stringify(transcript, null, 2)}\n` },
     { path: srtPath, content: materialTranscriptToSrt(transcript) },

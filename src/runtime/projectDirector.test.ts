@@ -43,9 +43,9 @@ test('accepts only a supported production route with a reason', () => {
 
 test('links the project director and production route Wiki pages', () => {
   const plan = confirmProjectDirectorDraft(parseProjectDirectorDraft(base, '9:16', '韩漫电影感')).plan
-  assert.match(projectDirectorMarkdown(plan), /\[\[制作路线\|剧情片\]\]/)
+  assert.match(projectDirectorMarkdown(plan, 'episode-001'), /\[\[episode-001-制作路线\|剧情片\]\]/)
   const route = productionRouteMarkdown(plan)
-  assert.match(route, /\[\[项目总监\]\]/)
+  assert.match(route, /\[\[episode-001\|项目总监\]\]/)
   assert.match(route, /角色行动和冲突推动剧情/)
 })
 

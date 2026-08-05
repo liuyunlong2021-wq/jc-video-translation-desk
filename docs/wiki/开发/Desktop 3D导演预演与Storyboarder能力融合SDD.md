@@ -356,18 +356,19 @@ interface BlockingShot {
 所有运行数据必须位于当前受控项目目录：
 
 ```text
-Electron userData/media-runs/<projectId>/
-  state.json
-  blocking/
-    thumbnails/
-      <shotId>.png
-    references/
-      <shotId>.png
-    imports/
-      <sha256>.glb
+<用户选择的项目根>/
+  episodes/<episodeId>/
+    state.json
+    blocking/
+      thumbnails/
+        <shotId>.png
+      references/
+        <shotId>.png
+      imports/
+        <sha256>.glb
 ```
 
-3D 状态本体优先随现有 `state.json` 原子持久化，不另建第二个事实源。`blocking/` 只放二进制缩略图、提供给生图的参考图和用户导入 GLB。
+3D 状态本体优先随当前集 `state.json` 原子持久化，不另建第二个事实源。`blocking/` 只放当前集的二进制缩略图、提供给生图的参考图和用户导入 GLB。项目根仍由 `projectId -> rootPath` 注册表统一解析。
 
 内置人物、姿势、手势、道具和附件属于应用资源，不复制进每个项目。运行时用稳定资源 key 引用。
 

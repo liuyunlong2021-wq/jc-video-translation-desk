@@ -29,6 +29,20 @@ test('keeps Gemini points while adopting a user trim and rebuilding output time'
   )
 })
 
+test('restores a persisted user trim without replacing Gemini evidence', () => {
+  const timeline = buildEditingTimeline([
+    {
+      shotId: 'shot-001', sourceVideoPath: '1.mp4', sourceDurationMs: 6000,
+      trimStartMs: 1000, trimEndMs: 5000, needsReview: false,
+      adoptedStartMs: 1500, adoptedEndMs: 4500, adoptedBy: 'user', revision: 2,
+    },
+  ])
+  assert.deepEqual(
+    [timeline.shots[0].geminiStartMs, timeline.shots[0].geminiEndMs, timeline.shots[0].adoptedStartMs, timeline.shots[0].adoptedEndMs, timeline.shots[0].revision],
+    [1000, 5000, 1500, 4500, 2],
+  )
+})
+
 test('rejects non-finite timeline values', () => {
   const timeline = buildEditingTimeline([
     { shotId: 'shot-001', sourceVideoPath: '1.mp4', sourceDurationMs: 6000, trimStartMs: 0, trimEndMs: 4000, needsReview: false },
@@ -37,6 +51,13 @@ test('rejects non-finite timeline values', () => {
     ...timeline,
     shots: [{ ...timeline.shots[0], geminiStartMs: Number.NaN }],
   }), /Gemini/)
+})
+
+test('rejects overlapping adopted ranges from the same source video', () => {
+  assert.throws(() => buildEditingTimeline([
+    { shotId: 'shot-001', sourceVideoPath: 'shared.mp4', sourceDurationMs: 6000, trimStartMs: 0, trimEndMs: 3000, needsReview: false },
+    { shotId: 'shot-002', sourceVideoPath: 'shared.mp4', sourceDurationMs: 6000, trimStartMs: 2500, trimEndMs: 5000, needsReview: false },
+  ]), /采用区间重叠/)
 })
 
 test('places voiceover by director budget and onscreen dialogue by Gemini evidence', () => {

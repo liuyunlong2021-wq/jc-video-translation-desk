@@ -33,6 +33,7 @@ test('validates ordered material transcript cues and allows an empty SRT', () =>
 
 test('opens only actions whose artifacts are ready', () => {
   const initial = createPostProductionState('drama', { audioMode: 'replace-preserve-ambience' })
+  assert.equal(initial.audioProductionRoute, 'post-dub')
   assert.deepEqual(availablePostProductionActions(initial), ['generate-srt'])
 
   const withSrt = { ...initial, materialSrt: 'ready' as const }
@@ -115,6 +116,6 @@ test('invalidates only downstream artifacts for each input change', () => {
 })
 
 test('publishes stable Wiki artifact paths', () => {
-  assert.equal(PRODUCTION_ARTIFACT_PATHS.editingTimeline, 'wiki/剪辑/episode-001/editing-timeline.json')
-  assert.equal(PRODUCTION_ARTIFACT_PATHS.episodeIndex, 'wiki/制作/episode-001.md')
+  assert.equal(PRODUCTION_ARTIFACT_PATHS.editingTimeline, 'wiki/剪辑/<episodeId>/editing-timeline.json')
+  assert.equal(PRODUCTION_ARTIFACT_PATHS.episodeIndex, 'wiki/制作/<episodeId>.md')
 })

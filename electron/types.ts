@@ -48,12 +48,14 @@ export type VoiceServiceState =
   | 'running'
   | 'failed'
 export type VoiceSource = 'design' | 'clone'
+export type { AudioProductionRoute } from '../src/runtime/productionContract.ts'
 import type { ProductionRoute } from '../src/runtime/productionContract.ts'
-export type { AudioMode, ProductionRoute } from '../src/runtime/productionContract.ts'
+export type { AudioMode, OutputLanguage, ProductionRoute } from '../src/runtime/productionContract.ts'
 export type VideoModel =
   | 'veo-3.1-generate-preview'
   | 'veo-3.0-generate-001'
   | 'rh-grok-image-video'
+  | 'rh-seedance2'
 export type TextModel =
   | 'gemini-3.6-flash'
   | 'claude-fable-5'
@@ -61,21 +63,31 @@ export type TextModel =
   | 'gpt-5.6-sol'
   | 'deepseek-v4-pro'
 
+export interface EpisodeManifest {
+  episodeId: string
+  episodeNumber: number
+  title: string
+  stage: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface ProjectManifest {
+  schemaVersion: 1
   projectId: string
   name: string
   createdAt: string
   updatedAt: string
-  stage: string
+  episodes: EpisodeManifest[]
+  lastOpenedEpisodeId: string
   coverRelativePath?: string
-  wikiVersion: 1
+  wikiVersion: 2
   wikiPending?: boolean
 }
 
 export interface ImportedMarkdown {
   content: string
   originalName: string
-  originalPath: string
   snapshotRelativePath: string
   importedAt: string
   contentHash: string
@@ -107,6 +119,8 @@ export interface IndexTtsServiceStatus {
 
 export interface GenerateEpisodeVoiceParams {
   runId: string
+  episodeId: string
+  language?: 'zh' | 'en'
   tasks: Array<{
     shotId: string
     speakerId: string
@@ -229,6 +243,7 @@ export interface ReferenceAsset {
 
 export interface GenerateStoryboardImageParams {
   runId: string
+  episodeId: string
   index: number
   prompt: string
   ratio: VideoRatio
@@ -255,6 +270,7 @@ export interface GenerateSegmentVideoParams extends GenerateStoryboardImageParam
 
 export interface GenerateMaterialTranscriptParams {
   runId: string
+  episodeId: string
   mediaId: string
   videoPath: string
 }
@@ -267,6 +283,7 @@ export interface MaterialTranscriptResult {
 
 export interface AnalyzeMaterialVideoParams {
   runId: string
+  episodeId: string
   mediaId: string
   videoPath: string
   transcriptJsonPath: string
@@ -299,6 +316,10 @@ export interface ShotVideoAnalysisResult {
   speakerIds: string[]
   confidence: number
   needsReview: boolean
+  adoptedStartMs?: number
+  adoptedEndMs?: number
+  adoptedBy?: 'gemini' | 'user'
+  revision?: number
   dialogue?: {
     speakerId: string
     text: string
@@ -308,6 +329,19 @@ export interface ShotVideoAnalysisResult {
     outputStartMs: number
     outputEndMs: number
   }
+}
+
+export interface TranslateSubtitlesParams {
+  runId: string
+  textModel: TextModel
+  subtitles: Array<{ shotId: string; text: string }>
+}
+
+export interface EpisodeSubtitleCue {
+  shotId: string
+  startMs: number
+  endMs: number
+  text: string
 }
 
 export interface MaterialVideoAnalysisResult {

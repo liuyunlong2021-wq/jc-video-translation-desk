@@ -3,6 +3,8 @@ export type ArtifactStatus = 'idle' | 'running' | 'ready' | 'failed' | 'stale'
 export type OutputLanguage = 'zh' | 'en'
 export type AdoptedBy = 'gemini' | 'user'
 export type AudioMode = 'keep-original' | 'replace-preserve-ambience' | 'replace-all'
+export type AudioProductionRoute = 'seed-full-track' | 'post-dub'
+export const DEFAULT_EPISODE_ID = 'episode-001'
 
 export interface MaterialTranscriptCue {
   cueId: string
@@ -70,6 +72,7 @@ export interface DialogueAsset {
   audioPath: string
   actualDurationMs: number
   status: ArtifactStatus
+  language: OutputLanguage
 }
 
 export interface AudioProcessingRecord {
@@ -78,6 +81,7 @@ export interface AudioProcessingRecord {
   vocalPath?: string
   instrumentPath?: string
   mixedAudioPath?: string
+  originalVocalRemoved?: boolean
   status: ArtifactStatus
 }
 
@@ -94,6 +98,7 @@ export interface PostProductionState {
   finalVideo: ArtifactStatus
   outputLanguage: OutputLanguage
   audioMode: AudioMode
+  audioProductionRoute: AudioProductionRoute
 }
 
 export type PostProductionAction =
@@ -111,15 +116,15 @@ export type PostProductionAction =
 export type PostProductionChange = 'source-video' | 'edit-point' | 'chinese-text' | 'output-language'
 
 export const PRODUCTION_ARTIFACT_PATHS = {
-  materialTranscript: 'wiki/转录/episode-001/<mediaId>-whisper.json',
-  materialSrt: 'wiki/字幕/素材/<mediaId>-whisper.srt',
-  editingTimeline: 'wiki/剪辑/episode-001/editing-timeline.json',
-  dialogueAssets: 'wiki/声音/episode-001/对白资产.json',
-  audioProcessing: 'wiki/声音/episode-001/音频处理.json',
-  chineseSubtitles: 'wiki/字幕/episode-001-zh.srt',
-  englishSubtitles: 'wiki/字幕/episode-001-en.srt',
-  finalVideo: 'wiki/成片/episode-001.md',
-  episodeIndex: 'wiki/制作/episode-001.md',
+  materialTranscript: 'wiki/转录/<episodeId>/<mediaId>-whisper.json',
+  materialSrt: 'wiki/字幕/素材/<episodeId>/<mediaId>-whisper.srt',
+  editingTimeline: 'wiki/剪辑/<episodeId>/editing-timeline.json',
+  dialogueAssets: 'wiki/声音/<episodeId>/对白资产.json',
+  audioProcessing: 'wiki/声音/<episodeId>/音频处理.json',
+  chineseSubtitles: 'wiki/字幕/<episodeId>-zh.srt',
+  englishSubtitles: 'wiki/字幕/<episodeId>-en.srt',
+  finalVideo: 'wiki/成片/<episodeId>.md',
+  episodeIndex: 'wiki/制作/<episodeId>.md',
 } as const
 
 export function validateMaterialTranscript(transcript: MaterialTranscript) {
@@ -160,6 +165,7 @@ export function createPostProductionState(
   options: {
     narrationReady?: boolean
     audioMode?: AudioMode
+    audioProductionRoute?: AudioProductionRoute
     outputLanguage?: OutputLanguage
   } = {},
 ): PostProductionState {
@@ -176,6 +182,7 @@ export function createPostProductionState(
     finalVideo: 'idle',
     outputLanguage: options.outputLanguage || 'zh',
     audioMode: options.audioMode || 'replace-all',
+    audioProductionRoute: options.audioProductionRoute || 'post-dub',
   }
 }
 

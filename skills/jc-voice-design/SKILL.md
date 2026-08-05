@@ -1,11 +1,11 @@
 ---
 name: jc-voice-design
-description: "Turn an approved narration script into the two inputs required by the Qwen TTS voice-design application: the exact script and one voice prompt combining persona, timbre, style, emotion, and rhythm."
+description: "Turn an approved script into a language-matched voice-design prompt for Qwen3-TTS, IndexTTS2, or Seed Audio. Use whenever the product needs a character or narrator voice prompt; preserve the script language exactly."
 ---
 
-# 文稿 -> Qwen TTS 声音设计输入
+# 文稿 -> 声音设计输入
 
-为声音设计应用生成两个且仅两个业务输入：`text`（文稿）和 `voicePrompt`（声音提示词）。不要生成语言字段，不让用户选择声音、性别或语速。
+为声音设计应用生成两个且仅两个业务输入：`text`（文稿）和 `voicePrompt`（声音提示词）。语言由确认文稿自动判断，不让用户另选语言、性别或语速。中文文稿生成中文示例台词和中文声音描述；英文文稿生成英文示例台词和英文声音描述；不得把一种语言翻译成另一种语言后再生成参考音。
 
 ## 生成原则
 
@@ -44,5 +44,7 @@ description: "Turn an approved narration script into the two inputs required by 
   "voicePrompt": "【人设】年龄感、身份、气质和表达目的。【音色特征】高低、明暗、厚薄、气息和辨识度。【风格】稳定的表达习惯。【情感】本篇情绪起点、转折、潜台词和收束。【节奏】整体语速、局部快慢、重音、停顿和结尾方式。"
 }
 ```
+
+`text` 和 `voicePrompt` 必须使用确认剧本的主语言。Seed Audio 角色基准音还必须是单人、干声、无音乐、无环境音、无音效；正式整段声音轨的音乐和音效由 `jc-doubao-seed-audio` 另行编排。
 
 `voicePrompt` 必须严格按【人设】【音色特征】【风格】【情感】【节奏】的顺序输出。不得改写文稿，不输出分析、备选方案、多角色任务或其他字段。
