@@ -15,7 +15,7 @@ import type {
 } from './types.ts'
 import { generateUniqueFileName } from '../lib/tools.ts'
 import { isDev } from '../lib/is-dev.ts'
-import { assertEpisodeAsset, ensureEpisodeDir, getEpisodeDir, getRunDir, getRunAssetPath, mediaDuration, relativeRunAsset, writeFinalArtifacts } from '../media-workspace.ts'
+import { assertEpisodeAsset, assertVideoTranslationAsset, ensureEpisodeDir, getEpisodeDir, getRunDir, getRunAssetPath, mediaDuration, relativeRunAsset, writeFinalArtifacts } from '../media-workspace.ts'
 import type { AudioProcessingRecord } from '../../src/runtime/productionContract.ts'
 
 const isWindows = process.platform === 'win32'
@@ -214,6 +214,19 @@ function audioPaths(
   }
 }
 
+function translationAsset(
+  runId: string,
+  episodeId: string,
+  filePath: string,
+  roots: string[],
+) {
+  const resolved = assertVideoTranslationAsset(runId, episodeId, filePath)
+  const relative = relativeRunAsset(runId, resolved)
+  if (!roots.some((root) => relative.startsWith(root)))
+    throw new Error('素材不属于当前目标语言翻译任务')
+  return resolved
+}
+
 async function writeAudioProcessingRecord(
   params: Pick<SeparateSourceAudioParams, 'runId' | 'episodeId' | 'workflow' | 'targetLanguage'>,
   record: AudioProcessingRecord,
@@ -228,7 +241,11 @@ async function writeAudioProcessingRecord(
 export async function separateSourceAudio(
   params: SeparateSourceAudioParams & { abortSignal?: AbortSignal },
 ) {
-  const pictureMaster = assertEpisodeAsset(params.runId, params.episodeId, params.pictureMasterPath)
+  const pictureMaster = params.workflow === 'video-translation'
+    ? translationAsset(params.runId, params.episodeId, params.pictureMasterPath, [
+      `episodes/${params.episodeId}/video-translate/source.`,
+    ])
+    : assertEpisodeAsset(params.runId, params.episodeId, params.pictureMasterPath)
   const target = audioPaths(params.runId, params.episodeId, params.workflow, params.targetLanguage)
   await fs.promises.mkdir(target.dir, { recursive: true })
   await executeFFmpeg([
@@ -264,8 +281,13 @@ export async function separateSourceAudio(
 }
 
 export async function removeOriginalVocal(params: AdoptInstrumentParams) {
-  const vocal = assertEpisodeAsset(params.runId, params.episodeId, params.vocalPath)
-  const instrument = assertEpisodeAsset(params.runId, params.episodeId, params.instrumentPath)
+  const languageRoot = `wiki/翻译/${params.episodeId}/${params.targetLanguage}/音频/`
+  const vocal = params.workflow === 'video-translation'
+    ? translationAsset(params.runId, params.episodeId, params.vocalPath, [languageRoot])
+    : assertEpisodeAsset(params.runId, params.episodeId, params.vocalPath)
+  const instrument = params.workflow === 'video-translation'
+    ? translationAsset(params.runId, params.episodeId, params.instrumentPath, [languageRoot])
+    : assertEpisodeAsset(params.runId, params.episodeId, params.instrumentPath)
   await Promise.all([fs.promises.access(vocal), fs.promises.access(instrument)])
   return writeAudioProcessingRecord(params, {
     schemaVersion: 1,
@@ -280,9 +302,17 @@ export async function removeOriginalVocal(params: AdoptInstrumentParams) {
 export async function mixBackgroundAudio(
   params: MixBackgroundAudioParams & { abortSignal?: AbortSignal },
 ) {
-  const vocal = assertEpisodeAsset(params.runId, params.episodeId, params.vocalPath)
-  const instrument = assertEpisodeAsset(params.runId, params.episodeId, params.instrumentPath)
-  const voice = assertEpisodeAsset(params.runId, params.episodeId, params.voiceFile)
+  const languageRoot = `wiki/翻译/${params.episodeId}/${params.targetLanguage}/音频/`
+  const voiceRoot = `episodes/${params.episodeId}/video-translate/${params.targetLanguage}/`
+  const vocal = params.workflow === 'video-translation'
+    ? translationAsset(params.runId, params.episodeId, params.vocalPath, [languageRoot])
+    : assertEpisodeAsset(params.runId, params.episodeId, params.vocalPath)
+  const instrument = params.workflow === 'video-translation'
+    ? translationAsset(params.runId, params.episodeId, params.instrumentPath, [languageRoot])
+    : assertEpisodeAsset(params.runId, params.episodeId, params.instrumentPath)
+  const voice = params.workflow === 'video-translation'
+    ? translationAsset(params.runId, params.episodeId, params.voiceFile, [voiceRoot])
+    : assertEpisodeAsset(params.runId, params.episodeId, params.voiceFile)
   await Promise.all([fs.promises.access(vocal), fs.promises.access(instrument), fs.promises.access(voice)])
   const target = audioPaths(params.runId, params.episodeId, params.workflow, params.targetLanguage)
   await executeFFmpeg([
@@ -308,8 +338,12 @@ export async function composeVideoTranslation(
 ) {
   if (!/^[A-Za-z0-9_-]+$/.test(params.targetLanguage)) throw new Error('目标语言无效')
   if (!params.subtitleCues?.length) throw new Error('没有可烧录的目标语言字幕')
-  const source = assertEpisodeAsset(params.runId, params.episodeId, params.sourceVideoPath)
-  const mixed = assertEpisodeAsset(params.runId, params.episodeId, params.mixedAudioPath)
+  const source = translationAsset(params.runId, params.episodeId, params.sourceVideoPath, [
+    `episodes/${params.episodeId}/video-translate/source.`,
+  ])
+  const mixed = translationAsset(params.runId, params.episodeId, params.mixedAudioPath, [
+    `wiki/翻译/${params.episodeId}/${params.targetLanguage}/音频/mixed.wav`,
+  ])
   const duration = await mediaDuration(source)
   const outputDir = path.join(
     getEpisodeDir(params.runId, params.episodeId),

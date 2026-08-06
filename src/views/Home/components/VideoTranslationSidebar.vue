@@ -49,7 +49,7 @@ const targetLanguages = [
 function updateLanguage(key: 'sourceLanguage' | 'targetLanguage', value: string) {
   if (!value || state.value[key] === value) return
   state.value[key] = value
-  mediaStore.invalidateTranslation('translation')
+  mediaStore.invalidateTranslation('language')
 }
 </script>
 

@@ -6,6 +6,7 @@ import { generateUniqueFileName } from './lib/tools.ts'
 import { executeFFmpeg } from './ffmpeg/index.ts'
 import {
   assertEpisodeAsset,
+  assertVideoTranslationAsset,
   ensureEpisodeDir,
   getEpisodeDir,
   getRunDir,
@@ -78,6 +79,7 @@ export interface GenerateSeedAudioParams {
   outputName?: string
   workflow?: 'creative' | 'video-translation'
   targetLanguage?: string
+  abortSignal?: AbortSignal
 }
 
 export async function writeSeedAudioArrangement(
@@ -101,7 +103,8 @@ function outputPath(params: GenerateSeedAudioParams) {
   const directory = params.workflow === 'video-translation'
     ? path.join(getEpisodeDir(params.runId, params.episodeId), 'video-translate', safeLanguage(params.targetLanguage), 'seed-audio')
     : path.join(getEpisodeDir(params.runId, params.episodeId), 'seed-audio')
-  return generateUniqueFileName(path.join(directory, `${safeName}.mp3`))
+  const target = path.join(directory, `${safeName}.mp3`)
+  return params.workflow === 'video-translation' ? target : generateUniqueFileName(target)
 }
 
 function safeLanguage(value?: string) {
@@ -110,12 +113,13 @@ function safeLanguage(value?: string) {
   return language
 }
 
-async function saveResponseAudio(data: any, target: string) {
+async function saveResponseAudio(data: any, target: string, abortSignal?: AbortSignal) {
   data = data?.data || data
   if (typeof data?.url === 'string' && data.url.startsWith('https://')) {
     const response = await axios.get<ArrayBuffer>(data.url, {
       responseType: 'arraybuffer',
       timeout: 300_000,
+      signal: abortSignal,
     })
     await fs.promises.writeFile(target, Buffer.from(response.data))
   } else if (typeof data?.audio === 'string' && data.audio.trim()) {
@@ -142,13 +146,14 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
   await fs.promises.mkdir(directory, { recursive: true })
   const response = await axios.post(process.env.SEED_AUDIO_URL || DEFAULT_URL, payload, {
     timeout: 300_000,
+    signal: params.abortSignal,
     headers: {
       'X-Api-Key': apiKey,
       'Content-Type': 'application/json',
     },
   })
   const mp3Path = outputPath(params)
-  await saveResponseAudio(response.data, mp3Path)
+  await saveResponseAudio(response.data, mp3Path, params.abortSignal)
   const wavPath = mp3Path.replace(/\.mp3$/i, '.wav')
   await executeFFmpeg([
     '-i',
@@ -161,7 +166,7 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
     'pcm_s16le',
     '-y',
     wavPath,
-  ])
+  ], { abortSignal: params.abortSignal })
   const duration = await mediaDuration(wavPath)
   const result = {
     path: wavPath,
@@ -209,9 +214,11 @@ export async function mixSeedAudioTracks(
   durationMs: number,
   workflow: 'creative' | 'video-translation' = 'creative',
   targetLanguage?: string,
+  abortSignal?: AbortSignal,
 ) {
   if (!audioPaths.length) throw new Error('没有可混合的 Seed Audio 音轨')
-  const inputs = audioPaths.map((audioPath) => assertEpisodeAsset(runId, episodeId, audioPath))
+  const assertAsset = workflow === 'video-translation' ? assertVideoTranslationAsset : assertEpisodeAsset
+  const inputs = audioPaths.map((audioPath) => assertAsset(runId, episodeId, audioPath))
   const target = workflow === 'video-translation'
     ? path.join(getEpisodeDir(runId, episodeId), 'video-translate', safeLanguage(targetLanguage), '目标人声.wav')
     : path.join(getEpisodeDir(runId, episodeId), 'seed-audio', '完整声音轨.wav')
@@ -235,7 +242,7 @@ export async function mixSeedAudioTracks(
     '-y',
     target,
   )
-  await executeFFmpeg(args)
+  await executeFFmpeg(args, { abortSignal })
   return relativeRunAsset(runId, target)
 }
 

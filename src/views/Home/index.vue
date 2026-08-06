@@ -237,6 +237,7 @@
         <VideoTranslationInspector
           :selected-cue-id="selectedTranslationCueId"
           @action="runTranslationAction"
+          @cancel="cancelWorkflow"
         />
       </template>
       <template v-else>
@@ -1521,18 +1522,22 @@ async function translateVideoSubtitles() {
 async function confirmTranslationDialogue() {
   await runTranslationStep('confirm-speakers-and-subtitles', 'reviewStatus', async (state) => {
     const used = new Set(state.cues.map((cue) => cue.translationRoleId))
-    const roles = mediaStore.videoTranslationRoles.filter((role) => used.has(role.translationRoleId))
-    roles.forEach((role) => {
-      if (!role.sourceEpisodeIds.includes(mediaStore.episodeId)) role.sourceEpisodeIds.push(mediaStore.episodeId)
-    })
+    const roles = mediaStore.videoTranslationRoles.map((role) => ({
+      ...role,
+      aliases: [...role.aliases],
+      sourceEpisodeIds: used.has(role.translationRoleId)
+        ? [...new Set([...role.sourceEpisodeIds, mediaStore.episodeId])]
+        : [...role.sourceEpisodeIds],
+    }))
     state.confirmedDialoguePath = await window.electron.cloud.confirmVideoTranslation(
       mediaStore.runId,
       mediaStore.episodeId,
       state.sourceLanguage,
       state.targetLanguage,
       state.cues,
-      mediaStore.videoTranslationRoles,
+      roles,
     )
+    mediaStore.videoTranslationRoles = roles
     toast.success('角色与字幕已确认')
   })
 }

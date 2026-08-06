@@ -71,6 +71,20 @@ test('persists video translation paths without changing creative paths', () => {
   assert.equal(persisted.videoTranslation.cues[0].voicePath, 'wiki/翻译/episode-001/en/cue.wav')
 })
 
+test('makes interrupted translation steps retryable after restore', () => {
+  const state = deserializeMediaTask(JSON.stringify({
+    videoTranslation: {
+      sourceVideoPath: 'episodes/episode-001/video-translate/source.mp4',
+      transcriptStatus: 'running',
+      translationStatus: 'running',
+      finalStatus: 'ready',
+    },
+  }))
+  assert.equal(state.videoTranslation.transcriptStatus, 'idle')
+  assert.equal(state.videoTranslation.translationStatus, 'idle')
+  assert.equal(state.videoTranslation.finalStatus, 'ready')
+})
+
 test('persists the project director gate and restores its center view', () => {
   const projectDirectorPlan = {
     productionRoute: 'drama',

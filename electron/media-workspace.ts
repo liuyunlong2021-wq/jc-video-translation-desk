@@ -955,6 +955,29 @@ function sharedStateOf(state: Record<string, unknown>) {
   )
 }
 
+function mergeSharedState(
+  existing: Record<string, any>,
+  state: Record<string, unknown>,
+) {
+  const incoming = sharedStateOf(state) as Record<string, any>
+  if (Array.isArray(existing.videoTranslationRoles) && Array.isArray(incoming.videoTranslationRoles)) {
+    const roles = new Map(existing.videoTranslationRoles.map((role: any) => [role.translationRoleId, role]))
+    for (const role of incoming.videoTranslationRoles) {
+      const previous: any = roles.get(role.translationRoleId)
+      roles.set(role.translationRoleId, {
+        ...previous,
+        ...role,
+        sourceEpisodeIds: [...new Set([
+          ...(previous?.sourceEpisodeIds || []),
+          ...(role.sourceEpisodeIds || []),
+        ])],
+      })
+    }
+    incoming.videoTranslationRoles = [...roles.values()]
+  }
+  return { ...existing, ...incoming }
+}
+
 function episodeStateOf(state: Record<string, unknown>) {
   const episodeState = { ...state }
   SHARED_STATE_KEYS.forEach((key) => delete episodeState[key])
@@ -966,7 +989,7 @@ export async function saveMediaState(runId: string, episodeId: string, value: st
   if (state?.runId !== runId) throw new Error('任务状态与任务 ID 不匹配')
   getEpisodeDir(runId, episodeId)
   if (state?.episodeId !== episodeId) throw new Error('剧集 ID 不匹配')
-  const writeKey = `${runId}:${episodeId}`
+  const writeKey = runId
   const previous = stateWrites.get(writeKey) || Promise.resolve()
   const next = previous.then(async () => {
     await ensureRunDir(runId)
@@ -975,7 +998,7 @@ export async function saveMediaState(runId: string, episodeId: string, value: st
     const existingShared = await readJson(sharedPath).catch(() => ({}))
     await writeAtomic(
       sharedPath,
-      `${JSON.stringify({ ...existingShared, ...sharedStateOf(state) }, null, 2)}\n`,
+      `${JSON.stringify(mergeSharedState(existingShared, state), null, 2)}\n`,
     )
     await writeAtomic(
       path.join(episodeDir, 'state.json'),
@@ -1081,18 +1104,40 @@ export function assertRunAsset(runId: string, filePath: string) {
   return resolved
 }
 
-export function assertEpisodeAsset(runId: string, episodeId: string, filePath: string) {
+function resolveEpisodeAsset(runId: string, episodeId: string, filePath: string, allowTranslation: boolean) {
   getEpisodeDir(runId, episodeId)
   const resolved = assertRunAsset(runId, filePath)
   const relative = relativeRunAsset(runId, resolved)
-  const owned = relative.startsWith(`episodes/${episodeId}/`)
+  const translationEpisodeRoot = `episodes/${episodeId}/video-translate/`
+  const owned = (relative.startsWith(`episodes/${episodeId}/`) && (allowTranslation || !relative.startsWith(translationEpisodeRoot)))
     || relative.startsWith(`wiki/声音/${episodeId}/`)
     || relative.startsWith(`wiki/转录/${episodeId}/`)
     || relative.startsWith(`wiki/字幕/素材/${episodeId}/`)
     || relative.startsWith(`wiki/剪辑/${episodeId}/`)
     || relative.startsWith(`wiki/字幕/${episodeId}-`)
-    || relative.startsWith(`wiki/翻译/${episodeId}/`)
+    || (allowTranslation && relative.startsWith(`wiki/翻译/${episodeId}/`))
   if (!owned) throw new Error('素材不属于当前剧集')
+  return resolved
+}
+
+export function assertEpisodeAsset(runId: string, episodeId: string, filePath: string) {
+  return resolveEpisodeAsset(runId, episodeId, filePath, false)
+}
+
+export function assertVideoTranslationAsset(runId: string, episodeId: string, filePath: string) {
+  const resolved = resolveEpisodeAsset(runId, episodeId, filePath, true)
+  const relative = relativeRunAsset(runId, resolved)
+  if (
+    !relative.startsWith(`episodes/${episodeId}/video-translate/`) &&
+    !relative.startsWith(`wiki/翻译/${episodeId}/`)
+  ) throw new Error('素材不属于当前视频翻译工作流')
+  return resolved
+}
+
+export function assertVideoTranslationSource(runId: string, episodeId: string, filePath: string) {
+  const resolved = assertVideoTranslationAsset(runId, episodeId, filePath)
+  if (!relativeRunAsset(runId, resolved).startsWith(`episodes/${episodeId}/video-translate/source.`))
+    throw new Error('原片不属于当前视频翻译任务')
   return resolved
 }
 

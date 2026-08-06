@@ -21,6 +21,7 @@ import type {
 } from './types.ts'
 import {
   assertEpisodeAsset,
+  assertVideoTranslationSource,
   assertRunAsset,
   downloadMedia,
   ensureRunDir,
@@ -404,9 +405,10 @@ export async function identifyVideoTranslationSpeakers(
 ): Promise<{ speakers: VideoTranslationSpeakerDraft[]; contextPaths: Array<{ path: string; hash: string }> }> {
   if (!params?.runId || !params.episodeId || !params.videoPath || !params.cues?.length)
     throw new Error('说话角色识别参数无效')
-  const videoPath = assertEpisodeAsset(params.runId, params.episodeId, params.videoPath)
+  const videoPath = assertVideoTranslationSource(params.runId, params.episodeId, params.videoPath)
+  const stat = await fs.promises.stat(videoPath)
+  if (stat.size > 90 * 1024 * 1024) throw new Error('原片过大，无法提交角色识别')
   const video = await fs.promises.readFile(videoPath)
-  if (video.byteLength > 90 * 1024 * 1024) throw new Error('原片过大，无法提交角色识别')
   const context = await collectVideoTranslationContext(params.runId, params.episodeId)
   const output = await withRunAbort(params.runId, (signal) => generateJsonResponse(
     '你是影视对白说话角色识别器。只输出合法 JSON；不得改写 cueId、时间或字幕。',

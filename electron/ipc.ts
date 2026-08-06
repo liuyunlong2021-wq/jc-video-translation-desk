@@ -295,7 +295,7 @@ export default function initIPC() {
     writeVideoTranslationSeedPlan(runId, episodeId, targetLanguage, arrangement, promptMarkdown),
   )
   ipcMain.handle('video-translation-generate-voice', (_event, runId, episodeId, targetLanguage) =>
-    generateVideoTranslationTargetVoice(runId, episodeId, targetLanguage),
+    withRunAbort(runId, (signal) => generateVideoTranslationTargetVoice(runId, episodeId, targetLanguage, signal)),
   )
   ipcMain.handle('video-translation-compose', (_event, params) =>
     withRunAbort(params.runId, (signal) => composeVideoTranslation({ ...params, abortSignal: signal })),

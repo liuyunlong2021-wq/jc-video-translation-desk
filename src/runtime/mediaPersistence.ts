@@ -156,8 +156,11 @@ function migrateRun(run: any) {
     for (const key of [
       'transcriptStatus', 'speakerStatus', 'translationStatus', 'reviewStatus',
       'arrangementStatus', 'voiceStatus', 'separationStatus', 'mixStatus', 'finalStatus',
-    ]) if (!['idle', 'running', 'ready', 'failed', 'stale'].includes(run.videoTranslation[key]))
-      run.videoTranslation[key] = 'idle'
+    ]) {
+      if (run.videoTranslation[key] === 'running') run.videoTranslation[key] = 'idle'
+      else if (!['idle', 'ready', 'failed', 'stale'].includes(run.videoTranslation[key]))
+        run.videoTranslation[key] = 'idle'
+    }
     run.videoTranslation.originalVocalRemoved = Boolean(run.videoTranslation.originalVocalRemoved)
   } else run.videoTranslation = null
   if (

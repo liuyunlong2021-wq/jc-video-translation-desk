@@ -71,6 +71,82 @@ export interface VideoTranslationSeedPlan {
   promptMarkdown: string
 }
 
+export interface VideoTranslationVoiceLine {
+  cueId?: string
+  text: string
+  startMs: number
+  endMs: number
+}
+
+export interface VideoTranslationWhisperCue {
+  startMs: number
+  endMs: number
+  recognizedText: string
+}
+
+export interface VideoTranslationVoiceAlignment {
+  cueId: string
+  text: string
+  expectedStartMs: number
+  expectedEndMs: number
+  observedStartMs: number
+  observedEndMs: number
+  whisperText: string
+}
+
+export function validateVideoTranslationVoiceAlignment(
+  lines: VideoTranslationVoiceLine[],
+  whisperCues: VideoTranslationWhisperCue[],
+  taskStartMs = 0,
+  toleranceMs = 750,
+): VideoTranslationVoiceAlignment[] {
+  if (!lines.length) throw new Error('翻译配音任务没有已确认台词')
+  if (!whisperCues.length) throw new Error('翻译配音没有识别到目标语言人声')
+  if (!Number.isFinite(taskStartMs) || !Number.isFinite(toleranceMs) || toleranceMs < 0)
+    throw new Error('翻译配音时间校验参数无效')
+  let cursor = 0
+  const aligned: VideoTranslationVoiceAlignment[] = []
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]
+    const expectedStartMs = line.startMs - taskStartMs
+    const expectedEndMs = line.endMs - taskStartMs
+    if (!Number.isFinite(expectedStartMs) || !Number.isFinite(expectedEndMs) || expectedEndMs <= expectedStartMs)
+      throw new Error(`第 ${index + 1} 条翻译台词时间无效`)
+    const matches: VideoTranslationWhisperCue[] = []
+    const remainingLines = lines.length - index - 1
+    while (cursor < whisperCues.length) {
+      const cue = whisperCues[cursor]
+      if (!Number.isFinite(cue.startMs) || !Number.isFinite(cue.endMs) || cue.endMs <= cue.startMs)
+        throw new Error('翻译配音 Whisper 时间轴无效')
+      const midpoint = (cue.startMs + cue.endMs) / 2
+      if (midpoint < expectedStartMs - toleranceMs)
+        throw new Error(`第 ${index + 1} 条翻译台词缺少对应人声`)
+      if (midpoint > expectedEndMs + toleranceMs) break
+      matches.push(cue)
+      cursor++
+      if (whisperCues.length - cursor <= remainingLines) break
+    }
+    if (!matches.length) throw new Error(`第 ${index + 1} 条翻译台词缺少对应人声`)
+    const observedStartMs = Math.min(...matches.map((cue) => cue.startMs))
+    const observedEndMs = Math.max(...matches.map((cue) => cue.endMs))
+    if (
+      observedStartMs < expectedStartMs - toleranceMs ||
+      observedEndMs > expectedEndMs + toleranceMs
+    ) throw new Error(`第 ${index + 1} 条翻译台词超出时间窗`)
+    aligned.push({
+      cueId: line.cueId || `translation-line-${String(index + 1).padStart(3, '0')}`,
+      text: line.text.trim(),
+      expectedStartMs: line.startMs,
+      expectedEndMs: line.endMs,
+      observedStartMs: observedStartMs + taskStartMs,
+      observedEndMs: observedEndMs + taskStartMs,
+      whisperText: matches.map((cue) => cue.recognizedText.trim()).filter(Boolean).join(' '),
+    })
+  }
+  if (cursor !== whisperCues.length) throw new Error('翻译配音包含确认台词之外的人声')
+  return aligned
+}
+
 export type VideoTranslationAction =
   | 'upload-video'
   | 'generate-source-subtitles'
@@ -88,6 +164,7 @@ export type VideoTranslationChange =
   | 'source-video'
   | 'source-dialogue'
   | 'translation'
+  | 'language'
   | 'voice-binding'
   | 'voice-prompt'
   | 'target-voice'
@@ -172,10 +249,14 @@ export function invalidateVideoTranslation(
     next.reviewStatus = invalidate(next.reviewStatus)
   } else if (change === 'translation') {
     next.reviewStatus = invalidate(next.reviewStatus)
+  } else if (change === 'language') {
+    next.translationStatus = invalidate(next.translationStatus)
+    next.reviewStatus = invalidate(next.reviewStatus)
+    next.cues.forEach((cue) => { cue.translatedText = '' })
   }
-  if (['source-dialogue', 'translation', 'voice-binding'].includes(change))
+  if (['source-dialogue', 'translation', 'language', 'voice-binding'].includes(change))
     next.arrangementStatus = invalidate(next.arrangementStatus)
-  if (['source-dialogue', 'translation', 'voice-binding', 'voice-prompt'].includes(change))
+  if (['source-dialogue', 'translation', 'language', 'voice-binding', 'voice-prompt'].includes(change))
     next.voiceStatus = invalidate(next.voiceStatus)
   if (change !== 'separation') next.mixStatus = invalidate(next.mixStatus)
   if (change === 'target-voice' || change === 'separation') next.mixStatus = invalidate(next.mixStatus)

@@ -385,6 +385,44 @@ test('creates a default episode and keeps episode states independent', async () 
   )
 })
 
+test('merges translation roles when two episodes save concurrently', async () => {
+  const projectId = 'translation-role-concurrency'
+  await workspace.createProjectAt(projectId, projectRoot(projectId), JSON.stringify({
+    runId: projectId,
+    episodeId: 'episode-001',
+    stage: 'draft',
+    videoTranslationRoles: [],
+  }))
+  const role = (id: string, episode: string) => ({
+    translationRoleId: id,
+    displayName: id,
+    aliases: [],
+    sourceEpisodeIds: [episode],
+    status: 'confirmed',
+  })
+  await Promise.all([
+    workspace.saveMediaState(projectId, 'episode-001', JSON.stringify({
+      runId: projectId,
+      episodeId: 'episode-001',
+      stage: 'draft',
+      videoTranslationRoles: [role('role-1', 'episode-001')],
+    })),
+    workspace.saveMediaState(projectId, 'episode-002', JSON.stringify({
+      runId: projectId,
+      episodeId: 'episode-002',
+      stage: 'draft',
+      videoTranslationRoles: [role('role-2', 'episode-002')],
+    })),
+  ])
+  const shared = JSON.parse(fs.readFileSync(path.join(
+    projectRoot(projectId), 'shared-state.json',
+  ), 'utf8'))
+  assert.deepEqual(shared.videoTranslationRoles.map((item: any) => item.translationRoleId).sort(), [
+    'role-1',
+    'role-2',
+  ])
+})
+
 test('loads one selected episode from a 100 episode manifest', async () => {
   const projectId = 'hundred-episode-run'
   await workspace.createProjectAt(projectId, projectRoot(projectId), JSON.stringify({

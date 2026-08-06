@@ -49,6 +49,15 @@
           @click="emit('action', action.key)"
         >{{ action.label }}</v-btn>
       </div>
+      <v-btn
+        v-if="mediaStore.busyAction"
+        icon="mdi-stop-circle-outline"
+        color="error"
+        variant="tonal"
+        title="停止当前任务"
+        aria-label="停止当前任务"
+        @click="emit('cancel')"
+      />
       <v-alert v-if="mediaStore.error" type="error" density="compact" variant="tonal">{{ mediaStore.error }}</v-alert>
     </div>
   </v-sheet>
@@ -61,7 +70,7 @@ import { availableVideoTranslationActions, type VideoTranslationAction } from '@
 import type { VoiceProfile } from '~/electron/voice-library'
 
 const props = defineProps<{ selectedCueId: string }>()
-const emit = defineEmits<{ action: [action: VideoTranslationAction] }>()
+const emit = defineEmits<{ action: [action: VideoTranslationAction]; cancel: [] }>()
 const mediaStore = useMediaTaskStore()
 const state = computed(() => mediaStore.videoTranslation!)
 const selectedCue = computed(() => state.value.cues.find((cue) => cue.cueId === props.selectedCueId))

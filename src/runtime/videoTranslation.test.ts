@@ -7,6 +7,7 @@ import {
   invalidateVideoTranslation,
   planVideoTranslationSeed,
   validateConfirmedTranslation,
+  validateVideoTranslationVoiceAlignment,
   type TranslationRole,
 } from './videoTranslation.ts'
 
@@ -59,6 +60,20 @@ test('invalidates only translation state and preserves source separation where p
   assert.equal(state.finalStatus, 'ready')
 })
 
+test('invalidates translated text when the selected language changes', () => {
+  const state = createVideoTranslationState()
+  state.translationStatus = 'ready'
+  state.reviewStatus = 'ready'
+  state.cues = [{
+    cueId: 'cue-001', startMs: 0, endMs: 1000, recognizedText: '你好', sourceText: '你好',
+    translatedText: 'Hello', translationRoleId: role.translationRoleId, needsReview: false,
+  }]
+  const next = invalidateVideoTranslation(state, 'language')
+  assert.equal(next.translationStatus, 'stale')
+  assert.equal(next.reviewStatus, 'stale')
+  assert.equal(next.cues[0].translatedText, '')
+})
+
 test('requires ordered confirmed cues and known translation roles', () => {
   const cue = {
     cueId: 'cue-001', startMs: 0, endMs: 1000, recognizedText: '你好', sourceText: '你好',
@@ -95,6 +110,30 @@ test('plans pure target-language Seed tasks with at most three references', () =
   assert.ok(plan.arrangement.tasks.every((task) => task.references.length <= 3))
   assert.ok(plan.arrangement.tasks.every((task) => !task.includeMusicAndEffects))
   assert.match(plan.promptMarkdown, /禁止音乐、环境声、动作音效/)
+})
+
+test('accepts target voice only when Whisper speech stays in confirmed windows', () => {
+  assert.deepEqual(validateVideoTranslationVoiceAlignment([
+    { cueId: 'cue-1', text: 'Hello', startMs: 1000, endMs: 2000 },
+    { cueId: 'cue-2', text: 'World', startMs: 2500, endMs: 3500 },
+  ], [
+    { startMs: 150, endMs: 850, recognizedText: 'Hello' },
+    { startMs: 1650, endMs: 2350, recognizedText: 'World' },
+  ], 1000), [
+    {
+      cueId: 'cue-1', text: 'Hello', expectedStartMs: 1000, expectedEndMs: 2000,
+      observedStartMs: 1150, observedEndMs: 1850, whisperText: 'Hello',
+    },
+    {
+      cueId: 'cue-2', text: 'World', expectedStartMs: 2500, expectedEndMs: 3500,
+      observedStartMs: 2650, observedEndMs: 3350, whisperText: 'World',
+    },
+  ])
+  assert.throws(() => validateVideoTranslationVoiceAlignment([
+    { text: 'Hello', startMs: 1000, endMs: 2000 },
+  ], [
+    { startMs: 0, endMs: 3000, recognizedText: 'too long' },
+  ], 1000), /超出时间窗/)
 })
 
 test('keeps translation UI separate with six columns and eleven right-side actions', () => {

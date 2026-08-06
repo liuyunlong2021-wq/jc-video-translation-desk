@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { assertEpisodeAsset, ensureRunDir, relativeRunAsset } from './media-workspace.ts'
+import { assertEpisodeAsset, assertVideoTranslationSource, ensureRunDir, relativeRunAsset } from './media-workspace.ts'
 import type { GenerateMaterialTranscriptParams, MaterialTranscriptResult } from './types.ts'
 import {
   materialTranscriptToSrt,
@@ -27,6 +27,29 @@ print(json.dumps({
     "segments": [{"start": item.start, "end": item.end, "text": item.text} for item in segments],
 }, ensure_ascii=False))
 `
+
+export async function runFasterWhisper(
+  sourcePath: string,
+  abortSignal?: AbortSignal,
+): Promise<WhisperOutput> {
+  const python = process.env.FASTER_WHISPER_PYTHON || DEFAULT_PYTHON
+  const model = process.env.FASTER_WHISPER_MODEL || DEFAULT_MODEL
+  await Promise.all([
+    fs.promises.access(python, fs.constants.X_OK),
+    fs.promises.access(model, fs.constants.R_OK),
+  ]).catch(() => {
+    throw new Error('Faster-Whisper 运行时或 large-v3-turbo 模型不可用')
+  })
+  const { stdout } = await run(python, ['-c', TRANSCRIBE_SCRIPT, model, sourcePath], {
+    maxBuffer: 16 * 1024 * 1024,
+    signal: abortSignal,
+  })
+  try {
+    return JSON.parse(stdout) as WhisperOutput
+  } catch {
+    throw new Error('Faster-Whisper 没有返回有效转录结果')
+  }
+}
 
 async function replacePair(files: Array<{ path: string; content: string }>) {
   const backups = await Promise.all(files.map(async (file) =>
@@ -53,26 +76,12 @@ export async function generateMaterialTranscript(
   params: GenerateMaterialTranscriptParams,
 ): Promise<MaterialTranscriptResult> {
   if (!MEDIA_ID.test(params.mediaId)) throw new Error('无效的素材 ID')
-  const sourcePath = assertEpisodeAsset(params.runId, params.episodeId, params.videoPath)
+  const sourcePath = params.workflow === 'video-translation'
+    ? assertVideoTranslationSource(params.runId, params.episodeId, params.videoPath)
+    : assertEpisodeAsset(params.runId, params.episodeId, params.videoPath)
   const stat = await fs.promises.stat(sourcePath)
   if (!stat.isFile()) throw new Error('视频素材不可读')
-  const python = process.env.FASTER_WHISPER_PYTHON || DEFAULT_PYTHON
-  const model = process.env.FASTER_WHISPER_MODEL || DEFAULT_MODEL
-  await Promise.all([
-    fs.promises.access(python, fs.constants.X_OK),
-    fs.promises.access(model, fs.constants.R_OK),
-  ]).catch(() => {
-    throw new Error('Faster-Whisper 运行时或 large-v3-turbo 模型不可用')
-  })
-  const { stdout } = await run(python, ['-c', TRANSCRIBE_SCRIPT, model, sourcePath], {
-    maxBuffer: 16 * 1024 * 1024,
-  })
-  let output: WhisperOutput
-  try {
-    output = JSON.parse(stdout)
-  } catch {
-    throw new Error('Faster-Whisper 没有返回有效转录结果')
-  }
+  const output = await runFasterWhisper(sourcePath)
   const transcript = normalizeWhisperOutput(
     params.mediaId,
     relativeRunAsset(params.runId, sourcePath),
