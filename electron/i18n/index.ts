@@ -15,7 +15,7 @@ export const initI18n = async () => {
     // initAsync: false,
     // debug: true,
     ...i18nCommonOptions,
-    lng: app.getLocale(), // 获取系统语言
+    lng: __APP_EDITION__ === 'translation' ? 'zh-CN' : app.getLocale(),
     backend: {
       loadPath: localesPath,
     },

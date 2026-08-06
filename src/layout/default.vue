@@ -1,11 +1,11 @@
 <template>
   <div class="layout-container" :class="{ 'is-mac': isMac }" :style="layoutStyle">
     <div class="logo" v-if="!route.meta.hideAppIcon">
-      <img src="/icon.png" alt="" />
-      <span>{{ t('app.name') }}</span>
+      <img :src="translationEdition ? './video-translation-icon.png' : './icon.png'" alt="" />
+      <span>{{ translationEdition ? '视频翻译工作台' : t('app.name') }}</span>
     </div>
     <div class="window-control-bar">
-      <div class="window-no-drag">
+      <div v-if="!translationEdition" class="window-no-drag">
         <v-menu location="bottom right">
           <template v-slot:activator="{ props }">
             <div class="control-btn control-btn-translate" v-bind="props">
@@ -83,10 +83,11 @@ import { useAppStore } from '@/store'
 
 const { i18next, t } = useTranslation()
 const appStore = useAppStore()
+const translationEdition = __APP_EDITION__ === 'translation'
 // const lang = ref(i18next.language)
 // console.log('i18next.language', i18next.language)
 
-document.title = t('app.name')
+document.title = translationEdition ? '视频翻译工作台' : t('app.name')
 
 const route = useRoute()
 const isMac = window.electron.platform === 'darwin'

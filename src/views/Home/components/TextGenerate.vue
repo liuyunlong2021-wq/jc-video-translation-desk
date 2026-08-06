@@ -373,6 +373,8 @@ async function openConfig() {
   if (mediaStore.voiceEngine === 'local') await checkLocalVoice()
 }
 
+defineExpose({ openConfig })
+
 async function checkLocalVoice() {
   checkingLocalVoice.value = true
   try {

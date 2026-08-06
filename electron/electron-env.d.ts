@@ -59,7 +59,12 @@ interface Window {
         episodeId: string,
         arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement,
       ) => Promise<string>
-      mixSeedAudioTracks: (runId: string, episodeId: string, paths: string[], durationMs: number) => Promise<string>
+      mixSeedAudioTracks: (
+        runId: string,
+        episodeId: string,
+        paths: string[],
+        durationMs: number,
+      ) => Promise<string>
       writeSeedDialogueTimeline: (
         runId: string,
         episodeId: string,
@@ -91,9 +96,11 @@ interface Window {
       indexTtsStatus: () => Promise<import('./types').IndexTtsServiceStatus>
       indexTtsStart: () => Promise<import('./types').IndexTtsServiceStatus>
       indexTtsStop: () => Promise<import('./types').IndexTtsServiceStatus>
-      generateEpisodeVoice: (
-        params: import('./types').GenerateEpisodeVoiceParams,
-      ) => Promise<{ path: string; duration: number; clips: Array<{ shotId: string; path: string; duration: number }> }>
+      generateEpisodeVoice: (params: import('./types').GenerateEpisodeVoiceParams) => Promise<{
+        path: string
+        duration: number
+        clips: Array<{ shotId: string; path: string; duration: number }>
+      }>
       generateStoryboard: (
         params: import('./types').GenerateStoryboardImageParams,
       ) => Promise<string>
@@ -125,10 +132,19 @@ interface Window {
       ) => Promise<import('./types').VideoTranslationUploadResult | null>
       identifyVideoTranslationSpeakers: (
         params: import('./types').IdentifyVideoTranslationSpeakersParams,
-      ) => Promise<{ speakers: import('./types').VideoTranslationSpeakerDraft[]; contextPaths: Array<{ path: string; hash: string }> }>
+      ) => Promise<{
+        speakers: import('./types').VideoTranslationSpeakerDraft[]
+        contextPaths: Array<{ path: string; hash: string }>
+      }>
+      onVideoTranslationProgress: (
+        listener: (progress: import('./types').VideoTranslationProgressEvent) => void,
+      ) => () => void
       translateVideoSubtitles: (
         params: import('./types').TranslateVideoSubtitlesParams,
-      ) => Promise<{ subtitles: Array<{ cueId: string; text: string }>; contextPaths: Array<{ path: string; hash: string }> }>
+      ) => Promise<{
+        subtitles: Array<{ cueId: string; text: string }>
+        contextPaths: Array<{ path: string; hash: string }>
+      }>
       writeVideoTranslationContext: (
         runId: string,
         episodeId: string,
@@ -197,7 +213,9 @@ interface Window {
       }>
       voiceLibraryPath: () => Promise<string>
       openVoicePack: (voiceProfileId: string) => Promise<string>
-      listVoiceProfiles: (query?: Record<string, unknown>) => Promise<import('./voice-library').VoiceProfile[]>
+      listVoiceProfiles: (
+        query?: Record<string, unknown>,
+      ) => Promise<import('./voice-library').VoiceProfile[]>
       previewVoiceProfile: (voiceProfileId: string) => Promise<string>
       reviewVoiceProfile: (
         voiceProfileId: string,
@@ -236,7 +254,10 @@ interface Window {
       getLastOpenedProject: () => Promise<string | null>
       setLastOpenedProject: (projectId: string) => Promise<void>
       renameProject: (projectId: string, name: string) => Promise<import('./types').ProjectManifest>
-      createEpisode: (projectId: string, value: string) => Promise<import('./types').ProjectManifest>
+      createEpisode: (
+        projectId: string,
+        value: string,
+      ) => Promise<import('./types').ProjectManifest>
       showProject: (projectId: string) => Promise<string>
       saveRawSubmission: (projectId: string, content: string) => Promise<string>
       importMarkdown: (projectId: string) => Promise<import('./types').ImportedMarkdown | null>
@@ -252,7 +273,11 @@ interface Window {
         transactionId: string,
         writtenPaths: string[],
       ) => Promise<string[]>
-      rollbackStoryboardUpdate: (projectId: string, episodeId: string, transactionId: string) => Promise<void>
+      rollbackStoryboardUpdate: (
+        projectId: string,
+        episodeId: string,
+        transactionId: string,
+      ) => Promise<void>
       writeMarkdown: (
         projectId: string,
         relativePath: string,

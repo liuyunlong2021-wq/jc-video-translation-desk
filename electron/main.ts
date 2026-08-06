@@ -22,18 +22,22 @@ protocol.registerSchemesAsPrivileged([
 // const require = createRequire(import.meta.url)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const translationEdition = __APP_EDITION__ === 'translation'
+const appName = translationEdition ? '视频翻译工作台' : '点一点'
+const appIcon = translationEdition ? 'video-translation-icon.png' : 'icon.png'
 
 // Keep existing media and keys when the visible product name changes.
 const appDataPath = app.getPath('appData')
 const previewUserData = app.commandLine.getSwitchValue('svf-user-data-dir').trim()
 if (previewUserData) app.setPath('userData', path.resolve(previewUserData))
+else if (translationEdition) app.setPath('userData', path.join(appDataPath, appName))
 else {
   const legacyUserDataCandidates = ['短视频工厂', 'short-video-factory', 'AI Short Video Factory']
     .map((name) => path.join(appDataPath, name))
     .filter((candidate) => fs.existsSync(path.join(candidate, 'media-runs')) || fs.existsSync(path.join(candidate, 'data.db')))
   if (legacyUserDataCandidates[0]) app.setPath('userData', legacyUserDataCandidates[0])
 }
-app.setName('点一点')
+app.setName(appName)
 
 // 已构建的目录结构
 //
@@ -60,7 +64,7 @@ function createWindow() {
   const isMac = process.platform === 'darwin'
 
   win = new BrowserWindow({
-    icon: path.join(process.env.VITE_PUBLIC, 'icon.png'),
+    icon: path.join(process.env.VITE_PUBLIC, appIcon),
     width: Math.ceil(width * 0.8),
     height: Math.ceil(height * 0.8),
     minWidth: 800,
@@ -114,7 +118,7 @@ function buildMenu() {
     ...(process.platform === 'darwin'
       ? [
           {
-            label: i18next.t('app.name'),
+            label: appName,
             submenu: [
               {
                 label: i18next.t('menu.app.about'),
@@ -135,17 +139,21 @@ function buildMenu() {
           },
         ]
       : []),
-    {
-      label: i18next.t('menu.language'),
-      submenu: i18nLanguages.map((lng) => ({
-        label: lng.name,
-        type: 'radio',
-        checked: i18next.language === lng.code,
-        click: () => {
-          changeAppLanguage(lng.code)
-        },
-      })) as MenuItemConstructorOptions[],
-    },
+    ...(translationEdition
+      ? []
+      : [
+          {
+            label: i18next.t('menu.language'),
+            submenu: i18nLanguages.map((lng) => ({
+              label: lng.name,
+              type: 'radio',
+              checked: i18next.language === lng.code,
+              click: () => {
+                changeAppLanguage(lng.code)
+              },
+            })) as MenuItemConstructorOptions[],
+          },
+        ]),
     {
       label: i18next.t('menu.edit.root'),
       submenu: [
@@ -222,7 +230,7 @@ app.on('activate', () => {
 // app.disableHardwareAcceleration();
 
 app.whenReady().then(async () => {
-  if (process.platform === 'darwin') app.dock.setIcon(path.join(process.env.VITE_PUBLIC, 'icon.png'))
+  if (process.platform === 'darwin') app.dock.setIcon(path.join(process.env.VITE_PUBLIC, appIcon))
   protocol.registerFileProtocol('short-video-media', (request, callback) => {
     try {
       const url = new URL(request.url)

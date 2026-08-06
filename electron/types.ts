@@ -50,7 +50,11 @@ export type VoiceServiceState =
 export type VoiceSource = 'design' | 'clone'
 export type { AudioProductionRoute } from '../src/runtime/productionContract.ts'
 import type { ProductionRoute } from '../src/runtime/productionContract.ts'
-export type { AudioMode, OutputLanguage, ProductionRoute } from '../src/runtime/productionContract.ts'
+export type {
+  AudioMode,
+  OutputLanguage,
+  ProductionRoute,
+} from '../src/runtime/productionContract.ts'
 export type VideoModel =
   | 'veo-3.1-generate-preview'
   | 'veo-3.0-generate-001'
@@ -273,7 +277,6 @@ export interface GenerateMaterialTranscriptParams {
   episodeId: string
   mediaId: string
   videoPath: string
-  workflow?: 'creative' | 'video-translation'
 }
 
 export interface MaterialTranscriptResult {
@@ -353,7 +356,6 @@ export interface IdentifyVideoTranslationSpeakersParams {
   episodeId: string
   textModel: TextModel
   videoPath: string
-  cues: Array<{ cueId: string; startMs: number; endMs: number; text: string }>
   roles: Array<{
     translationRoleId: string
     displayName: string
@@ -362,12 +364,23 @@ export interface IdentifyVideoTranslationSpeakersParams {
   }>
 }
 
+export interface VideoTranslationProgressEvent {
+  runId: string
+  episodeId: string
+  message: string
+}
+
 export interface VideoTranslationSpeakerDraft {
   cueId: string
+  startMs: number
+  endMs: number
+  recognizedText: string
+  correctedText: string
   proposedRoleId?: string
   proposedName: string
   confidence: number
   evidence: string
+  ocrText: string
   needsReview: boolean
 }
 

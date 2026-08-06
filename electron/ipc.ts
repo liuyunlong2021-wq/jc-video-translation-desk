@@ -72,7 +72,20 @@ import {
   writeEditingTimeline,
   writeEpisodeSubtitles,
 } from './media-workspace'
-import { bindProjectSeedVoice, bindProjectVoice, getVoiceLibraryDir, getVoicePackDir, listVoiceProfiles, registerSeedVoiceProfile, resolveProjectSeedReferences, resolveSeedVoiceProfiles, reviewVoiceProfile, scanVoiceLibrary, standardizeVoiceProfile, voiceProfilePreviewDataUrl } from './voice-library'
+import {
+  bindProjectSeedVoice,
+  bindProjectVoice,
+  getVoiceLibraryDir,
+  getVoicePackDir,
+  listVoiceProfiles,
+  registerSeedVoiceProfile,
+  resolveProjectSeedReferences,
+  resolveSeedVoiceProfiles,
+  reviewVoiceProfile,
+  scanVoiceLibrary,
+  standardizeVoiceProfile,
+  voiceProfilePreviewDataUrl,
+} from './voice-library'
 import { generateMaterialTranscript } from './material-transcript'
 import {
   generateSeedAudio,
@@ -203,8 +216,10 @@ export default function initIPC() {
   ipcMain.handle('seed-audio-has-api-key', () => hasSeedAudioApiKey())
   ipcMain.handle('seed-audio-save-api-key', (_event, apiKey: string) => saveSeedAudioApiKey(apiKey))
   ipcMain.handle('seed-audio-generate', (_event, params) => generateSeedAudio(params))
-  ipcMain.handle('seed-audio-write-arrangement', (_event, runId: string, episodeId: string, arrangement) =>
-    writeSeedAudioArrangement(runId, episodeId, arrangement),
+  ipcMain.handle(
+    'seed-audio-write-arrangement',
+    (_event, runId: string, episodeId: string, arrangement) =>
+      writeSeedAudioArrangement(runId, episodeId, arrangement),
   )
   ipcMain.handle('seed-audio-mix-tracks', (_event, runId, episodeId, paths, durationMs) =>
     mixSeedAudioTracks(runId, episodeId, paths, durationMs),
@@ -215,17 +230,35 @@ export default function initIPC() {
   ipcMain.handle('cloud-generate-script', (_event, brief) => generateScript(brief))
   ipcMain.handle(
     'cloud-run-skill',
-    (_event, skillName: string, input: string, runId?: string, textModel?: import('./types').TextModel) =>
-      runSkill(skillName, input, runId, textModel),
+    (
+      _event,
+      skillName: string,
+      input: string,
+      runId?: string,
+      textModel?: import('./types').TextModel,
+    ) => runSkill(skillName, input, runId, textModel),
   )
   ipcMain.handle(
     'cloud-run-wiki-skill',
-    (_event, skillName: string, input: string, projectId: string, episodeId: string, textModel?: import('./types').TextModel) =>
-      runWikiSkill(skillName, input, projectId, episodeId, textModel),
+    (
+      _event,
+      skillName: string,
+      input: string,
+      projectId: string,
+      episodeId: string,
+      textModel?: import('./types').TextModel,
+    ) => runWikiSkill(skillName, input, projectId, episodeId, textModel),
   )
   ipcMain.handle(
     'cloud-generate-voice',
-    (_event, runId: string, episodeId: string, text: string, voicePrompt: string, engine: 'cloud' | 'local') =>
+    (
+      _event,
+      runId: string,
+      episodeId: string,
+      text: string,
+      voicePrompt: string,
+      engine: 'cloud' | 'local',
+    ) =>
       engine === 'local'
         ? generateLocalVoice(runId, episodeId, text, voicePrompt)
         : generateCloudVoice(runId, episodeId, text, voicePrompt),
@@ -270,35 +303,55 @@ export default function initIPC() {
   )
   ipcMain.handle('material-generate-srt', (_event, params) => generateMaterialTranscript(params))
   ipcMain.handle('material-analyze-video', (_event, params) => analyzeMaterialVideo(params))
-  ipcMain.handle('material-write-editing-timeline', (_event, runId: string, episodeId: string, timeline) => writeEditingTimeline(runId, episodeId, timeline))
-  ipcMain.handle('material-write-episode-subtitles', (_event, runId: string, episodeId: string, language, cues) => writeEpisodeSubtitles(runId, episodeId, language, cues))
+  ipcMain.handle(
+    'material-write-editing-timeline',
+    (_event, runId: string, episodeId: string, timeline) =>
+      writeEditingTimeline(runId, episodeId, timeline),
+  )
+  ipcMain.handle(
+    'material-write-episode-subtitles',
+    (_event, runId: string, episodeId: string, language, cues) =>
+      writeEpisodeSubtitles(runId, episodeId, language, cues),
+  )
   ipcMain.handle('cloud-translate-subtitles', (_event, params) => translateSubtitles(params))
   ipcMain.handle('video-translation-select-source', (_event, runId, episodeId) =>
     selectVideoTranslationSource(runId, episodeId),
   )
-  ipcMain.handle('video-translation-identify-speakers', (_event, params) =>
-    identifyVideoTranslationSpeakers(params),
+  ipcMain.handle('video-translation-identify-speakers', (event, params) =>
+    identifyVideoTranslationSpeakers(params, (message) =>
+      event.sender.send('video-translation-progress', {
+        runId: params.runId,
+        episodeId: params.episodeId,
+        message,
+      }),
+    ),
   )
-  ipcMain.handle('video-translation-translate', (_event, params) =>
-    translateVideoSubtitles(params),
-  )
+  ipcMain.handle('video-translation-translate', (_event, params) => translateVideoSubtitles(params))
   ipcMain.handle('video-translation-write-context', (_event, runId, episodeId, contextPaths) =>
     writeVideoTranslationContext(runId, episodeId, contextPaths),
   )
-  ipcMain.handle('video-translation-confirm', (_event, runId, episodeId, sourceLanguage, targetLanguage, cues, roles) =>
-    writeConfirmedVideoTranslation(runId, episodeId, sourceLanguage, targetLanguage, cues, roles),
+  ipcMain.handle(
+    'video-translation-confirm',
+    (_event, runId, episodeId, sourceLanguage, targetLanguage, cues, roles) =>
+      writeConfirmedVideoTranslation(runId, episodeId, sourceLanguage, targetLanguage, cues, roles),
   )
   ipcMain.handle('video-translation-bind-voice', (_event, runId, role) =>
     writeTranslationVoiceBinding(runId, role),
   )
-  ipcMain.handle('video-translation-write-seed-plan', (_event, runId, episodeId, targetLanguage, arrangement, promptMarkdown) =>
-    writeVideoTranslationSeedPlan(runId, episodeId, targetLanguage, arrangement, promptMarkdown),
+  ipcMain.handle(
+    'video-translation-write-seed-plan',
+    (_event, runId, episodeId, targetLanguage, arrangement, promptMarkdown) =>
+      writeVideoTranslationSeedPlan(runId, episodeId, targetLanguage, arrangement, promptMarkdown),
   )
   ipcMain.handle('video-translation-generate-voice', (_event, runId, episodeId, targetLanguage) =>
-    withRunAbort(runId, (signal) => generateVideoTranslationTargetVoice(runId, episodeId, targetLanguage, signal)),
+    withRunAbort(runId, (signal) =>
+      generateVideoTranslationTargetVoice(runId, episodeId, targetLanguage, signal),
+    ),
   )
   ipcMain.handle('video-translation-compose', (_event, params) =>
-    withRunAbort(params.runId, (signal) => composeVideoTranslation({ ...params, abortSignal: signal })),
+    withRunAbort(params.runId, (signal) =>
+      composeVideoTranslation({ ...params, abortSignal: signal }),
+    ),
   )
   ipcMain.handle('cloud-compose-picture-master', (_event, params) =>
     withRunAbort(params.runId, (signal) =>
@@ -342,14 +395,26 @@ export default function initIPC() {
   ipcMain.handle('cloud-load-latest-state', () => loadLatestMediaState())
   ipcMain.handle('voice-library-scan', (_event, sourceRoot: string) => scanVoiceLibrary(sourceRoot))
   ipcMain.handle('voice-library-path', () => getVoiceLibraryDir())
-  ipcMain.handle('voice-library-open-pack', (_event, voiceProfileId: string) => shell.openPath(getVoicePackDir(voiceProfileId)))
+  ipcMain.handle('voice-library-open-pack', (_event, voiceProfileId: string) =>
+    shell.openPath(getVoicePackDir(voiceProfileId)),
+  )
   ipcMain.handle('voice-library-list', (_event, query) => listVoiceProfiles(query))
-  ipcMain.handle('voice-library-preview', (_event, voiceProfileId) => voiceProfilePreviewDataUrl(voiceProfileId))
-  ipcMain.handle('voice-library-review', (_event, voiceProfileId, patch) => reviewVoiceProfile(voiceProfileId, patch))
-  ipcMain.handle('voice-library-standardize', (_event, voiceProfileId: string) => standardizeVoiceProfile(voiceProfileId))
-  ipcMain.handle('voice-library-register-seed', (_event, params) => registerSeedVoiceProfile(params))
-  ipcMain.handle('project-bind-seed-voice', (_event, projectId, episodeId, speakerId, voiceProfileId) =>
-    bindProjectSeedVoice(projectId, episodeId, speakerId, voiceProfileId),
+  ipcMain.handle('voice-library-preview', (_event, voiceProfileId) =>
+    voiceProfilePreviewDataUrl(voiceProfileId),
+  )
+  ipcMain.handle('voice-library-review', (_event, voiceProfileId, patch) =>
+    reviewVoiceProfile(voiceProfileId, patch),
+  )
+  ipcMain.handle('voice-library-standardize', (_event, voiceProfileId: string) =>
+    standardizeVoiceProfile(voiceProfileId),
+  )
+  ipcMain.handle('voice-library-register-seed', (_event, params) =>
+    registerSeedVoiceProfile(params),
+  )
+  ipcMain.handle(
+    'project-bind-seed-voice',
+    (_event, projectId, episodeId, speakerId, voiceProfileId) =>
+      bindProjectSeedVoice(projectId, episodeId, speakerId, voiceProfileId),
   )
   ipcMain.handle('voice-library-resolve-seed', (_event, projectId, speakerIds) =>
     resolveProjectSeedReferences(projectId, speakerIds),
@@ -367,7 +432,9 @@ export default function initIPC() {
   )
   ipcMain.handle('project-open-directory', () => openProjectDirectory())
   ipcMain.handle('project-list', () => listProjects())
-  ipcMain.handle('project-load', (_event, projectId: string, episodeId: string) => loadProjectState(projectId, episodeId))
+  ipcMain.handle('project-load', (_event, projectId: string, episodeId: string) =>
+    loadProjectState(projectId, episodeId),
+  )
   ipcMain.handle('project-last-opened', () => getLastOpenedProject())
   ipcMain.handle('project-set-last-opened', (_event, projectId: string) =>
     setLastOpenedProject(projectId),
@@ -416,7 +483,8 @@ export default function initIPC() {
   )
   ipcMain.handle(
     'cloud-cancel-run',
-    async (_event, runId: string) => (await cancelRun(runId)) + cancelLocalVoice(runId) + cancelIndexTts(runId),
+    async (_event, runId: string) =>
+      (await cancelRun(runId)) + cancelLocalVoice(runId) + cancelIndexTts(runId),
   )
   ipcMain.handle('cloud-export-media', (_event, runId: string, sourcePath: string) =>
     exportMedia(assertRunAsset(runId, sourcePath)),

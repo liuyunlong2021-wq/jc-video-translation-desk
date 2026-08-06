@@ -12,6 +12,7 @@ import { syncElectronDevServerUrl } from './build/vite-plugins/sync-electron-dev
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(version),
+    __APP_EDITION__: JSON.stringify(process.env.APP_EDITION || 'creative'),
   },
   plugins: [
     syncElectronDevServerUrl(),
@@ -33,6 +34,9 @@ export default defineConfig({
             : undefined)
         },
         vite: {
+          define: {
+            __APP_EDITION__: JSON.stringify(process.env.APP_EDITION || 'creative'),
+          },
           build: {
             rollupOptions: {
               external: ['better-sqlite3'],

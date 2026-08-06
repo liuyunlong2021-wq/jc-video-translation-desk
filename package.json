@@ -12,8 +12,11 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "cross-env VITE_CJS_IGNORE_WARNING=true vite",
+    "dev:translation": "cross-env APP_EDITION=translation VITE_CJS_IGNORE_WARNING=true vite",
     "prebuild": "node build/scripts/clean-build.js",
     "build": "vue-tsc && cross-env VITE_CJS_IGNORE_WARNING=true vite build && electron-builder",
+    "prebuild:translation": "node build/scripts/clean-build.js",
+    "build:translation": "cross-env APP_EDITION=translation vue-tsc && cross-env APP_EDITION=translation VITE_CJS_IGNORE_WARNING=true vite build && electron-builder --config electron-builder.translation.json5",
     "preview": "vite preview",
     "test": "node --require ./src/runtime/test-setup.cjs --experimental-test-module-mocks --test src/runtime/*.test.ts",
     "format": "prettier --write .",

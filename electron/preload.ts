@@ -30,20 +30,24 @@ contextBridge.exposeInMainWorld('electron', {
   cloud: {
     hasApiKey: () => ipcRenderer.invoke('cloud-has-api-key'),
     saveApiKey: (apiKey: string) => ipcRenderer.invoke('cloud-save-api-key', apiKey),
-      testApiKey: () => ipcRenderer.invoke('cloud-test-api-key'),
-      hasSeedAudioApiKey: () => ipcRenderer.invoke('seed-audio-has-api-key'),
-      saveSeedAudioApiKey: (apiKey: string) => ipcRenderer.invoke('seed-audio-save-api-key', apiKey),
-      generateSeedAudio: (params: import('./seed-audio').GenerateSeedAudioParams) =>
-        ipcRenderer.invoke('seed-audio-generate', params),
-      writeSeedAudioArrangement: (
-        runId: string,
-        episodeId: string,
-        arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement,
-      ) => ipcRenderer.invoke('seed-audio-write-arrangement', runId, episodeId, arrangement),
-      mixSeedAudioTracks: (runId: string, episodeId: string, paths: string[], durationMs: number) =>
-        ipcRenderer.invoke('seed-audio-mix-tracks', runId, episodeId, paths, durationMs),
-      writeSeedDialogueTimeline: (runId: string, episodeId: string, lines: import('../src/runtime/seedAudio').SeedAudioLine[], transcript: import('../src/runtime/productionContract').MaterialTranscript) =>
-        ipcRenderer.invoke('seed-audio-write-timeline', runId, episodeId, lines, transcript),
+    testApiKey: () => ipcRenderer.invoke('cloud-test-api-key'),
+    hasSeedAudioApiKey: () => ipcRenderer.invoke('seed-audio-has-api-key'),
+    saveSeedAudioApiKey: (apiKey: string) => ipcRenderer.invoke('seed-audio-save-api-key', apiKey),
+    generateSeedAudio: (params: import('./seed-audio').GenerateSeedAudioParams) =>
+      ipcRenderer.invoke('seed-audio-generate', params),
+    writeSeedAudioArrangement: (
+      runId: string,
+      episodeId: string,
+      arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement,
+    ) => ipcRenderer.invoke('seed-audio-write-arrangement', runId, episodeId, arrangement),
+    mixSeedAudioTracks: (runId: string, episodeId: string, paths: string[], durationMs: number) =>
+      ipcRenderer.invoke('seed-audio-mix-tracks', runId, episodeId, paths, durationMs),
+    writeSeedDialogueTimeline: (
+      runId: string,
+      episodeId: string,
+      lines: import('../src/runtime/seedAudio').SeedAudioLine[],
+      transcript: import('../src/runtime/productionContract').MaterialTranscript,
+    ) => ipcRenderer.invoke('seed-audio-write-timeline', runId, episodeId, lines, transcript),
     generateScript: (brief: import('./types').MediaScriptBrief) =>
       ipcRenderer.invoke('cloud-generate-script', brief),
     runSkill: (
@@ -58,7 +62,8 @@ contextBridge.exposeInMainWorld('electron', {
       projectId: string,
       episodeId: string,
       textModel?: import('./types').TextModel,
-    ) => ipcRenderer.invoke('cloud-run-wiki-skill', skillName, input, projectId, episodeId, textModel),
+    ) =>
+      ipcRenderer.invoke('cloud-run-wiki-skill', skillName, input, projectId, episodeId, textModel),
     generateVoice: (
       runId: string,
       episodeId: string,
@@ -82,28 +87,82 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('material-generate-srt', params),
     analyzeMaterialVideo: (params: import('./types').AnalyzeMaterialVideoParams) =>
       ipcRenderer.invoke('material-analyze-video', params),
-    writeEditingTimeline: (runId: string, episodeId: string, timeline: import('../src/runtime/productionContract').EditingTimeline) =>
-      ipcRenderer.invoke('material-write-editing-timeline', runId, episodeId, timeline),
-    writeEpisodeSubtitles: (runId: string, episodeId: string, language: 'zh' | 'en', cues: import('./types').EpisodeSubtitleCue[]) =>
-      ipcRenderer.invoke('material-write-episode-subtitles', runId, episodeId, language, cues),
+    writeEditingTimeline: (
+      runId: string,
+      episodeId: string,
+      timeline: import('../src/runtime/productionContract').EditingTimeline,
+    ) => ipcRenderer.invoke('material-write-editing-timeline', runId, episodeId, timeline),
+    writeEpisodeSubtitles: (
+      runId: string,
+      episodeId: string,
+      language: 'zh' | 'en',
+      cues: import('./types').EpisodeSubtitleCue[],
+    ) => ipcRenderer.invoke('material-write-episode-subtitles', runId, episodeId, language, cues),
     translateSubtitles: (params: import('./types').TranslateSubtitlesParams) =>
       ipcRenderer.invoke('cloud-translate-subtitles', params),
     selectVideoTranslationSource: (runId: string, episodeId: string) =>
       ipcRenderer.invoke('video-translation-select-source', runId, episodeId),
-    identifyVideoTranslationSpeakers: (params: import('./types').IdentifyVideoTranslationSpeakersParams) =>
-      ipcRenderer.invoke('video-translation-identify-speakers', params),
+    identifyVideoTranslationSpeakers: (
+      params: import('./types').IdentifyVideoTranslationSpeakersParams,
+    ) => ipcRenderer.invoke('video-translation-identify-speakers', params),
+    onVideoTranslationProgress: (
+      listener: (progress: import('./types').VideoTranslationProgressEvent) => void,
+    ) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        progress: import('./types').VideoTranslationProgressEvent,
+      ) => listener(progress)
+      ipcRenderer.on('video-translation-progress', handler)
+      return () => ipcRenderer.off('video-translation-progress', handler)
+    },
     translateVideoSubtitles: (params: import('./types').TranslateVideoSubtitlesParams) =>
       ipcRenderer.invoke('video-translation-translate', params),
-    writeVideoTranslationContext: (runId: string, episodeId: string, contextPaths: Array<{ path: string; hash: string }>) =>
-      ipcRenderer.invoke('video-translation-write-context', runId, episodeId, contextPaths),
-    confirmVideoTranslation: (runId: string, episodeId: string, sourceLanguage: string, targetLanguage: string, cues: import('../src/runtime/videoTranslation').VideoTranslationCue[], roles: import('../src/runtime/videoTranslation').TranslationRole[]) =>
-      ipcRenderer.invoke('video-translation-confirm', runId, episodeId, sourceLanguage, targetLanguage, cues, roles),
-    bindVideoTranslationVoice: (runId: string, role: import('../src/runtime/videoTranslation').TranslationRole) =>
-      ipcRenderer.invoke('video-translation-bind-voice', runId, role),
-    writeVideoTranslationSeedPlan: (runId: string, episodeId: string, targetLanguage: string, arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement, promptMarkdown: string) =>
-      ipcRenderer.invoke('video-translation-write-seed-plan', runId, episodeId, targetLanguage, arrangement, promptMarkdown),
-    generateVideoTranslationTargetVoice: (runId: string, episodeId: string, targetLanguage: string) =>
-      ipcRenderer.invoke('video-translation-generate-voice', runId, episodeId, targetLanguage),
+    writeVideoTranslationContext: (
+      runId: string,
+      episodeId: string,
+      contextPaths: Array<{ path: string; hash: string }>,
+    ) => ipcRenderer.invoke('video-translation-write-context', runId, episodeId, contextPaths),
+    confirmVideoTranslation: (
+      runId: string,
+      episodeId: string,
+      sourceLanguage: string,
+      targetLanguage: string,
+      cues: import('../src/runtime/videoTranslation').VideoTranslationCue[],
+      roles: import('../src/runtime/videoTranslation').TranslationRole[],
+    ) =>
+      ipcRenderer.invoke(
+        'video-translation-confirm',
+        runId,
+        episodeId,
+        sourceLanguage,
+        targetLanguage,
+        cues,
+        roles,
+      ),
+    bindVideoTranslationVoice: (
+      runId: string,
+      role: import('../src/runtime/videoTranslation').TranslationRole,
+    ) => ipcRenderer.invoke('video-translation-bind-voice', runId, role),
+    writeVideoTranslationSeedPlan: (
+      runId: string,
+      episodeId: string,
+      targetLanguage: string,
+      arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement,
+      promptMarkdown: string,
+    ) =>
+      ipcRenderer.invoke(
+        'video-translation-write-seed-plan',
+        runId,
+        episodeId,
+        targetLanguage,
+        arrangement,
+        promptMarkdown,
+      ),
+    generateVideoTranslationTargetVoice: (
+      runId: string,
+      episodeId: string,
+      targetLanguage: string,
+    ) => ipcRenderer.invoke('video-translation-generate-voice', runId, episodeId, targetLanguage),
     composeVideoTranslation: (params: import('./ffmpeg/types').ComposeVideoTranslationParams) =>
       ipcRenderer.invoke('video-translation-compose', params),
     composePictureMaster: (params: import('./ffmpeg/types').ComposePictureMasterParams) =>
@@ -121,32 +180,57 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('cloud-select-core-reference', runId),
     selectAssetImage: (runId: string, assetId: string) =>
       ipcRenderer.invoke('project-select-asset-image', runId, assetId),
-    searchAssetImage: (runId: string, assetId: string, searchQuery: string, rejectedPinIds?: string[]) =>
+    searchAssetImage: (
+      runId: string,
+      assetId: string,
+      searchQuery: string,
+      rejectedPinIds?: string[],
+    ) =>
       ipcRenderer.invoke('project-search-asset-image', runId, assetId, searchQuery, rejectedPinIds),
     loadLatestState: () => ipcRenderer.invoke('cloud-load-latest-state'),
     scanVoiceLibrary: (sourceRoot: string) => ipcRenderer.invoke('voice-library-scan', sourceRoot),
     voiceLibraryPath: () => ipcRenderer.invoke('voice-library-path'),
-    openVoicePack: (voiceProfileId: string) => ipcRenderer.invoke('voice-library-open-pack', voiceProfileId),
-    listVoiceProfiles: (query?: Record<string, unknown>) => ipcRenderer.invoke('voice-library-list', query),
-    previewVoiceProfile: (voiceProfileId: string) => ipcRenderer.invoke('voice-library-preview', voiceProfileId),
+    openVoicePack: (voiceProfileId: string) =>
+      ipcRenderer.invoke('voice-library-open-pack', voiceProfileId),
+    listVoiceProfiles: (query?: Record<string, unknown>) =>
+      ipcRenderer.invoke('voice-library-list', query),
+    previewVoiceProfile: (voiceProfileId: string) =>
+      ipcRenderer.invoke('voice-library-preview', voiceProfileId),
     reviewVoiceProfile: (voiceProfileId: string, patch: import('./voice-library').VoiceProfile) =>
       ipcRenderer.invoke('voice-library-review', voiceProfileId, patch),
-      standardizeVoiceProfile: (voiceProfileId: string) => ipcRenderer.invoke('voice-library-standardize', voiceProfileId),
-      registerSeedVoiceProfile: (params: import('./voice-library').RegisterSeedVoiceProfileParams) =>
-        ipcRenderer.invoke('voice-library-register-seed', params),
-      bindProjectSeedVoice: (projectId: string, episodeId: string, speakerId: string, voiceProfileId: string) =>
-        ipcRenderer.invoke('project-bind-seed-voice', projectId, episodeId, speakerId, voiceProfileId),
-      resolveProjectSeedReferences: (projectId: string, speakerIds: string[]) =>
-        ipcRenderer.invoke('voice-library-resolve-seed', projectId, speakerIds),
-      resolveSeedVoiceProfiles: (bindings: Array<{ speakerId: string; voiceProfileId: string }>) =>
-        ipcRenderer.invoke('voice-library-resolve-profiles', bindings),
-    bindProjectVoice: (projectId: string, speakerId: string, voiceProfileId: string, taskId?: string) =>
-      ipcRenderer.invoke('project-bind-voice', projectId, speakerId, voiceProfileId, taskId),
+    standardizeVoiceProfile: (voiceProfileId: string) =>
+      ipcRenderer.invoke('voice-library-standardize', voiceProfileId),
+    registerSeedVoiceProfile: (params: import('./voice-library').RegisterSeedVoiceProfileParams) =>
+      ipcRenderer.invoke('voice-library-register-seed', params),
+    bindProjectSeedVoice: (
+      projectId: string,
+      episodeId: string,
+      speakerId: string,
+      voiceProfileId: string,
+    ) =>
+      ipcRenderer.invoke(
+        'project-bind-seed-voice',
+        projectId,
+        episodeId,
+        speakerId,
+        voiceProfileId,
+      ),
+    resolveProjectSeedReferences: (projectId: string, speakerIds: string[]) =>
+      ipcRenderer.invoke('voice-library-resolve-seed', projectId, speakerIds),
+    resolveSeedVoiceProfiles: (bindings: Array<{ speakerId: string; voiceProfileId: string }>) =>
+      ipcRenderer.invoke('voice-library-resolve-profiles', bindings),
+    bindProjectVoice: (
+      projectId: string,
+      speakerId: string,
+      voiceProfileId: string,
+      taskId?: string,
+    ) => ipcRenderer.invoke('project-bind-voice', projectId, speakerId, voiceProfileId, taskId),
     createProject: (projectId: string, state: string) =>
       ipcRenderer.invoke('project-create', projectId, state),
     openProjectDirectory: () => ipcRenderer.invoke('project-open-directory'),
     listProjects: () => ipcRenderer.invoke('project-list'),
-    loadProject: (projectId: string, episodeId: string) => ipcRenderer.invoke('project-load', projectId, episodeId),
+    loadProject: (projectId: string, episodeId: string) =>
+      ipcRenderer.invoke('project-load', projectId, episodeId),
     getLastOpenedProject: () => ipcRenderer.invoke('project-last-opened'),
     setLastOpenedProject: (projectId: string) =>
       ipcRenderer.invoke('project-set-last-opened', projectId),
@@ -163,16 +247,23 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.invoke('project-markdown-read', projectId, relativePath),
     beginStoryboardUpdate: (projectId: string, episodeId: string) =>
       ipcRenderer.invoke('project-storyboard-begin', projectId, episodeId),
-    commitStoryboardUpdate: (projectId: string, episodeId: string, transactionId: string, writtenPaths: string[]) =>
-      ipcRenderer.invoke('project-storyboard-commit', projectId, episodeId, transactionId, writtenPaths),
+    commitStoryboardUpdate: (
+      projectId: string,
+      episodeId: string,
+      transactionId: string,
+      writtenPaths: string[],
+    ) =>
+      ipcRenderer.invoke(
+        'project-storyboard-commit',
+        projectId,
+        episodeId,
+        transactionId,
+        writtenPaths,
+      ),
     rollbackStoryboardUpdate: (projectId: string, episodeId: string, transactionId: string) =>
       ipcRenderer.invoke('project-storyboard-rollback', projectId, episodeId, transactionId),
-    writeMarkdown: (
-      projectId: string,
-      relativePath: string,
-      content: string,
-      revision?: string,
-    ) => ipcRenderer.invoke('project-markdown-write', projectId, relativePath, content, revision),
+    writeMarkdown: (projectId: string, relativePath: string, content: string, revision?: string) =>
+      ipcRenderer.invoke('project-markdown-write', projectId, relativePath, content, revision),
     saveState: (runId: string, episodeId: string, value: string) =>
       ipcRenderer.invoke('cloud-save-state', runId, episodeId, value),
     cancelRun: (runId: string) => ipcRenderer.invoke('cloud-cancel-run', runId),

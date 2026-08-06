@@ -36,6 +36,16 @@ import {
   writeDataUrl,
 } from './media-workspace.ts'
 import { validateMaterialTranscript } from '../src/runtime/productionContract.ts'
+import { splitTimedSubtitleText } from '../src/runtime/videoTranslation.ts'
+import {
+  prepareVideoTranslationModelInput,
+  prepareVideoTranslationReviewSlices,
+} from './video-translation-input.ts'
+import {
+  appendVideoTranslationTrace,
+  readVideoTranslationStage,
+  writeVideoTranslationStage,
+} from './video-translation-trace.ts'
 
 export const API_ORIGIN = 'https://api.jiucaihezi.studio'
 export const OPENAI_BASE_URL = `${API_ORIGIN}/v1`
@@ -49,6 +59,23 @@ export const TEXT_MODELS: TextModel[] = [
 ]
 
 const KEY_FILE = 'jiucai-api-key.bin'
+export const VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
+
+function videoMimeType(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase()
+  return (
+    (
+      {
+        '.mp4': 'video/mp4',
+        '.mov': 'video/quicktime',
+        '.m4v': 'video/x-m4v',
+        '.webm': 'video/webm',
+        '.mkv': 'video/x-matroska',
+        '.avi': 'video/x-msvideo',
+      } as Record<string, string>
+    )[extension] || 'video/mp4'
+  )
+}
 const SKILLS = new Set([
   'jc-media-script',
   'jc-script-storyboard',
@@ -63,10 +90,7 @@ const SKILLS = new Set([
   'jc-doubao-seed-audio',
 ])
 const runControllers = new Map<string, Set<AbortController>>()
-const taskControllers = new Map<
-  string,
-  { controller: AbortController; finished: Promise<void> }
->()
+const taskControllers = new Map<string, { controller: AbortController; finished: Promise<void> }>()
 const runJsonWrites = new Map<string, Promise<void>>()
 let sessionApiKey = ''
 
@@ -124,6 +148,10 @@ function friendlyError(error: unknown): Error {
   if (error.response?.status === 429) return new Error('请求过于频繁，请稍后重试')
   if (error.response?.status === 524)
     return new Error('当前模型响应超时，内容尚未生成。请重试或切换其他文本模型。')
+  if (['ECONNABORTED', 'ETIMEDOUT'].includes(String(error.code || '')))
+    return new Error('云端模型长时间未响应，任务已停止，请重试。')
+  if (!error.response && ['ECONNRESET', 'EPIPE', 'ERR_NETWORK'].includes(String(error.code || '')))
+    return new Error('云端连接被中断，请检查网络后重试。再次点击扒片会从已完成文档继续。')
   const detail =
     typeof error.response?.data === 'string'
       ? error.response.data
@@ -171,7 +199,8 @@ async function downloadResultMedia(url: string, outputPath: string, signal?: Abo
   try {
     return await downloadMedia(url, outputPath, signal, headers)
   } catch (error) {
-    if (!/ERR_CONNECTION_CLOSED/.test(error instanceof Error ? error.message : String(error))) throw error
+    if (!/ERR_CONNECTION_CLOSED/.test(error instanceof Error ? error.message : String(error)))
+      throw error
     const response = await axios.get<ArrayBuffer>(url, {
       responseType: 'arraybuffer',
       timeout: 300_000,
@@ -237,7 +266,12 @@ export async function generateScript(brief: MediaScriptBrief) {
   ) {
     throw new Error('视觉风格无效')
   }
-  const result = await runSkill('jc-media-script', JSON.stringify(brief), undefined, brief.textModel)
+  const result = await runSkill(
+    'jc-media-script',
+    JSON.stringify(brief),
+    undefined,
+    brief.textModel,
+  )
   const text = String(result?.text || '').trim()
   if (!text) throw new Error('文稿模型没有返回正文')
   return text
@@ -316,10 +350,18 @@ export async function translateSubtitles(params: TranslateSubtitlesParams) {
         const value = parseJson(output)
         const translated = Array.isArray(value?.subtitles) ? value.subtitles : []
         if (translated.length !== params.subtitles.length) throw new Error('英文字幕数量不一致')
-        const byId = new Map(translated.map((item: any) => [String(item?.shotId || ''), String(item?.text || '').trim()]))
+        const byId = new Map(
+          translated.map((item: any) => [
+            String(item?.shotId || ''),
+            String(item?.text || '').trim(),
+          ]),
+        )
         if (byId.size !== ids.size || [...ids].some((id) => !byId.get(id)))
           throw new Error('英文字幕 ID 或正文不完整')
-        return params.subtitles.map((item) => ({ shotId: item.shotId, text: byId.get(item.shotId)! }))
+        return params.subtitles.map((item) => ({
+          shotId: item.shotId,
+          text: byId.get(item.shotId)!,
+        }))
       } catch (error) {
         reason = error instanceof Error ? error.message : String(error)
       }
@@ -339,9 +381,9 @@ export async function collectVideoTranslationContext(
     'wiki/声音/角色/',
     'wiki/翻译/角色/',
   ]
-  const paths = (await listProjectMarkdown(runId)).filter((item) =>
-    allowed.some((prefix) => item === prefix || item.startsWith(prefix)),
-  ).slice(0, 40)
+  const paths = (await listProjectMarkdown(runId))
+    .filter((item) => allowed.some((prefix) => item === prefix || item.startsWith(prefix)))
+    .slice(0, 40)
   const sources: VideoTranslationContextSource[] = []
   let bytes = 0
   for (const relativePath of paths) {
@@ -360,9 +402,14 @@ export async function collectVideoTranslationContext(
 
 export async function translateVideoSubtitles(params: TranslateVideoSubtitlesParams) {
   if (
-    !params?.runId || !params.episodeId || !TEXT_MODELS.includes(params.textModel) ||
-    !params.sourceLanguage?.trim() || !params.targetLanguage?.trim() || !params.subtitles?.length
-  ) throw new Error('视频字幕翻译参数无效')
+    !params?.runId ||
+    !params.episodeId ||
+    !TEXT_MODELS.includes(params.textModel) ||
+    !params.sourceLanguage?.trim() ||
+    !params.targetLanguage?.trim() ||
+    !params.subtitles?.length
+  )
+    throw new Error('视频字幕翻译参数无效')
   const ids = new Set<string>()
   for (const item of params.subtitles) {
     if (!item.cueId?.trim() || ids.has(item.cueId) || !item.text?.trim())
@@ -370,31 +417,59 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
     ids.add(item.cueId)
   }
   const context = await collectVideoTranslationContext(params.runId, params.episodeId)
-  const prompt = `把字幕从 ${params.sourceLanguage} 准确翻译为 ${params.targetLanguage}。结合角色和剧本资料保持称呼、专有名词、语气一致。不得增删、合并、拆分或改变 cueId。只返回 JSON：{"subtitles":[{"cueId":"原ID","text":"译文"}]}\n\n上下文：${JSON.stringify(context)}\n\n字幕：${JSON.stringify(params.subtitles)}`
+  const locale =
+    params.targetLanguage === 'en'
+      ? '目标地区为美国：使用自然、符合人物身份和剧情语境的美式影视口语，避免英式拼写、英式习语和中文句式直译。'
+      : ''
+  const prompt = `把字幕从 ${params.sourceLanguage} 准确翻译为 ${params.targetLanguage}。${locale}结合完整字幕、角色和剧本资料保持剧情、称呼、专有名词、语气一致，不要孤立逐句直译。不得增删、合并、拆分或改变 cueId。只返回 Markdown，不要前言、总结或代码块。每条严格使用以下格式：\n## cue-001\n译文正文\n\n上下文：${JSON.stringify(context)}\n\n完整字幕：${JSON.stringify(params.subtitles)}`
   return withRunAbort(params.runId, async (signal) => {
     let reason = ''
     for (let attempt = 0; attempt < 2; attempt++) {
-      const output = await generateJsonResponse(
-        '你是影视本地化字幕翻译器。只输出合法 JSON。',
-        `${prompt}${reason ? `\n\n上次结果无效：${reason}` : ''}`,
+      const output = await generateMarkdownResponse(
+        '你是影视本地化字幕翻译器。只输出规定格式的 Markdown。',
+        `${prompt}${reason ? `\n\n上次结果无效：${reason}。请按原 cueId 和原数量重新输出完整 Markdown。` : ''}`,
         params.textModel,
         signal,
         8_000,
       )
+      let result: {
+        subtitles: Array<{ cueId: string; text: string }>
+        contextPaths: Array<{ path: string; hash: string }>
+      }
       try {
-        const value = parseJson(output)
-        const translated = Array.isArray(value?.subtitles) ? value.subtitles : []
+        const translated = parseCueMarkdown(output)
         if (translated.length !== params.subtitles.length) throw new Error('译文字幕数量不一致')
-        const byId = new Map(translated.map((item: any) => [String(item?.cueId || ''), String(item?.text || '').trim()]))
+        const byId = new Map(translated.map((item) => [item.cueId, item.body]))
         if (byId.size !== ids.size || [...ids].some((id) => !byId.get(id)))
           throw new Error('译文字幕 ID 或正文不完整')
-        return {
-          subtitles: params.subtitles.map((item) => ({ cueId: item.cueId, text: byId.get(item.cueId)! })),
+        result = {
+          subtitles: params.subtitles.map((item) => ({
+            cueId: item.cueId,
+            text: String(byId.get(item.cueId) || ''),
+          })),
           contextPaths: context.map(({ path, hash }) => ({ path, hash })),
         }
       } catch (error) {
         reason = error instanceof Error ? error.message : String(error)
+        continue
       }
+      await appendVideoTranslationTrace(
+        params.runId,
+        params.episodeId,
+        '目标语言翻译草稿',
+        params.textModel,
+        [
+          { label: '扒片最终稿', target: '04-最终稿.md' },
+          { label: '来源上下文', target: '来源上下文.md' },
+          ...result.contextPaths.map((item) => ({
+            label: item.path,
+            target: item.path,
+            hash: item.hash,
+          })),
+        ],
+        output,
+      )
+      return result
     }
     throw new Error(reason || '视频字幕翻译失败')
   })
@@ -402,40 +477,344 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
 
 export async function identifyVideoTranslationSpeakers(
   params: IdentifyVideoTranslationSpeakersParams,
-): Promise<{ speakers: VideoTranslationSpeakerDraft[]; contextPaths: Array<{ path: string; hash: string }> }> {
-  if (!params?.runId || !params.episodeId || !params.videoPath || !params.cues?.length)
+  reportProgress: (message: string) => void = () => {},
+): Promise<{
+  speakers: VideoTranslationSpeakerDraft[]
+  contextPaths: Array<{ path: string; hash: string }>
+}> {
+  if (!params?.runId || !params.episodeId || !params.videoPath)
     throw new Error('说话角色识别参数无效')
-  const videoPath = assertVideoTranslationSource(params.runId, params.episodeId, params.videoPath)
-  const stat = await fs.promises.stat(videoPath)
-  if (stat.size > 90 * 1024 * 1024) throw new Error('原片过大，无法提交角色识别')
+  const sourceVideoPath = assertVideoTranslationSource(
+    params.runId,
+    params.episodeId,
+    params.videoPath,
+  )
+  reportProgress('正在压缩并准备模型视频')
+  const videoPath = await prepareVideoTranslationModelInput(
+    params.runId,
+    params.episodeId,
+    sourceVideoPath,
+  )
   const video = await fs.promises.readFile(videoPath)
+  const durationMs = Math.round((await mediaDuration(sourceVideoPath)) * 1000)
   const context = await collectVideoTranslationContext(params.runId, params.episodeId)
-  const output = await withRunAbort(params.runId, (signal) => generateJsonResponse(
-    '你是影视对白说话角色识别器。只输出合法 JSON；不得改写 cueId、时间或字幕。',
-    [
-      { type: 'file', file: { filename: path.basename(videoPath), file_data: `data:video/mp4;base64,${video.toString('base64')}` } },
-      { type: 'text', text: `结合视频画面、声音、已确认角色和项目资料，为每个 cue 判断说话角色。已有角色只能返回其 translationRoleId；新人不填写 proposedRoleId，只给 proposedName 并 needsReview=true。返回 JSON：{"speakers":[{"cueId":"cue-001","proposedRoleId":"role-1","proposedName":"角色名","confidence":0.9,"evidence":"简短证据","needsReview":false}]}\n\n已有翻译角色：${JSON.stringify(params.roles)}\n\n项目资料：${JSON.stringify(context)}\n\n字幕：${JSON.stringify(params.cues)}` },
-    ],
-    params.textModel,
-    signal,
-    4_000,
-  ))
-  const value = parseJson(output)
-  const returned = new Map((Array.isArray(value?.speakers) ? value.speakers : []).map((item: any) => [String(item?.cueId || ''), item]))
-  const roleIds = new Set(params.roles.map((role) => role.translationRoleId))
-  const speakers = params.cues.map((cue): VideoTranslationSpeakerDraft => {
-    const item: any = returned.get(cue.cueId) || {}
-    const proposedRoleId = roleIds.has(String(item.proposedRoleId || '')) ? String(item.proposedRoleId) : undefined
+  reportProgress('第 1/4 步：Gemini 正在完整分析视频，最长等待 15 分钟')
+  const output = await withRunAbort(params.runId, async (signal) => {
+    const videoHash = createHash('sha256').update(video).digest('hex')
+    const commonInputs = [
+      {
+        label: '模型分析视频',
+        target: relativeRunAsset(params.runId, videoPath),
+        hash: videoHash,
+      },
+      ...context.map((item) => ({ label: item.path, target: item.path, hash: item.hash })),
+    ]
+    let globalOutput = ''
+    let splitPlan: Array<{ startMs: number; endMs: number }> = []
+    let splitReason = ''
+    let savedGlobal = await readVideoTranslationStage(
+      params.runId,
+      params.episodeId,
+      '01-整体分析与切片方案.md',
+      videoHash,
+    )
+    if (savedGlobal) {
+      try {
+        globalOutput = savedGlobal.result
+        splitPlan = parseVideoTranslationSplitPlan(globalOutput, durationMs)
+        reportProgress('第 1/4 步：发现有效断点，复用 01-整体分析与切片方案.md')
+      } catch {
+        savedGlobal = null
+        globalOutput = ''
+        splitPlan = []
+      }
+    }
+    if (!splitPlan.length) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        globalOutput = await generateMarkdownResponse(
+          '你是影视全片导演分析器。完整理解剧情并规划连续 FFmpeg 切片，只输出 Markdown。',
+          [
+            {
+              type: 'file',
+              file: {
+                filename: path.basename(videoPath),
+                file_data: `data:${videoMimeType(videoPath)};base64,${video.toString('base64')}`,
+              },
+            },
+            {
+              type: 'text',
+              text: `完整观看视频，理解剧情、人物、关系、称谓、场景和节奏，并为 FFmpeg 规划切片。视频真实总时长为 ${durationMs} 毫秒。切点必须选择自然的剧情、镜头或对白间隙，避免从一句台词中间切开；每片尽量 10-30 秒，任何一片不得超过 45 秒。
+
+切片必须从 0 开始、首尾严格相接，上一片结束毫秒必须等于下一片开始毫秒，最后一片必须结束于 ${durationMs}。只返回 Markdown，包含剧情文档和以下固定格式：
+
+## FFmpeg切片方案
+- slice-001 | 0 | 12000 | 切点理由
+- slice-002 | 12000 | ${durationMs} | 切点理由
+
+已有翻译角色：${JSON.stringify(params.roles)}
+
+项目资料：${JSON.stringify(context)}${splitReason ? `\n\n上次切片方案无效：${splitReason}。请修复后完整重发。` : ''}`,
+            },
+          ],
+          'gemini-3.6-flash',
+          signal,
+          4_000,
+          VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
+        )
+        try {
+          splitPlan = parseVideoTranslationSplitPlan(globalOutput, durationMs)
+          splitReason = ''
+          break
+        } catch (error) {
+          splitReason = error instanceof Error ? error.message : String(error)
+        }
+      }
+    }
+    if (splitReason) throw new Error(splitReason)
+    const globalPath =
+      savedGlobal?.path ||
+      (await writeVideoTranslationStage(
+        params.runId,
+        params.episodeId,
+        '01-整体分析与切片方案.md',
+        '整体分析与切片方案',
+        'gemini-3.6-flash',
+        commonInputs,
+        globalOutput,
+      ))
+    if (!savedGlobal) {
+      await appendVideoTranslationTrace(
+        params.runId,
+        params.episodeId,
+        '第一步整体分析与切片方案',
+        'gemini-3.6-flash',
+        commonInputs,
+        `[[${globalPath}|整体分析与切片方案]]`,
+      )
+    }
+    reportProgress('第 1/4 步完成：已生成 01-整体分析与切片方案.md')
+    reportProgress('第 2/4 步：FFmpeg 正在按方案切片')
+    const slices = await prepareVideoTranslationReviewSlices(
+      params.runId,
+      params.episodeId,
+      videoPath,
+      splitPlan,
+      signal,
+    )
+    const sliceManifest = slices
+      .map(
+        (slice, index) =>
+          `- slice-${String(index + 1).padStart(3, '0')} | ${slice.startMs} | ${slice.endMs} | [[${relativeRunAsset(params.runId, slice.path)}|FFmpeg 切片]]`,
+      )
+      .join('\n')
+    const sliceManifestPath = await writeVideoTranslationStage(
+      params.runId,
+      params.episodeId,
+      '02-FFmpeg切片.md',
+      'FFmpeg切片',
+      'FFmpeg',
+      [{ label: '整体分析与切片方案', target: globalPath }],
+      `## 实际切片\n\n${sliceManifest}`,
+    )
+    await appendVideoTranslationTrace(
+      params.runId,
+      params.episodeId,
+      '第二步 FFmpeg 切片',
+      'FFmpeg',
+      [{ label: '整体分析与切片方案', target: globalPath }],
+      `[[${sliceManifestPath}|FFmpeg 切片清单]]`,
+    )
+    reportProgress(`第 2/4 步完成：已生成 ${slices.length} 个切片和 02-FFmpeg切片.md`)
+    const sliceOutputs: string[] = []
+    const speakers: VideoTranslationSpeakerDraft[] = []
+    for (let index = 0; index < slices.length; index++) {
+      const slice = slices[index]
+      const sliceNumber = String(index + 1).padStart(3, '0')
+      const savedSlice = await readVideoTranslationStage(
+        params.runId,
+        params.episodeId,
+        `03-片段${sliceNumber}台词.md`,
+      )
+      if (savedSlice) {
+        try {
+          speakers.push(
+            ...parseVideoTranslationSliceDialogue(savedSlice.result, slice, params.roles),
+          )
+          sliceOutputs.push(
+            `## 片段 ${sliceNumber}（原片 ${slice.startMs}-${slice.endMs}ms）\n\n${savedSlice.result}`,
+          )
+          reportProgress(`第 3/4 步：复用已完成片段 ${index + 1}/${slices.length}，继续检查下一片`)
+          continue
+        } catch {
+          // Invalid checkpoints are regenerated below.
+        }
+      }
+      reportProgress(`第 3/4 步：Gemini 正在扒取片段 ${index + 1}/${slices.length}`)
+      const sliceVideo = await fs.promises.readFile(slice.path)
+      let reason = ''
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const sliceOutput = await generateMarkdownResponse(
+          '你是影视对白逐片扒片器。完整读取声音、画面字幕和口型，只输出规定格式的 Markdown。',
+          [
+            {
+              type: 'file',
+              file: {
+                filename: path.basename(slice.path),
+                file_data: `data:${videoMimeType(slice.path)};base64,${sliceVideo.toString('base64')}`,
+              },
+            },
+            {
+              type: 'text',
+              text: `这是原片 ${slice.startMs}-${slice.endMs} 毫秒的 FFmpeg 切片，片内时长 ${slice.endMs - slice.startMs} 毫秒。完整观看这一片，综合声音、画面字幕和口型，逐句输出全部真实有声台词。不得概括、跳过短句或把画面字幕忽略掉。时间必须使用本切片内从 0 开始的相对毫秒，按时间递增且不得重叠。若确实无对白，只返回“无对白”。
+
+只返回 Markdown，不要前言、总结或代码块。每句严格使用：
+## line-001
+- 开始毫秒：0
+- 结束毫秒：1000
+- 角色 ID：role-1（新人或未知写“无”）
+- 角色名：角色名
+- 置信度：0.9
+- 需要复核：否
+
+### 校准原文
+真实口语原文
+
+### 证据
+声音、口型、画面字幕和上下文证据
+
+### 画面文字
+对应画面字幕，无则写“无”
+
+已有翻译角色：${JSON.stringify(params.roles)}
+
+整体剧情文档：
+${globalOutput}${reason ? `\n\n上次结果无效：${reason}。请修复后完整重发本片结果。` : ''}`,
+            },
+          ],
+          'gemini-3.6-flash',
+          signal,
+          8_000,
+          VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
+        )
+        try {
+          speakers.push(...parseVideoTranslationSliceDialogue(sliceOutput, slice, params.roles))
+          sliceOutputs.push(
+            `## 片段 ${sliceNumber}（原片 ${slice.startMs}-${slice.endMs}ms）\n\n${sliceOutput}`,
+          )
+          const sliceStagePath = await writeVideoTranslationStage(
+            params.runId,
+            params.episodeId,
+            `03-片段${sliceNumber}台词.md`,
+            `片段 ${sliceNumber} 台词`,
+            'gemini-3.6-flash',
+            [
+              { label: '整体分析与切片方案', target: globalPath },
+              {
+                label: `FFmpeg 片段 ${sliceNumber}`,
+                target: relativeRunAsset(params.runId, slice.path),
+              },
+            ],
+            sliceOutput,
+          )
+          await appendVideoTranslationTrace(
+            params.runId,
+            params.episodeId,
+            `第三步片段 ${index + 1}/${slices.length}`,
+            'gemini-3.6-flash',
+            [
+              {
+                label: `FFmpeg 片段 ${sliceNumber}`,
+                target: relativeRunAsset(params.runId, slice.path),
+              },
+            ],
+            `[[${sliceStagePath}|片段 ${sliceNumber} 台词]]`,
+          )
+          reportProgress(
+            `第 3/4 步：已完成片段 ${index + 1}/${slices.length}，已生成 03-片段${sliceNumber}台词.md`,
+          )
+          reason = ''
+          break
+        } catch (error) {
+          reason = error instanceof Error ? error.message : String(error)
+        }
+      }
+      if (reason) throw new Error(reason)
+    }
+    const sliceDialoguePath = await writeVideoTranslationStage(
+      params.runId,
+      params.episodeId,
+      '03-Gemini逐片台词.md',
+      'Gemini逐片台词',
+      'gemini-3.6-flash',
+      [
+        { label: '整体分析与切片方案', target: globalPath },
+        { label: 'FFmpeg 切片清单', target: sliceManifestPath },
+      ],
+      sliceOutputs.join('\n\n'),
+    )
+    await appendVideoTranslationTrace(
+      params.runId,
+      params.episodeId,
+      '第三步 Gemini 逐片台词',
+      'gemini-3.6-flash',
+      [{ label: 'FFmpeg 切片清单', target: sliceManifestPath }],
+      `[[${sliceDialoguePath}|逐片台词结果]]`,
+    )
+    reportProgress('第 3/4 步完成：已生成 03-Gemini逐片台词.md')
+    speakers.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
+    for (let index = 1; index < speakers.length; index++)
+      if (speakers[index].startMs < speakers[index - 1].endMs)
+        throw new Error('逐片台词合并后发生时间重叠')
+    const finalSpeakers = speakers
+      .flatMap((speaker) =>
+        splitTimedSubtitleText(
+          speaker.correctedText,
+          speaker.startMs,
+          speaker.endMs,
+          'auto',
+        ).map((part) => ({
+          ...speaker,
+          startMs: part.startMs,
+          endMs: part.endMs,
+          correctedText: part.text,
+        })),
+      )
+      .map((speaker, index) => ({
+        ...speaker,
+        cueId: `translation-cue-${String(index + 1).padStart(3, '0')}`,
+      }))
+    reportProgress('第 4/4 步：正在合并时间轴并生成最终稿')
+    const finalPath = await writeVideoTranslationStage(
+      params.runId,
+      params.episodeId,
+      '04-最终稿.md',
+      '最终稿',
+      '程序直接合并',
+      [
+        { label: '整体分析与切片方案', target: globalPath },
+        { label: 'FFmpeg 切片清单', target: sliceManifestPath },
+        { label: 'Gemini 逐片台词', target: sliceDialoguePath },
+      ],
+      renderVideoTranslationFinalDialogue(finalSpeakers),
+    )
+    await appendVideoTranslationTrace(
+      params.runId,
+      params.episodeId,
+      '第四步直接确定最终稿',
+      '程序直接合并',
+      [{ label: 'Gemini 逐片台词', target: sliceDialoguePath }],
+      `[[${finalPath}|最终稿]]`,
+    )
+    reportProgress('第 4/4 步完成：已生成 04-最终稿.md')
     return {
-      cueId: cue.cueId,
-      proposedRoleId,
-      proposedName: String(item.proposedName || '新角色').trim() || '新角色',
-      confidence: Math.max(0, Math.min(1, Number(item.confidence) || 0)),
-      evidence: String(item.evidence || '').trim(),
-      needsReview: Boolean(item.needsReview) || !proposedRoleId,
+      speakers: finalSpeakers,
+      finalPath,
     }
   })
-  return { speakers, contextPaths: context.map(({ path, hash }) => ({ path, hash })) }
+  return {
+    speakers: output.speakers,
+    contextPaths: context.map(({ path, hash }) => ({ path, hash })),
+  }
 }
 
 export async function analyzeMaterialVideo(
@@ -445,9 +824,17 @@ export async function analyzeMaterialVideo(
     throw new Error('素材剪辑分析参数无效')
   const shotIds = new Set<string>()
   for (const shot of params.shots) {
-    if (!shot.shotId?.trim() || shotIds.has(shot.shotId) || !shot.script?.trim() || !shot.videoPrompt?.trim())
+    if (
+      !shot.shotId?.trim() ||
+      shotIds.has(shot.shotId) ||
+      !shot.script?.trim() ||
+      !shot.videoPrompt?.trim()
+    )
       throw new Error('素材分镜参数无效')
-    if (shot.soundType === 'onscreen' && (!shot.speakerId?.trim() || !shot.dialogueText?.trim() || !shot.dialogueEmotion?.trim()))
+    if (
+      shot.soundType === 'onscreen' &&
+      (!shot.speakerId?.trim() || !shot.dialogueText?.trim() || !shot.dialogueEmotion?.trim())
+    )
       throw new Error(`${shot.shotId} 缺少确认的对白角色、原文或情绪`)
     shotIds.add(shot.shotId)
   }
@@ -458,11 +845,21 @@ export async function analyzeMaterialVideo(
   const transcriptJsonPath = assertRunAsset(params.runId, params.transcriptJsonPath)
   const transcriptSrtPath = assertRunAsset(params.runId, params.transcriptSrtPath)
   if (
-    !relativeRunAsset(params.runId, transcriptJsonPath).startsWith(`wiki/转录/${params.episodeId}/`) ||
-    !relativeRunAsset(params.runId, transcriptSrtPath).startsWith(`wiki/字幕/素材/${params.episodeId}/`)
-  ) throw new Error('素材转录不属于当前剧集')
-  const transcript = validateMaterialTranscript(JSON.parse(await fs.promises.readFile(transcriptJsonPath, 'utf8')))
-  if (transcript.mediaId !== params.mediaId || transcript.sourceMediaPath !== relativeRunAsset(params.runId, videoPath))
+    !relativeRunAsset(params.runId, transcriptJsonPath).startsWith(
+      `wiki/转录/${params.episodeId}/`,
+    ) ||
+    !relativeRunAsset(params.runId, transcriptSrtPath).startsWith(
+      `wiki/字幕/素材/${params.episodeId}/`,
+    )
+  )
+    throw new Error('素材转录不属于当前剧集')
+  const transcript = validateMaterialTranscript(
+    JSON.parse(await fs.promises.readFile(transcriptJsonPath, 'utf8')),
+  )
+  if (
+    transcript.mediaId !== params.mediaId ||
+    transcript.sourceMediaPath !== relativeRunAsset(params.runId, videoPath)
+  )
     throw new Error('素材转录与视频来源不匹配')
   const srt = await fs.promises.readFile(transcriptSrtPath, 'utf8')
   const prompt = `分析这一条原始视频，并严格对照确认剧本与完整导演分镜。每个 shot 找出完整覆盖导演要求动作的最小连续区间。时间单位只能是毫秒，范围必须在 0 到 ${sourceDurationMs} 之间。不要改写确认剧本、台词、情绪或视频提示词。通过素材 SRT 和确认剧本确定稳定 speakerId；通过画面确定对白以外的戏剧动作和真实剪辑点。
@@ -488,7 +885,13 @@ ${JSON.stringify(params.shots)}
       generateJsonResponse(
         '你是短视频剪辑分析器。只根据原始视频、确认剧本、完整导演分镜和素材 SRT 判断时间与证据，不输出解释。',
         [
-          { type: 'file', file: { filename: path.basename(videoPath), file_data: `data:video/mp4;base64,${video.toString('base64')}` } },
+          {
+            type: 'file',
+            file: {
+              filename: path.basename(videoPath),
+              file_data: `data:${videoMimeType(videoPath)};base64,${video.toString('base64')}`,
+            },
+          },
           { type: 'text', text: prompt },
         ],
         'gemini-3.6-flash',
@@ -502,10 +905,24 @@ ${JSON.stringify(params.shots)}
     if (/API Key|任务已停止/.test(message)) throw error
     value = { shots: [], error: message }
   }
-  const returned = new Map((Array.isArray(value?.shots) ? value.shots : []).map((shot: any) => [String(shot?.shotId || ''), shot]))
+  const returned = new Map(
+    (Array.isArray(value?.shots) ? value.shots : []).map((shot: any) => [
+      String(shot?.shotId || ''),
+      shot,
+    ]),
+  )
   return {
     mediaId: params.mediaId,
-    analyses: params.shots.map((shot) => normalizeMaterialShot(params, shot, returned.get(shot.shotId), sourceDurationMs, value?.error, transcript)),
+    analyses: params.shots.map((shot) =>
+      normalizeMaterialShot(
+        params,
+        shot,
+        returned.get(shot.shotId),
+        sourceDurationMs,
+        value?.error,
+        transcript,
+      ),
+    ),
   }
 }
 
@@ -519,11 +936,18 @@ function normalizeMaterialShot(
 ): ShotVideoAnalysisResult {
   const proposedStart = Number(value?.trimStartMs)
   const proposedEnd = Number(value?.trimEndMs)
-  const validTrim = Number.isFinite(proposedStart) && Number.isFinite(proposedEnd) && proposedStart >= 0 && proposedStart < proposedEnd && proposedEnd <= sourceDurationMs
+  const validTrim =
+    Number.isFinite(proposedStart) &&
+    Number.isFinite(proposedEnd) &&
+    proposedStart >= 0 &&
+    proposedStart < proposedEnd &&
+    proposedEnd <= sourceDurationMs
   const trimStartMs = validTrim ? Math.round(proposedStart) : 0
   const trimEndMs = validTrim ? Math.round(proposedEnd) : sourceDurationMs
   const validCueIds = new Set((transcript?.cues || []).map((cue) => cue.cueId))
-  const requestedCueIds = Array.isArray(value?.subtitleCueIds) ? value.subtitleCueIds.map(String) : []
+  const requestedCueIds = Array.isArray(value?.subtitleCueIds)
+    ? value.subtitleCueIds.map(String)
+    : []
   const subtitleCueIds = requestedCueIds.filter((id: string) => {
     return id && validCueIds.has(id)
   })
@@ -535,29 +959,48 @@ function normalizeMaterialShot(
   const missingSpeaker = shot.soundType === 'onscreen' && !speakerIds.includes(expectedSpeaker)
   const dialogueStart = Number(value?.dialogue?.sourceStartMs)
   const dialogueEnd = Number(value?.dialogue?.sourceEndMs)
-  const validDialogue = shot.soundType === 'onscreen' && Number.isFinite(dialogueStart) && Number.isFinite(dialogueEnd) && dialogueStart >= trimStartMs && dialogueStart < dialogueEnd && dialogueEnd <= trimEndMs
+  const validDialogue =
+    shot.soundType === 'onscreen' &&
+    Number.isFinite(dialogueStart) &&
+    Number.isFinite(dialogueEnd) &&
+    dialogueStart >= trimStartMs &&
+    dialogueStart < dialogueEnd &&
+    dialogueEnd <= trimEndMs
   return {
     shotId: shot.shotId,
     promptSegmentId: shot.shotId,
     sourceMediaId: params.mediaId,
-    sourceVideoPath: relativeRunAsset(params.runId, assertEpisodeAsset(params.runId, params.episodeId, params.videoPath)),
+    sourceVideoPath: relativeRunAsset(
+      params.runId,
+      assertEpisodeAsset(params.runId, params.episodeId, params.videoPath),
+    ),
     sourceDurationMs,
     trimStartMs,
     trimEndMs,
     observedContent: String(value?.observedContent || error || '').trim(),
     subtitleCueIds,
     speakerIds,
-    confidence: validTrim && !unknownSpeaker ? Math.max(0, Math.min(1, Number(value?.confidence) || 0)) : 0,
-    needsReview: Boolean(error) || Boolean(value?.needsReview) || !validTrim || unknownCue || unknownSpeaker || missingSpeaker || (shot.soundType === 'onscreen' && (!validDialogue || !subtitleCueIds.length)),
-    dialogue: validDialogue ? {
-      speakerId: expectedSpeaker,
-      text: String(shot.dialogueText || shot.script).trim(),
-      emotion: String(shot.dialogueEmotion || 'neutral').trim(),
-      sourceStartMs: Math.round(dialogueStart),
-      sourceEndMs: Math.round(dialogueEnd),
-      outputStartMs: 0,
-      outputEndMs: 0,
-    } : undefined,
+    confidence:
+      validTrim && !unknownSpeaker ? Math.max(0, Math.min(1, Number(value?.confidence) || 0)) : 0,
+    needsReview:
+      Boolean(error) ||
+      Boolean(value?.needsReview) ||
+      !validTrim ||
+      unknownCue ||
+      unknownSpeaker ||
+      missingSpeaker ||
+      (shot.soundType === 'onscreen' && (!validDialogue || !subtitleCueIds.length)),
+    dialogue: validDialogue
+      ? {
+          speakerId: expectedSpeaker,
+          text: String(shot.dialogueText || shot.script).trim(),
+          emotion: String(shot.dialogueEmotion || 'neutral').trim(),
+          sourceStartMs: Math.round(dialogueStart),
+          sourceEndMs: Math.round(dialogueEnd),
+          outputStartMs: 0,
+          outputEndMs: 0,
+        }
+      : undefined,
   }
 }
 
@@ -583,7 +1026,30 @@ export async function runReferenceSearchSkill(
 }
 
 const WIKI_TOOLS = [
-  { type: 'function', function: { name: 'write_batch', description: '一次创建或替换整套导演总览和单镜 Markdown。生成分镜时必须使用此工具，不要逐文件 write/edit', parameters: { type: 'object', required: ['files'], properties: { files: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['path', 'content'], properties: { path: { type: 'string' }, content: { type: 'string' } } } } } } } },
+  {
+    type: 'function',
+    function: {
+      name: 'write_batch',
+      description:
+        '一次创建或替换整套导演总览和单镜 Markdown。生成分镜时必须使用此工具，不要逐文件 write/edit',
+      parameters: {
+        type: 'object',
+        required: ['files'],
+        properties: {
+          files: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 100,
+            items: {
+              type: 'object',
+              required: ['path', 'content'],
+              properties: { path: { type: 'string' }, content: { type: 'string' } },
+            },
+          },
+        },
+      },
+    },
+  },
 ] as const
 
 export async function runWikiSkill(
@@ -631,7 +1097,8 @@ export async function runWikiSkill(
 
 function assertStoryboardWritePath(value: unknown, episodeId: string) {
   const target = String(value || '')
-  if (!target.startsWith(`wiki/分镜/${episodeId}/`)) throw new Error('导演 Skill 只能修改当前剧集分镜 Markdown')
+  if (!target.startsWith(`wiki/分镜/${episodeId}/`))
+    throw new Error('导演 Skill 只能修改当前剧集分镜 Markdown')
 }
 
 async function generateToolTurn(messages: any[], textModel: TextModel, signal?: AbortSignal) {
@@ -651,7 +1118,11 @@ async function generateToolTurn(messages: any[], textModel: TextModel, signal?: 
       },
       responseType: 'stream',
       timeout: 300_000,
-      headers: { Authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
       signal,
     })
     let pending = ''
@@ -713,25 +1184,28 @@ async function generateJsonResponse(
   textModel: TextModel,
   signal?: AbortSignal,
   maxTokens = 16_000,
+  responseFormat: 'json' | 'text' = 'json',
+  timeoutMs = 300_000,
 ) {
   try {
     const apiKey = await readApiKey()
+    const data = {
+      model: textModel,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: userContent },
+      ],
+      ...(responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
+      temperature: 0.2,
+      max_tokens: maxTokens,
+      stream: true,
+    }
     const response = await axios.request({
       method: 'POST',
       url: `${API_ORIGIN}/v1/chat/completions`,
-      data: {
-        model: textModel,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: userContent },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.2,
-        max_tokens: maxTokens,
-        stream: true,
-      },
+      data,
       responseType: 'stream',
-      timeout: 300_000,
+      timeout: timeoutMs,
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'x-api-key': apiKey,
@@ -761,6 +1235,138 @@ async function generateJsonResponse(
   } catch (error) {
     throw friendlyError(error)
   }
+}
+
+function generateMarkdownResponse(
+  system: string,
+  userContent: string | Record<string, unknown>[],
+  textModel: TextModel,
+  signal?: AbortSignal,
+  maxTokens = 16_000,
+  timeoutMs = 300_000,
+) {
+  return generateJsonResponse(system, userContent, textModel, signal, maxTokens, 'text', timeoutMs)
+}
+
+function parseCueMarkdown(markdown: string) {
+  const entries: Array<{ cueId: string; body: string }> = []
+  const matches = [
+    ...markdown
+      .replace(/\r\n/g, '\n')
+      .matchAll(/^##\s+([A-Za-z0-9_-]+)\s*\n([\s\S]*?)(?=^##\s+|$(?![\s\S]))/gm),
+  ]
+  for (const match of matches) entries.push({ cueId: match[1], body: match[2].trim() })
+  return entries
+}
+
+function markdownField(body: string, label: string) {
+  return body.match(new RegExp(`^-\\s*${label}[：:]\\s*(.+)$`, 'm'))?.[1]?.trim() || ''
+}
+
+function markdownSection(body: string, label: string) {
+  return (
+    body
+      .match(new RegExp(`^###\\s+${label}\\s*\\n([\\s\\S]*?)(?=^###\\s+|$(?![\\s\\S]))`, 'm'))?.[1]
+      ?.trim() || ''
+  )
+}
+
+function parseVideoTranslationSplitPlan(markdown: string, durationMs: number) {
+  const plan = [
+    ...markdown.matchAll(/^-\s*(slice-\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(.+)$/gm),
+  ].map((match) => ({
+    sliceId: match[1],
+    startMs: Number(match[2]),
+    endMs: Number(match[3]),
+    reason: match[4].trim(),
+  }))
+  if (!plan.length || new Set(plan.map((item) => item.sliceId)).size !== plan.length)
+    throw new Error('Gemini 没有返回有效且唯一的 FFmpeg 切片方案')
+  if (plan[0].startMs !== 0 || plan.at(-1)?.endMs !== durationMs)
+    throw new Error('FFmpeg 切片方案没有完整覆盖视频')
+  for (let index = 0; index < plan.length; index++) {
+    const item = plan[index]
+    if (
+      item.endMs <= item.startMs ||
+      item.endMs - item.startMs > 45_000 ||
+      (index > 0 && item.startMs !== plan[index - 1].endMs)
+    )
+      throw new Error('FFmpeg 切片方案必须首尾相接且单片不超过 45 秒')
+  }
+  return plan.map(({ startMs, endMs }) => ({ startMs, endMs }))
+}
+
+function parseVideoTranslationSliceDialogue(
+  markdown: string,
+  slice: { startMs: number; endMs: number },
+  roles: IdentifyVideoTranslationSpeakersParams['roles'],
+): VideoTranslationSpeakerDraft[] {
+  if (markdown.trim() === '无对白') return []
+  const entries = parseCueMarkdown(markdown)
+  if (!entries.length || new Set(entries.map((entry) => entry.cueId)).size !== entries.length)
+    throw new Error('逐片结果没有有效或唯一的台词条目')
+  const roleIds = new Set(roles.map((role) => role.translationRoleId))
+  const sliceDurationMs = slice.endMs - slice.startMs
+  const parsed = entries.map((entry) => {
+    const body = entry.body
+    const relativeStartMs = Number(markdownField(body, '开始毫秒'))
+    const relativeEndMs = Number(markdownField(body, '结束毫秒'))
+    const correctedText = markdownSection(body, '校准原文')
+    if (
+      !Number.isFinite(relativeStartMs) ||
+      !Number.isFinite(relativeEndMs) ||
+      relativeStartMs < 0 ||
+      relativeEndMs <= relativeStartMs ||
+      relativeEndMs > sliceDurationMs ||
+      !correctedText
+    )
+      throw new Error(`${entry.cueId} 的时间或校准原文无效`)
+    const roleValue = markdownField(body, '角色 ID').replace(/（.*$/, '').trim()
+    const proposedRoleId = roleIds.has(roleValue) ? roleValue : undefined
+    const reviewValue = markdownField(body, '需要复核').toLowerCase()
+    return {
+      cueId: entry.cueId,
+      startMs: slice.startMs + relativeStartMs,
+      endMs: slice.startMs + relativeEndMs,
+      recognizedText: '',
+      correctedText,
+      proposedRoleId,
+      proposedName: markdownField(body, '角色名') || '新角色',
+      confidence: Math.max(0, Math.min(1, Number(markdownField(body, '置信度')) || 0)),
+      evidence: markdownSection(body, '证据'),
+      ocrText: markdownSection(body, '画面文字').replace(/^无$/, ''),
+      needsReview: !proposedRoleId || !['否', 'no', 'false'].includes(reviewValue),
+    }
+  })
+  parsed.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
+  for (let index = 1; index < parsed.length; index++)
+    if (parsed[index].startMs < parsed[index - 1].endMs)
+      throw new Error('逐片结果的台词时间发生重叠')
+  return parsed
+}
+
+function renderVideoTranslationFinalDialogue(speakers: VideoTranslationSpeakerDraft[]) {
+  if (!speakers.length) return '无对白'
+  return speakers
+    .map(
+      (speaker) => `## ${speaker.cueId}
+- 开始毫秒：${speaker.startMs}
+- 结束毫秒：${speaker.endMs}
+- 角色 ID：${speaker.proposedRoleId || '无'}
+- 角色名：${speaker.proposedName}
+- 置信度：${speaker.confidence}
+- 需要复核：${speaker.needsReview ? '是' : '否'}
+
+### 校准原文
+${speaker.correctedText}
+
+### 证据
+${speaker.evidence || '无'}
+
+### 画面文字
+${speaker.ocrText || '无'}`,
+    )
+    .join('\n\n')
 }
 
 function parseJson(text: string) {
@@ -884,10 +1490,11 @@ async function readPending(runId: string): Promise<PendingCloudTask[]> {
           targetId: task.targetId || String(task.index),
           targetLabel:
             task.targetLabel ||
-            (task.kind === 'asset' ? String(task.targetId || task.id.slice(6)) : `镜头 ${task.index}`),
+            (task.kind === 'asset'
+              ? String(task.targetId || task.id.slice(6))
+              : `镜头 ${task.index}`),
           status:
-            task.status ||
-            (task.resultUrl ? 'stopped' : task.pollRoute ? 'stopped' : 'failed'),
+            task.status || (task.resultUrl ? 'stopped' : task.pollRoute ? 'stopped' : 'failed'),
           resumeFrom:
             task.resumeFrom ||
             (task.resultUrl ? 'downloading' : task.pollRoute ? 'generating' : undefined),
@@ -945,9 +1552,7 @@ async function updateTask(
   id: string,
   change: (task: PendingCloudTask) => PendingCloudTask,
 ) {
-  await mutatePending(runId, (tasks) =>
-    tasks.map((task) => (task.id === id ? change(task) : task)),
-  )
+  await mutatePending(runId, (tasks) => tasks.map((task) => (task.id === id ? change(task) : task)))
 }
 
 export async function listCloudTasks(runId: string) {
@@ -994,9 +1599,7 @@ async function markCloudTaskStopped(runId: string, taskId: string) {
     ...task,
     status: 'stopped',
     resumeFrom: task.resultUrl ? 'downloading' : 'generating',
-    error: task.resultUrl
-      ? '已停止本地下载'
-      : '已停止本地等待；云端任务可能仍在执行并产生费用',
+    error: task.resultUrl ? '已停止本地下载' : '已停止本地等待；云端任务可能仍在执行并产生费用',
     updatedAt: now,
   }))
 }
@@ -1153,7 +1756,12 @@ function pendingTask(
   }
 }
 
-export async function generateVoice(runId: string, episodeId: string, text: string, voicePrompt: string) {
+export async function generateVoice(
+  runId: string,
+  episodeId: string,
+  text: string,
+  voicePrompt: string,
+) {
   return withRunAbort(runId, async (signal) => {
     const pendingId = `${episodeId}:voice:0`
     const existing = (await readPending(runId)).find((task) => task.id === pendingId)
@@ -1236,8 +1844,19 @@ export async function generateStoryboardImage(
       : referencePath
         ? [referencePath]
         : []
-    const outputPath = generateUniqueFileName(getRunAssetPath(runId, episodeId, 'storyboard', index))
-    const started = pendingTask(runId, 'storyboard', index, outputPath, {}, '', undefined, pendingId)
+    const outputPath = generateUniqueFileName(
+      getRunAssetPath(runId, episodeId, 'storyboard', index),
+    )
+    const started = pendingTask(
+      runId,
+      'storyboard',
+      index,
+      outputPath,
+      {},
+      '',
+      undefined,
+      pendingId,
+    )
     await putPending(runId, started)
     let data: any
     try {
@@ -1326,7 +1945,8 @@ export async function generateAssetImage(
 ) {
   if (!/^[A-Za-z0-9_-]+$/.test(assetId)) throw new Error('无效的资产 ID')
   if (!['character', 'scene', 'prop'].includes(role)) throw new Error('无效的资产类型')
-  if (!design || typeof design !== 'object' || Array.isArray(design)) throw new Error('资产设计 JSON 无效')
+  if (!design || typeof design !== 'object' || Array.isArray(design))
+    throw new Error('资产设计 JSON 无效')
   const ratio = String((design as any).project?.aspectRatio || '')
   imageSize(ratio)
   const designJson = JSON.stringify(design, null, 2)
@@ -1338,7 +1958,9 @@ export async function generateAssetImage(
     const existing = (await readPending(runId)).find((task) => task.id === pendingId)
     if (existing && existing.status !== 'success' && (existing.resultUrl || existing.pollRoute))
       return finishPending(runId, existing, signal)
-    const references = (Array.isArray(referencePath) ? referencePath : referencePath ? [referencePath] : [])
+    const references = (
+      Array.isArray(referencePath) ? referencePath : referencePath ? [referencePath] : []
+    )
       .filter(Boolean)
       .map((item) => assertRunAsset(runId, item))
     const outputPath = generateUniqueFileName(
@@ -1346,7 +1968,18 @@ export async function generateAssetImage(
     )
     await putPending(
       runId,
-      pendingTask(runId, 'asset', 0, outputPath, {}, '', undefined, pendingId, assetId, assetLabel || assetId),
+      pendingTask(
+        runId,
+        'asset',
+        0,
+        outputPath,
+        {},
+        '',
+        undefined,
+        pendingId,
+        assetId,
+        assetLabel || assetId,
+      ),
     )
     let data: any
     try {
@@ -1453,32 +2086,49 @@ export async function generateSegmentVideo(
     imageSize(ratio)
     const combinedVideo = model === 'rh-grok-image-video' || model === 'rh-seedance2'
     if (model === 'rh-grok-image-video') {
-      if (!Number.isInteger(generationDuration) || generationDuration < 6 || generationDuration > 30)
+      if (
+        !Number.isInteger(generationDuration) ||
+        generationDuration < 6 ||
+        generationDuration > 30
+      )
         throw new Error('Grok 视频生成时长只能为 6 到 30 秒的整数')
     } else if (model === 'rh-seedance2') {
-      if (!Number.isInteger(generationDuration) || generationDuration < 4 || generationDuration > 15)
+      if (
+        !Number.isInteger(generationDuration) ||
+        generationDuration < 4 ||
+        generationDuration > 15
+      )
         throw new Error('Seedance 2.0 视频生成时长只能为 4 到 15 秒的整数')
-    } else if (![4, 6, 8].includes(generationDuration)) throw new Error('视频生成时长只能为 4、6 或 8 秒')
+    } else if (![4, 6, 8].includes(generationDuration))
+      throw new Error('视频生成时长只能为 4、6 或 8 秒')
     if (ratio !== '9:16' && ratio !== '16:9') throw new Error('视频模型仅支持 9:16 或 16:9')
     const runningHub = combinedVideo
-    const seconds = model === 'veo-3.0-generate-001'
-      ? 8
-      : generationDuration
-    const localImages = [imagePath, ...imagePaths].filter(Boolean).slice(0, 7).map((item) => assertRunAsset(runId, item))
+    const seconds = model === 'veo-3.0-generate-001' ? 8 : generationDuration
+    const localImages = [imagePath, ...imagePaths]
+      .filter(Boolean)
+      .slice(0, 7)
+      .map((item) => assertRunAsset(runId, item))
     const localImage = localImages[0]
     const outputPath = generateUniqueFileName(getRunAssetPath(runId, episodeId, 'clip', index))
-    await putPending(
-      runId,
-      { ...pendingTask(runId, 'video', index, outputPath, {}, '', undefined, pendingId), model },
-    )
+    await putPending(runId, {
+      ...pendingTask(runId, 'video', index, outputPath, {}, '', undefined, pendingId),
+      model,
+    })
     let data: any
     try {
       if (runningHub) {
-        const images = await Promise.all(localImages.map(async (file) => {
-          const extension = path.extname(file).toLowerCase()
-          const mimeType = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.webp' ? 'image/webp' : 'image/png'
-          return `data:${mimeType};base64,${await fs.promises.readFile(file, 'base64')}`
-        }))
+        const images = await Promise.all(
+          localImages.map(async (file) => {
+            const extension = path.extname(file).toLowerCase()
+            const mimeType =
+              extension === '.jpg' || extension === '.jpeg'
+                ? 'image/jpeg'
+                : extension === '.webp'
+                  ? 'image/webp'
+                  : 'image/png'
+            return `data:${mimeType};base64,${await fs.promises.readFile(file, 'base64')}`
+          }),
+        )
         data = await request(
           'POST',
           '/v1/videos',
@@ -1538,16 +2188,7 @@ export async function generateSegmentVideo(
         : `/v1/video/generations/${encodeURIComponent(taskId)}`
     }
     await ensureRunDir(runId)
-    const task = pendingTask(
-      runId,
-      'video',
-      index,
-      outputPath,
-      data,
-      url,
-      pollRoute,
-      pendingId,
-    )
+    const task = pendingTask(runId, 'video', index, outputPath, data, url, pollRoute, pendingId)
     task.model = model
     await putPending(runId, task)
     if (signal.aborted) {

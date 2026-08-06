@@ -39,7 +39,7 @@ test('provides the seven-stage dubbing and subtitle workspace skeleton', () => {
     home,
     /!isFinalWorkspace\.value && \(!isDubbingWorkspace\.value \|\| dubbingRightOpen\.value\)/,
   )
-  assert.match(home, /v-show="leftPanelVisible"/)
+  assert.match(home, /v-show="!isVideoTranslation && leftPanelVisible"/)
   assert.match(home, /v-show="rightPanelVisible"/)
   assert.match(manage, /尚未生成成片，请在配音字幕工作台完成烧录。/)
   assert.doesNotMatch(manage, /所有单镜视频完成后即可合成。/)

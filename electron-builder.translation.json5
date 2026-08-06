@@ -1,0 +1,20 @@
+{
+  extends: './electron-builder.json5',
+  productName: '视频翻译工作台',
+  appId: 'com.yils.video-translation-workbench',
+  directories: {
+    output: 'release-translation/${version}',
+  },
+  mac: {
+    artifactName: '视频翻译工作台-${version}-mac-${arch}-installer.${ext}',
+    icon: './public/video-translation-icon.png',
+  },
+  win: {
+    artifactName: '视频翻译工作台-${version}-win-${arch}-setup.${ext}',
+    icon: './public/video-translation-icon.png',
+  },
+  linux: {
+    artifactName: '视频翻译工作台-${version}-linux-${arch}.${ext}',
+    icon: './public/video-translation-icon.png',
+  },
+}

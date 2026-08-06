@@ -12,10 +12,12 @@ const { after, mock } = nodeTest as any
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'short-video-factory-cloud-'))
 let postCount = 0
 let downloadCount = 0
-let downloadMode: 'success' | 'fail-once' | 'connection-closed' | 'abort' | 'unsafe-redirect' = 'fail-once'
+let downloadMode: 'success' | 'fail-once' | 'connection-closed' | 'abort' | 'unsafe-redirect' =
+  'fail-once'
 const requests: any[] = []
 const downloads: any[] = []
 const chatOutputs: any[] = []
+const ffmpegArgs: string[][] = []
 let omitChatDone = false
 let encryptionAvailable = true
 let selectedFile = ''
@@ -56,10 +58,18 @@ const axios = {
         [
           `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`,
           omitChatDone ? '' : 'data: [DONE]\n\n',
-        ].filter(Boolean).join(''),
+        ]
+          .filter(Boolean)
+          .join(''),
       )
       const splitAt = payload.indexOf(Buffer.from('你')) + 1
-      return { data: Readable.from(splitUtf8 && splitAt > 0 ? [payload.subarray(0, splitAt), payload.subarray(splitAt)] : [payload]) }
+      return {
+        data: Readable.from(
+          splitUtf8 && splitAt > 0
+            ? [payload.subarray(0, splitAt), payload.subarray(splitAt)]
+            : [payload],
+        ),
+      }
     }
     throw new Error(`unexpected request: ${options.url}`)
   },
@@ -142,7 +152,9 @@ mock.module('electron', {
             }
             if (downloadMode === 'abort') return
             const response = Readable.from([
-              url.includes('i.pinimg.com') ? Buffer.from([0xff, 0xd8, 0xff, 0xd9]) : Buffer.from([1, 2, 3]),
+              url.includes('i.pinimg.com')
+                ? Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+                : Buffer.from([1, 2, 3]),
             ]) as any
             response.statusCode = 200
             request.emit('response', response)
@@ -156,6 +168,22 @@ mock.module('electron', {
 mock.module('music-metadata', {
   namedExports: { parseBuffer: async () => ({ format: { duration: 12 } }) },
 })
+mock.module('node:child_process', {
+  namedExports: {
+    execFile: (
+      _command: string,
+      args: string[],
+      _options: unknown,
+      callback: (error: null, result: { stdout: string; stderr: string }) => void,
+    ) => {
+      ffmpegArgs.push([...args])
+      const target = args.at(-1)!
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.writeFileSync(target, Buffer.from('ffmpeg slice'))
+      callback(null, { stdout: '', stderr: '' })
+    },
+  },
+})
 
 process.env.APP_ROOT = process.cwd()
 const cloud = await import('../../electron/cloud.ts')
@@ -163,20 +191,44 @@ const workspace = await import('../../electron/media-workspace.ts')
 const episodeId = 'episode-001'
 const projectRoot = (projectId: string) => path.join(userData, 'projects', projectId)
 for (const projectId of [
-  'retry-run', 'connection-closed-run', 'older-run', 'latest-run', 'wiki-project',
-  'episode-boundary-run', 'hundred-episode-run', 'episode-artifact-run', 'markdown-truth',
-  'nonempty-confirmed-script', 'revision-project', 'storyboard-transaction',
-  'interrupted-wiki-run', 'wiki-tool-result', 'wiki-no-write', 'resume-run', 'cancel-run',
-  'media-contract-run', 'shot-analysis-run', 'grok-analysis-fallback', 'prop-search-run',
-  'reference-run', 'subtitle-wiki-run', 'translation-context-run', 'other-context-run',
-]) await workspace.registerProjectRoot(projectId, projectRoot(projectId), false)
+  'retry-run',
+  'connection-closed-run',
+  'older-run',
+  'latest-run',
+  'wiki-project',
+  'episode-boundary-run',
+  'hundred-episode-run',
+  'episode-artifact-run',
+  'markdown-truth',
+  'nonempty-confirmed-script',
+  'revision-project',
+  'storyboard-transaction',
+  'interrupted-wiki-run',
+  'wiki-tool-result',
+  'wiki-no-write',
+  'resume-run',
+  'cancel-run',
+  'media-contract-run',
+  'shot-analysis-run',
+  'grok-analysis-fallback',
+  'prop-search-run',
+  'reference-run',
+  'subtitle-wiki-run',
+  'translation-context-run',
+  'translation-invalid-run',
+  'other-context-run',
+])
+  await workspace.registerProjectRoot(projectId, projectRoot(projectId), false)
 
 after(() => fs.rmSync(userData, { recursive: true, force: true }))
 
 test('retries a failed download without resubmitting the paid image task', async () => {
   await cloud.saveApiKey('test-key')
   const runId = 'retry-run'
-  await assert.rejects(cloud.generateStoryboardImage(runId, episodeId, 1, 'prompt', '9:16'), /download failed/)
+  await assert.rejects(
+    cloud.generateStoryboardImage(runId, episodeId, 1, 'prompt', '9:16'),
+    /download failed/,
+  )
 
   const pendingPath = path.join(projectRoot(runId), 'run.json')
   const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf8')).tasks[0]
@@ -197,7 +249,13 @@ test('retries a failed download without resubmitting the paid image task', async
 test('falls back to the Node downloader when Electron closes a media connection', async () => {
   downloadMode = 'connection-closed'
   const before = downloadCount
-  const output = await cloud.generateStoryboardImage('connection-closed-run', episodeId, 1, 'prompt', '9:16')
+  const output = await cloud.generateStoryboardImage(
+    'connection-closed-run',
+    episodeId,
+    1,
+    'prompt',
+    '9:16',
+  )
   assert.equal(downloadCount, before + 2)
   assert.equal(fs.readFileSync(output).byteLength, 3)
   downloadMode = 'success'
@@ -287,16 +345,22 @@ test('uses the selected empty folder itself as the new project root', async () =
   fs.mkdirSync(root, { recursive: true })
   selectedFile = root
   try {
-    const manifest = await workspace.createProject(projectId, JSON.stringify({
-      runId: projectId,
-      episodeId,
-      stage: 'draft',
-      segments: [],
-    }))
+    const manifest = await workspace.createProject(
+      projectId,
+      JSON.stringify({
+        runId: projectId,
+        episodeId,
+        stage: 'draft',
+        segments: [],
+      }),
+    )
     assert.equal(manifest?.name, '功夫女友')
     assert.equal(workspace.resolveProjectRoot(projectId), root)
     assert.equal(fs.existsSync(path.join(root, 'project.json')), true)
-    assert.equal(fs.readdirSync(root).some((entry) => /^\u65b0\u9879\u76ee-\d{8}$/.test(entry)), false)
+    assert.equal(
+      fs.readdirSync(root).some((entry) => /^\u65b0\u9879\u76ee-\d{8}$/.test(entry)),
+      false,
+    )
   } finally {
     selectedFile = ''
   }
@@ -307,10 +371,14 @@ test('rejects non-empty and existing project folders without changing their file
   fs.mkdirSync(nonEmptyRoot, { recursive: true })
   fs.writeFileSync(path.join(nonEmptyRoot, '原稿.md'), '保留我')
   await assert.rejects(
-    workspace.createProjectAt('non-empty-folder-project', nonEmptyRoot, JSON.stringify({
-      runId: 'non-empty-folder-project',
-      episodeId,
-    })),
+    workspace.createProjectAt(
+      'non-empty-folder-project',
+      nonEmptyRoot,
+      JSON.stringify({
+        runId: 'non-empty-folder-project',
+        episodeId,
+      }),
+    ),
     /请选择空文件夹/,
   )
   assert.equal(fs.readFileSync(path.join(nonEmptyRoot, '原稿.md'), 'utf8'), '保留我')
@@ -319,10 +387,14 @@ test('rejects non-empty and existing project folders without changing their file
   fs.mkdirSync(existingProjectRoot, { recursive: true })
   fs.writeFileSync(path.join(existingProjectRoot, 'project.json'), '{}')
   await assert.rejects(
-    workspace.createProjectAt('existing-folder-project', existingProjectRoot, JSON.stringify({
-      runId: 'existing-folder-project',
-      episodeId,
-    })),
+    workspace.createProjectAt(
+      'existing-folder-project',
+      existingProjectRoot,
+      JSON.stringify({
+        runId: 'existing-folder-project',
+        episodeId,
+      }),
+    ),
     /打开已有项目目录/,
   )
   assert.equal(fs.readFileSync(path.join(existingProjectRoot, 'project.json'), 'utf8'), '{}')
@@ -331,12 +403,16 @@ test('rejects non-empty and existing project folders without changing their file
 test('reopens a moved project without changing its stable id or Wiki content', async () => {
   const projectId = 'movable-project'
   const originalRoot = projectRoot(projectId)
-  await workspace.createProjectAt(projectId, originalRoot, JSON.stringify({
-    runId: projectId,
-    episodeId,
-    stage: 'draft',
-    segments: [],
-  }))
+  await workspace.createProjectAt(
+    projectId,
+    originalRoot,
+    JSON.stringify({
+      runId: projectId,
+      episodeId,
+      stage: 'draft',
+      segments: [],
+    }),
+  )
   const wikiBefore = fs.readFileSync(path.join(originalRoot, 'wiki', 'index.md'), 'utf8')
   const movedRoot = path.join(userData, '可读项目目录', '移动后的项目')
   fs.mkdirSync(path.dirname(movedRoot), { recursive: true })
@@ -357,27 +433,38 @@ test('reopens a moved project without changing its stable id or Wiki content', a
 test('creates a default episode and keeps episode states independent', async () => {
   const projectId = 'episode-boundary-run'
   const episodeId = 'episode-001'
-  await workspace.createProjectAt(projectId, projectRoot(projectId), JSON.stringify({
-    runId: projectId,
-    episodeId,
-    stage: 'draft',
-    referenceAssets: [{ id: 'shared-character' }],
-  }))
+  await workspace.createProjectAt(
+    projectId,
+    projectRoot(projectId),
+    JSON.stringify({
+      runId: projectId,
+      episodeId,
+      stage: 'draft',
+      referenceAssets: [{ id: 'shared-character' }],
+    }),
+  )
   const projectDir = projectRoot(projectId)
   const manifest = JSON.parse(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8'))
   assert.equal(manifest.wikiVersion, 2)
   assert.equal(manifest.lastOpenedEpisodeId, episodeId)
-  assert.deepEqual(manifest.episodes.map((episode: any) => episode.episodeId), [episodeId])
+  assert.deepEqual(
+    manifest.episodes.map((episode: any) => episode.episodeId),
+    [episodeId],
+  )
   assert.equal(fs.existsSync(path.join(projectDir, 'shared-state.json')), true)
   assert.equal(fs.existsSync(path.join(projectDir, 'episodes', episodeId, 'state.json')), true)
 
   const firstStatePath = path.join(projectDir, 'episodes', episodeId, 'state.json')
   const firstBefore = fs.readFileSync(firstStatePath)
-  await workspace.saveMediaState(projectId, 'episode-002', JSON.stringify({
-    runId: projectId,
-    episodeId: 'episode-002',
-    stage: 'shots-ready',
-  }))
+  await workspace.saveMediaState(
+    projectId,
+    'episode-002',
+    JSON.stringify({
+      runId: projectId,
+      episodeId: 'episode-002',
+      stage: 'shots-ready',
+    }),
+  )
   assert.deepEqual(fs.readFileSync(firstStatePath), firstBefore)
   assert.equal(
     JSON.parse(await workspace.loadProjectState(projectId, 'episode-002')).episodeId,
@@ -387,12 +474,16 @@ test('creates a default episode and keeps episode states independent', async () 
 
 test('merges translation roles when two episodes save concurrently', async () => {
   const projectId = 'translation-role-concurrency'
-  await workspace.createProjectAt(projectId, projectRoot(projectId), JSON.stringify({
-    runId: projectId,
-    episodeId: 'episode-001',
-    stage: 'draft',
-    videoTranslationRoles: [],
-  }))
+  await workspace.createProjectAt(
+    projectId,
+    projectRoot(projectId),
+    JSON.stringify({
+      runId: projectId,
+      episodeId: 'episode-001',
+      stage: 'draft',
+      videoTranslationRoles: [],
+    }),
+  )
   const role = (id: string, episode: string) => ({
     translationRoleId: id,
     displayName: id,
@@ -401,22 +492,30 @@ test('merges translation roles when two episodes save concurrently', async () =>
     status: 'confirmed',
   })
   await Promise.all([
-    workspace.saveMediaState(projectId, 'episode-001', JSON.stringify({
-      runId: projectId,
-      episodeId: 'episode-001',
-      stage: 'draft',
-      videoTranslationRoles: [role('role-1', 'episode-001')],
-    })),
-    workspace.saveMediaState(projectId, 'episode-002', JSON.stringify({
-      runId: projectId,
-      episodeId: 'episode-002',
-      stage: 'draft',
-      videoTranslationRoles: [role('role-2', 'episode-002')],
-    })),
+    workspace.saveMediaState(
+      projectId,
+      'episode-001',
+      JSON.stringify({
+        runId: projectId,
+        episodeId: 'episode-001',
+        stage: 'draft',
+        videoTranslationRoles: [role('role-1', 'episode-001')],
+      }),
+    ),
+    workspace.saveMediaState(
+      projectId,
+      'episode-002',
+      JSON.stringify({
+        runId: projectId,
+        episodeId: 'episode-002',
+        stage: 'draft',
+        videoTranslationRoles: [role('role-2', 'episode-002')],
+      }),
+    ),
   ])
-  const shared = JSON.parse(fs.readFileSync(path.join(
-    projectRoot(projectId), 'shared-state.json',
-  ), 'utf8'))
+  const shared = JSON.parse(
+    fs.readFileSync(path.join(projectRoot(projectId), 'shared-state.json'), 'utf8'),
+  )
   assert.deepEqual(shared.videoTranslationRoles.map((item: any) => item.translationRoleId).sort(), [
     'role-1',
     'role-2',
@@ -425,12 +524,16 @@ test('merges translation roles when two episodes save concurrently', async () =>
 
 test('loads one selected episode from a 100 episode manifest', async () => {
   const projectId = 'hundred-episode-run'
-  await workspace.createProjectAt(projectId, projectRoot(projectId), JSON.stringify({
-    runId: projectId,
-    episodeId: 'episode-001',
-    stage: 'draft',
-    referenceAssets: [{ id: 'shared-character' }],
-  }))
+  await workspace.createProjectAt(
+    projectId,
+    projectRoot(projectId),
+    JSON.stringify({
+      runId: projectId,
+      episodeId: 'episode-001',
+      stage: 'draft',
+      referenceAssets: [{ id: 'shared-character' }],
+    }),
+  )
   const projectDir = projectRoot(projectId)
   const manifestPath = path.join(projectDir, 'project.json')
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
@@ -448,11 +551,14 @@ test('loads one selected episode from a 100 episode manifest', async () => {
   for (const episode of manifest.episodes) {
     const episodeDir = path.join(projectDir, 'episodes', episode.episodeId)
     fs.mkdirSync(episodeDir, { recursive: true })
-    fs.writeFileSync(path.join(episodeDir, 'state.json'), JSON.stringify({
-      runId: projectId,
-      episodeId: episode.episodeId,
-      marker: episode.episodeNumber,
-    }))
+    fs.writeFileSync(
+      path.join(episodeDir, 'state.json'),
+      JSON.stringify({
+        runId: projectId,
+        episodeId: episode.episodeId,
+        marker: episode.episodeNumber,
+      }),
+    )
   }
 
   const loaded = JSON.parse(await workspace.loadProjectState(projectId, 'episode-073'))
@@ -462,7 +568,8 @@ test('loads one selected episode from a 100 episode manifest', async () => {
 
 test('isolates episode artifacts and validates episode ownership', async () => {
   const projectId = 'episode-artifact-run'
-  const timeline = buildEditingTimeline([{
+  const timeline = buildEditingTimeline([
+    {
       shotId: 'shot-001',
       sourceVideoPath: 'episodes/episode-001/clips/001.mp4',
       sourceDurationMs: 1_000,
@@ -470,7 +577,8 @@ test('isolates episode artifacts and validates episode ownership', async () => {
       trimEndMs: 1_000,
       confidence: 1,
       needsReview: false,
-    }])
+    },
+  ])
   const firstTimeline = await workspace.writeEditingTimeline(projectId, 'episode-001', timeline)
   const secondTimeline = await workspace.writeEditingTimeline(projectId, 'episode-002', {
     ...timeline,
@@ -488,11 +596,19 @@ test('isolates episode artifacts and validates episode ownership', async () => {
   assert.notEqual(firstTimeline, secondTimeline)
   assert.notEqual(firstSubtitle, secondSubtitle)
   await assert.rejects(
-    workspace.saveMediaState(projectId, 'episode-002', JSON.stringify({ runId: projectId, episodeId: 'episode-001' })),
+    workspace.saveMediaState(
+      projectId,
+      'episode-002',
+      JSON.stringify({ runId: projectId, episodeId: 'episode-001' }),
+    ),
     /剧集 ID 不匹配/,
   )
   await assert.rejects(
-    workspace.saveMediaState(projectId, '../outside', JSON.stringify({ runId: projectId, episodeId: '../outside' })),
+    workspace.saveMediaState(
+      projectId,
+      '../outside',
+      JSON.stringify({ runId: projectId, episodeId: '../outside' }),
+    ),
     /无效的剧集 ID/,
   )
 })
@@ -568,39 +684,45 @@ test('rolls back a partial storyboard update and preserves confirmed assets', as
   const projectId = 'storyboard-transaction'
   await workspace.ensureRunDir(projectId)
   await workspace.writeProjectMarkdown(projectId, `wiki/分镜/${episodeId}/导演总览.md`, '旧导演')
-  await workspace.writeProjectMarkdown(projectId, `wiki/分镜/${episodeId}/镜头/shot-001.md`, '旧镜头')
+  await workspace.writeProjectMarkdown(
+    projectId,
+    `wiki/分镜/${episodeId}/镜头/shot-001.md`,
+    '旧镜头',
+  )
   await workspace.writeProjectMarkdown(projectId, 'wiki/资产/角色/old.md', '旧资产')
 
   const rollbackId = await workspace.beginStoryboardMarkdownUpdate(projectId, episodeId)
-  const director = await workspace.readProjectMarkdown(projectId, `wiki/分镜/${episodeId}/导演总览.md`)
+  const director = await workspace.readProjectMarkdown(
+    projectId,
+    `wiki/分镜/${episodeId}/导演总览.md`,
+  )
+  await workspace.writeProjectMarkdown(projectId, director.path, '半写导演', director.revision)
   await workspace.writeProjectMarkdown(
     projectId,
-    director.path,
-    '半写导演',
-    director.revision,
+    `wiki/分镜/${episodeId}/镜头/shot-002.md`,
+    '半写镜头',
   )
-  await workspace.writeProjectMarkdown(projectId, `wiki/分镜/${episodeId}/镜头/shot-002.md`, '半写镜头')
   await workspace.rollbackStoryboardMarkdownUpdate(projectId, episodeId, rollbackId)
+  assert.equal((await workspace.readProjectMarkdown(projectId, director.path)).content, '旧导演\n')
   assert.equal(
-    (await workspace.readProjectMarkdown(projectId, director.path)).content,
-    '旧导演\n',
-  )
-  assert.equal(
-    (await workspace.listProjectMarkdown(projectId)).includes(`wiki/分镜/${episodeId}/镜头/shot-002.md`),
+    (await workspace.listProjectMarkdown(projectId)).includes(
+      `wiki/分镜/${episodeId}/镜头/shot-002.md`,
+    ),
     false,
   )
 
   const commitId = await workspace.beginStoryboardMarkdownUpdate(projectId, episodeId)
   const currentDirector = await workspace.readProjectMarkdown(projectId, director.path)
-  await workspace.writeProjectMarkdown(
+  await workspace.writeProjectMarkdown(projectId, director.path, '新导演', currentDirector.revision)
+  const shot = await workspace.readProjectMarkdown(
     projectId,
-    director.path,
-    '新导演',
-    currentDirector.revision,
+    `wiki/分镜/${episodeId}/镜头/shot-001.md`,
   )
-  const shot = await workspace.readProjectMarkdown(projectId, `wiki/分镜/${episodeId}/镜头/shot-001.md`)
   await workspace.writeProjectMarkdown(projectId, shot.path, '新镜头', shot.revision)
-  await workspace.commitStoryboardMarkdownUpdate(projectId, episodeId, commitId, [director.path, shot.path])
+  await workspace.commitStoryboardMarkdownUpdate(projectId, episodeId, commitId, [
+    director.path,
+    shot.path,
+  ])
   assert.equal(
     (await workspace.listProjectMarkdown(projectId)).includes('wiki/资产/角色/old.md'),
     true,
@@ -621,25 +743,23 @@ test('accepts only successful Wiki writes as the current director result', async
   const projectId = 'wiki-tool-result'
   await workspace.ensureRunDir(projectId)
   await workspace.writeProjectMarkdown(projectId, `wiki/分镜/${episodeId}/导演总览.md`, '旧导演')
-  chatOutputs.push(
-    {
-      tool_calls: [
-        {
-          index: 0,
-          id: 'call-batch',
-          function: {
-            name: 'write_batch',
-            arguments: JSON.stringify({
-              files: [
-                { path: `wiki/分镜/${episodeId}/导演总览.md`, content: '导演总览' },
-                { path: `wiki/分镜/${episodeId}/镜头/shot-001.md`, content: '镜头一' },
-              ],
-            }),
-          },
+  chatOutputs.push({
+    tool_calls: [
+      {
+        index: 0,
+        id: 'call-batch',
+        function: {
+          name: 'write_batch',
+          arguments: JSON.stringify({
+            files: [
+              { path: `wiki/分镜/${episodeId}/导演总览.md`, content: '导演总览' },
+              { path: `wiki/分镜/${episodeId}/镜头/shot-001.md`, content: '镜头一' },
+            ],
+          }),
         },
-      ],
-    },
-  )
+      },
+    ],
+  })
   const result = await cloud.runWikiSkill('jc-script-storyboard', '测试', projectId, episodeId)
   const request = requests.at(-1)
   assert.deepEqual(request.data.tool_choice, {
@@ -653,7 +773,8 @@ test('accepts only successful Wiki writes as the current director result', async
     `wiki/分镜/${episodeId}/镜头/shot-001.md`,
   ])
   assert.equal(
-    (await workspace.readProjectMarkdown(projectId, `wiki/分镜/${episodeId}/镜头/shot-001.md`)).content,
+    (await workspace.readProjectMarkdown(projectId, `wiki/分镜/${episodeId}/镜头/shot-001.md`))
+      .content,
     '镜头一\n',
   )
   assert.equal(
@@ -701,7 +822,10 @@ test('resumes persisted work and cancellation stops local download recovery', as
   const runState = JSON.parse(
     fs.readFileSync(path.join(projectRoot(cancelRunId), 'run.json'), 'utf8'),
   )
-  assert.equal(runState.tasks.find((task: any) => task.id === `${episodeId}:storyboard:1`).status, 'success')
+  assert.equal(
+    runState.tasks.find((task: any) => task.id === `${episodeId}:storyboard:1`).status,
+    'success',
+  )
 })
 
 test('submits the fixed voice and selectable video contracts through controlled run assets', async () => {
@@ -849,27 +973,42 @@ test('sends video, script, complete shot prompt and material SRT to Gemini once'
   fs.mkdirSync(subtitleDir, { recursive: true })
   const transcriptJsonPath = path.join(transcriptDir, 'media-shot-001-whisper.json')
   const transcriptSrtPath = path.join(subtitleDir, 'media-shot-001-whisper.srt')
-  fs.writeFileSync(transcriptJsonPath, JSON.stringify({
-    schemaVersion: 1,
-    mediaId: 'media-shot-001',
-    sourceMediaPath: 'episodes/episode-001/clips/001.mp4',
-    durationMs: 12_000,
-    cues: [{ cueId: 'cue-001', mediaId: 'media-shot-001', startMs: 2500, endMs: 4000, recognizedText: '你好' }],
-  }))
+  fs.writeFileSync(
+    transcriptJsonPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      mediaId: 'media-shot-001',
+      sourceMediaPath: 'episodes/episode-001/clips/001.mp4',
+      durationMs: 12_000,
+      cues: [
+        {
+          cueId: 'cue-001',
+          mediaId: 'media-shot-001',
+          startMs: 2500,
+          endMs: 4000,
+          recognizedText: '你好',
+        },
+      ],
+    }),
+  )
   fs.writeFileSync(transcriptSrtPath, '1\n00:00:02,500 --> 00:00:04,000\n你好\n')
-  chatOutputs.push(JSON.stringify({
-    shots: [{
-      shotId: 'shot-001',
-      trimStartMs: 2_000,
-      trimEndMs: 5_000,
-      observedContent: '角色完整举手并说你好',
-      subtitleCueIds: ['cue-001'],
-      speakerIds: ['character-1'],
-      confidence: 0.96,
-      needsReview: false,
-      dialogue: { sourceStartMs: 2_500, sourceEndMs: 4_000 },
-    }],
-  }))
+  chatOutputs.push(
+    JSON.stringify({
+      shots: [
+        {
+          shotId: 'shot-001',
+          trimStartMs: 2_000,
+          trimEndMs: 5_000,
+          observedContent: '角色完整举手并说你好',
+          subtitleCueIds: ['cue-001'],
+          speakerIds: ['character-1'],
+          confidence: 0.96,
+          needsReview: false,
+          dialogue: { sourceStartMs: 2_500, sourceEndMs: 4_000 },
+        },
+      ],
+    }),
+  )
 
   const requestStart = requests.length
   const result = await cloud.analyzeMaterialVideo({
@@ -880,18 +1019,20 @@ test('sends video, script, complete shot prompt and material SRT to Gemini once'
     transcriptJsonPath,
     transcriptSrtPath,
     approvedScript: '陈大发举手并说：“你好”。',
-    shots: [{
-      shotId: 'shot-001',
-      script: '角色举手并说你好',
-      soundType: 'onscreen',
-      speakerId: 'character-1',
-      dialogueText: '你好',
-      dialogueEmotion: 'happy',
-      startState: '手臂放下',
-      actionProgression: '角色举手',
-      endState: '手举过肩',
-      videoPrompt: '单一连续镜头，角色举手',
-    }],
+    shots: [
+      {
+        shotId: 'shot-001',
+        script: '角色举手并说你好',
+        soundType: 'onscreen',
+        speakerId: 'character-1',
+        dialogueText: '你好',
+        dialogueEmotion: 'happy',
+        startState: '手臂放下',
+        actionProgression: '角色举手',
+        endState: '手举过肩',
+        videoPrompt: '单一连续镜头，角色举手',
+      },
+    ],
   })
 
   const analysisRequests = requests
@@ -901,7 +1042,10 @@ test('sends video, script, complete shot prompt and material SRT to Gemini once'
   assert.equal(analysisRequests[0].data.model, 'gemini-3.6-flash')
   const content = analysisRequests[0].data.messages[1].content
   assert.equal(content.filter((part: any) => part.type === 'file').length, 1)
-  assert.match(content.find((part: any) => part.type === 'file').file.file_data, /^data:video\/mp4;base64,/)
+  assert.match(
+    content.find((part: any) => part.type === 'file').file.file_data,
+    /^data:video\/mp4;base64,/,
+  )
   const prompt = content.find((part: any) => part.type === 'text').text
   assert.match(prompt, /陈大发举手并说/)
   assert.match(prompt, /单一连续镜头，角色举手/)
@@ -921,28 +1065,48 @@ test('keeps every Grok shot whole when Gemini returns invalid or missing evidenc
   await workspace.ensureEpisodeDir(runId, episodeId)
   const videoPath = workspace.getRunAssetPath(runId, episodeId, 'clip', 1)
   fs.writeFileSync(videoPath, Buffer.from('mock mp4'))
-  const transcriptJsonPath = path.join(projectRoot(runId), 'wiki', '转录', 'episode-001', 'media-shot-001-whisper.json')
-  const transcriptSrtPath = path.join(projectRoot(runId), 'wiki', '字幕', '素材', episodeId, 'media-shot-001-whisper.srt')
+  const transcriptJsonPath = path.join(
+    projectRoot(runId),
+    'wiki',
+    '转录',
+    'episode-001',
+    'media-shot-001-whisper.json',
+  )
+  const transcriptSrtPath = path.join(
+    projectRoot(runId),
+    'wiki',
+    '字幕',
+    '素材',
+    episodeId,
+    'media-shot-001-whisper.srt',
+  )
   fs.mkdirSync(path.dirname(transcriptJsonPath), { recursive: true })
   fs.mkdirSync(path.dirname(transcriptSrtPath), { recursive: true })
-  fs.writeFileSync(transcriptJsonPath, JSON.stringify({
-    schemaVersion: 1,
-    mediaId: 'media-shot-001',
-    sourceMediaPath: 'episodes/episode-001/clips/001.mp4',
-    durationMs: 12_000,
-    cues: [],
-  }))
+  fs.writeFileSync(
+    transcriptJsonPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      mediaId: 'media-shot-001',
+      sourceMediaPath: 'episodes/episode-001/clips/001.mp4',
+      durationMs: 12_000,
+      cues: [],
+    }),
+  )
   fs.writeFileSync(transcriptSrtPath, '')
-  chatOutputs.push(JSON.stringify({
-    shots: [{
-      shotId: 'shot-001',
-      trimStartMs: 9000,
-      trimEndMs: 1000,
-      subtitleCueIds: ['unknown-cue'],
-      speakerIds: ['unknown-role'],
-      needsReview: false,
-    }],
-  }))
+  chatOutputs.push(
+    JSON.stringify({
+      shots: [
+        {
+          shotId: 'shot-001',
+          trimStartMs: 9000,
+          trimEndMs: 1000,
+          subtitleCueIds: ['unknown-cue'],
+          speakerIds: ['unknown-role'],
+          needsReview: false,
+        },
+      ],
+    }),
+  )
   const requestStart = requests.length
   const result = await cloud.analyzeMaterialVideo({
     runId,
@@ -953,15 +1117,38 @@ test('keeps every Grok shot whole when Gemini returns invalid or missing evidenc
     transcriptSrtPath,
     approvedScript: '角色先抬头，再转身。',
     shots: [
-      { shotId: 'shot-001', script: '抬头', soundType: 'none', startState: '低头', actionProgression: '抬头', endState: '平视', videoPrompt: '角色缓慢抬头' },
-      { shotId: 'shot-002', script: '转身', soundType: 'none', startState: '正面', actionProgression: '转身', endState: '背面', videoPrompt: '角色转身离开' },
+      {
+        shotId: 'shot-001',
+        script: '抬头',
+        soundType: 'none',
+        startState: '低头',
+        actionProgression: '抬头',
+        endState: '平视',
+        videoPrompt: '角色缓慢抬头',
+      },
+      {
+        shotId: 'shot-002',
+        script: '转身',
+        soundType: 'none',
+        startState: '正面',
+        actionProgression: '转身',
+        endState: '背面',
+        videoPrompt: '角色转身离开',
+      },
     ],
   })
-  assert.equal(requests.slice(requestStart).filter((request) => request.url.endsWith('/v1/chat/completions')).length, 1)
-  assert.deepEqual(result.analyses.map((item) => [item.trimStartMs, item.trimEndMs, item.needsReview]), [
-    [0, 12_000, true],
-    [0, 12_000, true],
-  ])
+  assert.equal(
+    requests.slice(requestStart).filter((request) => request.url.endsWith('/v1/chat/completions'))
+      .length,
+    1,
+  )
+  assert.deepEqual(
+    result.analyses.map((item) => [item.trimStartMs, item.trimEndMs, item.needsReview]),
+    [
+      [0, 12_000, true],
+      [0, 12_000, true],
+    ],
+  )
 })
 
 test('uses the selected text model and retries one malformed Skill JSON response', async () => {
@@ -987,11 +1174,18 @@ test('uses the selected text model and retries one malformed Skill JSON response
   assert.deepEqual(scriptRequest.data.response_format, { type: 'json_object' })
   assert.equal(scriptRequest.data.max_tokens, 16_000)
 
-  const result = await cloud.runSkill('jc-voice-design', '{"text":"文稿"}', 'skill-run', 'deepseek-v4-pro')
+  const result = await cloud.runSkill(
+    'jc-voice-design',
+    '{"text":"文稿"}',
+    'skill-run',
+    'deepseek-v4-pro',
+  )
   assert.deepEqual(result, { text: '文稿', voicePrompt: '提示' })
   assert.equal(requests.at(-1).data.model, 'deepseek-v4-pro')
   assert.equal(
-    requests.slice(initialRequestCount).filter((request) => request.url.endsWith('/v1/chat/completions')).length,
+    requests
+      .slice(initialRequestCount)
+      .filter((request) => request.url.endsWith('/v1/chat/completions')).length,
     3,
   )
 })
@@ -1008,7 +1202,10 @@ test('loads the complete prop template and downloads one searched reference', as
           required: true,
           design: {
             project: { visualStyle: '冷暖电影感', aspectRatio: '9:16' },
-            prop: { name: '兽人' }, shape: {}, material: {}, views: {},
+            prop: { name: '兽人' },
+            shape: {},
+            material: {},
+            views: {},
           },
           searchQuery: 'rusty sickle prop design',
         },
@@ -1023,16 +1220,17 @@ test('loads the complete prop template and downloads one searched reference', as
   assert.match(request.data.messages[0].content, /detailCloseup/)
 
   downloadMode = 'success'
-  const version = await cloud.runReferenceSearchSkill('prop-search-run', 'asset-prop-1', 'rusty sickle prop design')
+  const version = await cloud.runReferenceSearchSkill(
+    'prop-search-run',
+    'asset-prop-1',
+    'rusty sickle prop design',
+  )
   assert.equal(version.source, 'search')
   assert.equal(version.searchQuery, 'rusty sickle prop design')
   assert.equal(version.generatedBySkill, 'jc-asset-reference-search')
   assert.equal(version.sourceUrl, 'https://i.pinimg.com/originals/orc.jpg')
   assert.equal(version.sourcePageUrl, 'https://jp.pinterest.com/pin/12345/')
-  assert.equal(
-    fs.existsSync(path.join(projectRoot('prop-search-run'), version.relativePath)),
-    true,
-  )
+  assert.equal(fs.existsSync(path.join(projectRoot('prop-search-run'), version.relativePath)), true)
 })
 
 test('keeps UTF-8 characters intact when an SSE chunk splits mid-character', async () => {
@@ -1084,7 +1282,9 @@ test('imports one managed core reference and uses GPT Image edits multipart', as
     shape: { silhouette: '完整手机' },
   }
   await cloud.generateAssetImage('reference-run', 'asset-phone', 'prop', design)
-  const assetRequest = requests.filter((request) => request.url.endsWith('/v1/images/generations')).at(-1)
+  const assetRequest = requests
+    .filter((request) => request.url.endsWith('/v1/images/generations'))
+    .at(-1)
   assert.deepEqual(JSON.parse(assetRequest.data.prompt), design)
 
   await cloud.generateAssetImage(
@@ -1101,13 +1301,10 @@ test('imports one managed core reference and uses GPT Image edits multipart', as
   assert.match(referencedAssetRequest.data.prompt, /最终内容、画风和比例以资产设计 JSON 为准/)
   assert.match(referencedAssetRequest.data.prompt, /"name": "展示手机"/)
 
-  await cloud.generateAssetImage(
-    'reference-run',
-    'asset-phone-multi-reference',
-    'prop',
-    design,
-    [reference.relativePath, 'inputs/second.png'],
-  )
+  await cloud.generateAssetImage('reference-run', 'asset-phone-multi-reference', 'prop', design, [
+    reference.relativePath,
+    'inputs/second.png',
+  ])
   const multiReferenceAssetRequest = requests
     .filter((request) => request.url.endsWith('/v1/images/edits'))
     .at(-1)
@@ -1119,10 +1316,14 @@ test('imports one managed core reference and uses GPT Image edits multipart', as
 test('translates every subtitle with the selected text model and preserves shot IDs', async () => {
   await cloud.saveApiKey('test-key')
   chatOutputs.push(JSON.stringify({ subtitles: [{ shotId: 'shot-999', text: 'wrong' }] }))
-  chatOutputs.push(JSON.stringify({ subtitles: [
-    { shotId: 'shot-001', text: 'Hello.' },
-    { shotId: 'shot-002', text: 'Let us begin.' },
-  ] }))
+  chatOutputs.push(
+    JSON.stringify({
+      subtitles: [
+        { shotId: 'shot-001', text: 'Hello.' },
+        { shotId: 'shot-002', text: 'Let us begin.' },
+      ],
+    }),
+  )
   const requestStart = requests.length
   const result = await cloud.translateSubtitles({
     runId: 'subtitle-run',
@@ -1136,7 +1337,9 @@ test('translates every subtitle with the selected text model and preserves shot 
     { shotId: 'shot-001', text: 'Hello.' },
     { shotId: 'shot-002', text: 'Let us begin.' },
   ])
-  const calls = requests.slice(requestStart).filter((request) => request.url.endsWith('/v1/chat/completions'))
+  const calls = requests
+    .slice(requestStart)
+    .filter((request) => request.url.endsWith('/v1/chat/completions'))
   assert.equal(calls.length, 2)
   assert.ok(calls.every((request) => request.data.model === 'deepseek-v4-pro'))
 })
@@ -1168,9 +1371,182 @@ test('video translation context reads only allowed Wiki files from the current p
   fs.writeFileSync(path.join(otherRoot, 'wiki', '资产', '角色', 'secret.md'), '# 其他项目角色')
 
   const context = await cloud.collectVideoTranslationContext('translation-context-run', episodeId)
-  assert.deepEqual(context.map((item) => item.path), [
-    'wiki/文稿/episode-001/确认文稿.md',
-    'wiki/资产/角色/role-1.md',
-  ])
+  assert.deepEqual(
+    context.map((item) => item.path),
+    ['wiki/文稿/episode-001/确认文稿.md', 'wiki/资产/角色/role-1.md'],
+  )
   assert.doesNotMatch(JSON.stringify(context), /其他项目|不应读取/)
+})
+
+test('video translation uses cue Markdown and retries an incomplete draft', async () => {
+  const runId = 'translation-context-run'
+  chatOutputs.push('## cue-001\nHello.', '## cue-001\nHello.\n\n## cue-002\nLet us begin.')
+  const requestStart = requests.length
+  const result = await cloud.translateVideoSubtitles({
+    runId,
+    episodeId,
+    textModel: 'gemini-3.6-flash',
+    sourceLanguage: 'zh',
+    targetLanguage: 'en',
+    subtitles: [
+      { cueId: 'cue-001', text: '你好。' },
+      { cueId: 'cue-002', text: '开始吧。' },
+    ],
+  })
+  assert.deepEqual(result.subtitles, [
+    { cueId: 'cue-001', text: 'Hello.' },
+    { cueId: 'cue-002', text: 'Let us begin.' },
+  ])
+  const calls = requests
+    .slice(requestStart)
+    .filter((request) => request.url.endsWith('/v1/chat/completions'))
+  assert.equal(calls.length, 2)
+  assert.ok(calls.every((request) => request.data.response_format === undefined))
+  assert.match(calls[1].data.messages[1].content, /上次结果无效/)
+})
+
+test('Gemini plans FFmpeg slices and each slice directly becomes the final dialogue', async () => {
+  const runId = 'translation-context-run'
+  const source = path.join(
+    projectRoot(runId),
+    'episodes',
+    episodeId,
+    'video-translate',
+    'source.mov',
+  )
+  fs.mkdirSync(path.dirname(source), { recursive: true })
+  fs.writeFileSync(source, Buffer.alloc(20 * 1024 * 1024 + 1))
+  const ffmpegStart = ffmpegArgs.length
+  chatOutputs.push(
+    '## 剧情概要\n\n两人准备离开。\n\n## FFmpeg切片方案\n- slice-001 | 0 | 12000 | 当前短片保持完整',
+    '## line-001\n- 开始毫秒：700\n- 结束毫秒：1300\n- 角色 ID：role-1\n- 角色名：林默\n- 置信度：0.98\n- 需要复核：否\n\n### 校准原文\n你过来\n\n### 证据\n声音、口型和字幕一致\n\n### 画面文字\n你过来\n\n## line-002\n- 开始毫秒：1500\n- 结束毫秒：2400\n- 角色 ID：role-1\n- 角色名：林默\n- 置信度：0.99\n- 需要复核：否\n\n### 校准原文\n我送你去\n\n### 证据\n画面字幕清晰可见\n\n### 画面文字\n我送你去',
+  )
+  const progress: string[] = []
+  const result = await cloud.identifyVideoTranslationSpeakers(
+    {
+      runId,
+      episodeId,
+      textModel: 'deepseek-v4-pro',
+      videoPath: 'episodes/episode-001/video-translate/source.mov',
+      roles: [
+        {
+          translationRoleId: 'role-1',
+          displayName: '林默',
+          aliases: [],
+          linkedCreativeRoleId: 'creative-1',
+        },
+      ],
+    },
+    (message) => progress.push(message),
+  )
+  assert.deepEqual(
+    result.speakers.map((cue) => cue.correctedText),
+    ['你过来', '我送你去'],
+  )
+  assert.equal(result.speakers[1].recognizedText, '')
+  assert.equal(result.speakers[1].ocrText, '我送你去')
+  const translationFfmpegCalls = ffmpegArgs.slice(ffmpegStart)
+  assert.equal(translationFfmpegCalls.length, 2)
+  assert.match(
+    translationFfmpegCalls[0][translationFfmpegCalls[0].indexOf('-i') + 1],
+    /source\.mov$/,
+  )
+  assert.match(
+    translationFfmpegCalls[1][translationFfmpegCalls[1].indexOf('-i') + 1],
+    /analysis\.mp4$/,
+  )
+  for (const filename of [
+    '01-整体分析与切片方案.md',
+    '02-FFmpeg切片.md',
+    '03-片段001台词.md',
+    '03-Gemini逐片台词.md',
+    '04-最终稿.md',
+  ])
+    assert.ok(fs.existsSync(path.join(projectRoot(runId), 'wiki', '翻译', episodeId, filename)))
+  const trace = fs.readFileSync(
+    path.join(projectRoot(runId), 'wiki', '翻译', episodeId, '过程记录.md'),
+    'utf8',
+  )
+  assert.match(trace, /第一步整体分析与切片方案/)
+  assert.match(trace, /第二步 FFmpeg 切片/)
+  assert.match(trace, /第三步 Gemini 逐片台词/)
+  assert.match(trace, /第四步直接确定最终稿/)
+  const calibrationRequests = requests.slice(-2)
+  assert.equal(calibrationRequests.length, 2)
+  assert.match(
+    calibrationRequests[0].data.messages[1].content.find((part: any) => part.type === 'text').text,
+    /FFmpeg 规划切片/,
+  )
+  const request = calibrationRequests[1]
+  assert.equal(request.data.model, 'gemini-3.6-flash')
+  assert.equal(request.timeout, cloud.VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS)
+  assert.equal(request.data.response_format, undefined)
+  const content = request.data.messages[1].content
+  assert.match(
+    content.find((part: any) => part.type === 'file').file.file_data,
+    /^data:video\/mp4;base64,/,
+  )
+  const prompt = content.find((part: any) => part.type === 'text').text
+  assert.match(prompt, /FFmpeg 切片/)
+  assert.match(prompt, /不得概括、跳过短句或把画面字幕忽略掉/)
+  assert.doesNotMatch(JSON.stringify(calibrationRequests), /Whisper/)
+  assert.match(progress.join('\n'), /片段 1\/1/)
+  assert.match(progress.at(-1) || '', /04-最终稿\.md/)
+
+  const paidRequestsBeforeResume = requests.filter((item) =>
+    item.url.endsWith('/v1/chat/completions'),
+  ).length
+  const resumeProgress: string[] = []
+  const resumed = await cloud.identifyVideoTranslationSpeakers(
+    {
+      runId,
+      episodeId,
+      textModel: 'gemini-3.6-flash',
+      videoPath: 'episodes/episode-001/video-translate/source.mov',
+      roles: [
+        {
+          translationRoleId: 'role-1',
+          displayName: '林默',
+          aliases: [],
+          linkedCreativeRoleId: 'creative-1',
+        },
+      ],
+    },
+    (message) => resumeProgress.push(message),
+  )
+  assert.deepEqual(resumed.speakers, result.speakers)
+  assert.equal(
+    requests.filter((item) => item.url.endsWith('/v1/chat/completions')).length,
+    paidRequestsBeforeResume,
+  )
+  assert.match(resumeProgress.join('\n'), /复用 01-整体分析与切片方案/)
+  assert.match(resumeProgress.join('\n'), /复用已完成片段 1\/1/)
+})
+
+test('rejects an invalid per-slice dialogue after one retry', async () => {
+  const runId = 'translation-invalid-run'
+  const source = path.join(
+    projectRoot(runId),
+    'episodes',
+    episodeId,
+    'video-translate',
+    'source.mp4',
+  )
+  fs.mkdirSync(path.dirname(source), { recursive: true })
+  fs.writeFileSync(source, Buffer.from('mock mp4'))
+  chatOutputs.push(
+    '## 剧情概要\n\n测试\n\n## FFmpeg切片方案\n- slice-001 | 0 | 12000 | 保持完整',
+    '## line-001\n- 开始毫秒：0\n- 结束毫秒：1000\n- 角色 ID：无\n- 角色名：未知\n- 置信度：0\n- 需要复核：是\n\n### 校准原文\n\n### 证据\n无\n\n### 画面文字\n无',
+    '## line-001\n- 开始毫秒：0\n- 结束毫秒：1000\n- 角色 ID：无\n- 角色名：未知\n- 置信度：0\n- 需要复核：是\n\n### 校准原文\n\n### 证据\n无\n\n### 画面文字\n无',
+  )
+  await assert.rejects(
+    cloud.identifyVideoTranslationSpeakers({
+      runId,
+      episodeId,
+      textModel: 'gemini-3.6-flash',
+      videoPath: 'episodes/episode-001/video-translate/source.mp4',
+      roles: [],
+    }),
+    /时间或校准原文无效/,
+  )
 })

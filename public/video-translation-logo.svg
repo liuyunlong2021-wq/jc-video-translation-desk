@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">视频翻译工作台</title>
+  <desc id="desc">以寸头和无框眼镜为特征的人像翻译标志</desc>
+  <rect width="512" height="512" rx="112" fill="#F7F8F5"/>
+  <path d="M132 207c0-91 52-142 124-142s124 51 124 142v67c0 103-49 169-124 169s-124-66-124-169z" fill="#FFFFFF" stroke="#16191B" stroke-width="16"/>
+  <path d="M132 205c0-90 52-140 124-140s124 50 124 140c-31-26-73-39-124-39s-93 13-124 39z" fill="#16191B"/>
+  <path d="M138 192c30-18 69-28 118-28s88 10 118 28" fill="none" stroke="#FF5B4D" stroke-width="12" stroke-linecap="round"/>
+  <g fill="none" stroke="#16191B" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M86 230h48"/>
+    <path d="M378 230h48"/>
+    <rect x="111" y="207" width="126" height="91" rx="20"/>
+    <rect x="275" y="207" width="126" height="91" rx="20"/>
+    <path d="M237 232c13-10 25-10 38 0"/>
+  </g>
+  <g stroke-linecap="round">
+    <path d="M144 241h61M144 266h43" fill="none" stroke="#12A99A" stroke-width="13"/>
+    <path d="M307 241h61M325 266h43" fill="none" stroke="#FF5B4D" stroke-width="13"/>
+  </g>
+  <path d="M218 345c22 14 54 14 76 0" fill="none" stroke="#16191B" stroke-width="11" stroke-linecap="round"/>
+  <path d="M194 394h124" fill="none" stroke="#12A99A" stroke-width="13" stroke-linecap="round"/>
+  <path d="m211 377-18 17 18 17M301 377l18 17-18 17" fill="none" stroke="#12A99A" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
