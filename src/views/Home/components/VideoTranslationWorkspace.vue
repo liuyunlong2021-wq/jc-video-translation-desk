@@ -3,7 +3,7 @@
     <section class="translation-preview">
       <header>
         <div>
-          <h2>视频字幕工作台</h2>
+          <h2>{{ showRoles ? '翻译字幕确认' : '字幕工作台' }}</h2>
           <p>{{ previewCaption }}</p>
         </div>
       </header>
@@ -34,7 +34,7 @@
           <tr>
             <th class="timeline-column">时间轴</th>
             <th class="preview-column">视频片段预览</th>
-            <th class="role-column">说话角色</th>
+            <th v-if="showRoles" class="role-column">说话角色</th>
             <th>{{ languageLabel(state.sourceLanguage) }}字幕</th>
             <th>{{ languageLabel(state.targetLanguage) }}字幕</th>
             <th class="audio-column">目标语言配音</th>
@@ -42,7 +42,9 @@
         </thead>
         <tbody>
           <tr v-if="!state.cues.length">
-            <td colspan="6" class="empty-row">点击右栏“扒片”后在这里审核角色、原文和译文</td>
+            <td :colspan="showRoles ? 6 : 5" class="empty-row">
+              点击右栏“扒片”后在这里审核角色、原文和译文
+            </td>
           </tr>
           <tr
             v-for="cue in state.cues"
@@ -61,7 +63,7 @@
                 preload="metadata"
               />
             </td>
-            <td @click.stop>
+            <td v-if="showRoles" @click.stop>
               <v-select
                 :model-value="cue.translationRoleId || ''"
                 :items="roleItems(cue)"
@@ -110,7 +112,10 @@ import { useMediaTaskStore } from '@/store'
 import { managedMediaUrl } from '@/runtime/managedMediaUrl'
 import type { VideoTranslationCue } from '@/runtime/videoTranslation'
 
-const props = defineProps<{ selectedCueId: string }>()
+const props = withDefaults(defineProps<{ selectedCueId: string; showRoles?: boolean }>(), {
+  showRoles: true,
+})
+const { showRoles } = props
 const emit = defineEmits<{ selectCue: [cueId: string] }>()
 const mediaStore = useMediaTaskStore()
 const state = computed(() => mediaStore.videoTranslation!)
@@ -157,9 +162,10 @@ function roleItems(cue: VideoTranslationCue) {
   ]
 }
 function bindRole(cue: VideoTranslationCue, value: string) {
+  let roleId = value
   if (value === '__new__') {
     const name = cue.proposedName?.trim() || '新角色'
-    const roleId = `role-${crypto.randomUUID()}`
+    roleId = `role-${crypto.randomUUID()}`
     mediaStore.videoTranslationRoles.push({
       translationRoleId: roleId,
       displayName: name,
@@ -167,13 +173,15 @@ function bindRole(cue: VideoTranslationCue, value: string) {
       sourceEpisodeIds: [mediaStore.episodeId],
       status: 'confirmed',
     })
-    cue.translationRoleId = roleId
-    cue.needsReview = false
-  } else {
-    cue.translationRoleId = value
-    cue.needsReview = false
   }
-  mediaStore.invalidateTranslation('source-dialogue')
+  const sameCandidate = cue.proposedName?.trim()
+  state.value.cues
+    .filter((item) => item === cue || (sameCandidate && item.proposedName?.trim() === sameCandidate))
+    .forEach((item) => {
+      item.translationRoleId = roleId
+      item.needsReview = false
+    })
+  mediaStore.invalidateTranslation('role-binding')
 }
 function updateText(cue: VideoTranslationCue, key: 'sourceText' | 'translatedText', event: Event) {
   cue[key] = (event.target as HTMLTextAreaElement).value

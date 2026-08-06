@@ -233,6 +233,7 @@
       :class="{
         'dubbing-workspace-mode': isDubbingWorkspace && !isVideoTranslation,
         'translation-workspace-mode': isVideoTranslation,
+        'translation-voice-mode': isTranslationVoiceWorkspace,
         'left-collapsed': !isVideoTranslation && !leftPanelVisible,
         'right-collapsed': !isVideoTranslation && !rightPanelVisible,
       }"
@@ -243,16 +244,37 @@
         @import-markdown="importMarkdown"
       />
       <template v-if="isVideoTranslation">
-        <VideoTranslationSidebar />
-        <VideoTranslationWorkspace
-          :selected-cue-id="selectedTranslationCueId"
-          @select-cue="selectedTranslationCueId = $event"
-        />
-        <VideoTranslationInspector
-          :selected-cue-id="selectedTranslationCueId"
-          @action="runTranslationAction"
-          @cancel="cancelWorkflow"
-        />
+        <template v-if="isTranslationVoiceWorkspace">
+          <VideoManage
+            translation-mode
+            @upload-seed-reference="uploadTranslationSeedReference"
+            @generate-seed-reference="generateTranslationSeedReference"
+          />
+          <div class="inspector-column min-w-0 min-h-0 open">
+            <VideoRender
+              translation-mode
+              @generate-all-seed-role-prompts="generateAllTranslationSeedRolePrompts"
+              @generate-all-seed-references="generateAllTranslationSeedReferences"
+              @generate-global-seed-prompt="arrangeTranslationVoice"
+              @generate-global-seed-audio="generateTranslationVoice"
+              @open-translation-subtitles="openTranslationSubtitleWorkspace"
+              @cancel="cancelWorkflow"
+            />
+          </div>
+        </template>
+        <template v-else>
+          <VideoTranslationSidebar />
+          <VideoTranslationWorkspace
+            :selected-cue-id="selectedTranslationCueId"
+            :show-roles="!isTranslationSubtitleWorkspace"
+            @select-cue="selectedTranslationCueId = $event"
+          />
+          <VideoTranslationInspector
+            :selected-cue-id="selectedTranslationCueId"
+            @action="runTranslationAction"
+            @cancel="cancelWorkflow"
+          />
+        </template>
       </template>
       <template v-else>
         <VideoManage
@@ -421,6 +443,12 @@ const isDubbingWorkspace = computed(() => mediaStore.workspaceView === 'dubbing'
 const isFinalWorkspace = computed(() => mediaStore.workspaceView === 'final')
 const isVideoTranslation = computed(
   () => translationEdition || mediaStore.workspaceEntry === 'video-translate',
+)
+const isTranslationVoiceWorkspace = computed(
+  () => isVideoTranslation.value && mediaStore.workspaceView === 'seed-voice',
+)
+const isTranslationSubtitleWorkspace = computed(
+  () => isVideoTranslation.value && mediaStore.workspaceView === 'dubbing',
 )
 watch(
   () => mediaStore.videoTranslation,
@@ -1429,7 +1457,7 @@ async function runTranslationAction(action: VideoTranslationAction) {
   if (action === 'upload-video') return uploadTranslationVideo()
   if (action === 'reverse-video') return reverseTranslationVideo()
   if (action === 'translate-all-subtitles') return translateVideoSubtitles()
-  if (action === 'confirm-speakers-and-subtitles') return confirmTranslationDialogue()
+  if (action === 'open-voice-workspace') return openTranslationVoiceWorkspace()
   if (action === 'arrange-doubao-voice') return arrangeTranslationVoice()
   if (action === 'generate-target-voice') return generateTranslationVoice()
   if (action === 'separate-source-audio') return separateTranslationAudio()
@@ -1455,6 +1483,10 @@ async function uploadTranslationVideo() {
     next.durationMs = result.durationMs
     next.hasAudio = result.hasAudio
     mediaStore.videoTranslation = next
+    mediaStore.seedAudioGlobalPrompt = ''
+    mediaStore.seedAudioTrackPath = ''
+    mediaStore.seedVoiceTab = 'roles'
+    mediaStore.selectView('script')
     selectedTranslationCueId.value = ''
     toast.success('翻译原片已归档')
   })
@@ -1502,6 +1534,7 @@ async function reverseTranslationVideo() {
         result.contextPaths,
       )
       selectedTranslationCueId.value = state.cues[0]?.cueId || ''
+      mediaStore.selectView('script')
       toast.success('扒片完成，已打开字幕配音工作台')
     } catch (error) {
       state.transcriptStatus = 'failed'
@@ -1542,7 +1575,7 @@ async function translateVideoSubtitles() {
 }
 
 async function confirmTranslationDialogue() {
-  await runTranslationStep('confirm-speakers-and-subtitles', 'reviewStatus', async (state) => {
+  await runTranslationStep('open-voice-workspace', 'reviewStatus', async (state) => {
     const used = new Set(state.cues.map((cue) => cue.translationRoleId))
     const roles = mediaStore.videoTranslationRoles.map((role) => ({
       ...role,
@@ -1556,11 +1589,183 @@ async function confirmTranslationDialogue() {
       mediaStore.episodeId,
       state.sourceLanguage,
       state.targetLanguage,
-      state.cues,
+      state.cues.map((cue) => ({ ...cue })),
       roles,
     )
     mediaStore.videoTranslationRoles = roles
-    toast.success('角色与字幕已确认')
+    toast.success('角色与双语字幕已保存')
+  })
+}
+
+async function openTranslationVoiceWorkspace() {
+  await confirmTranslationDialogue()
+  const state = translationState()
+  if (state.reviewStatus !== 'ready') return
+  mediaStore.seedAudioGlobalPrompt = state.seedPromptText || ''
+  mediaStore.seedAudioTrackPath = state.targetVoicePath || ''
+  mediaStore.seedVoiceTab = 'roles'
+  mediaStore.selectedAssetId = mediaStore.videoTranslationRoles[0]?.translationRoleId
+  mediaStore.selectView('seed-voice')
+}
+
+function openTranslationSubtitleWorkspace() {
+  const state = translationState()
+  if (!state.targetVoicePath) return
+  mediaStore.seedAudioGlobalPrompt = state.seedPromptText || mediaStore.seedAudioGlobalPrompt
+  mediaStore.seedAudioTrackPath = state.targetVoicePath
+  mediaStore.selectView('dubbing')
+}
+
+function translationRole(speakerId: string) {
+  const role = mediaStore.videoTranslationRoles.find((item) => item.translationRoleId === speakerId)
+  if (!role) throw new Error('没有找到翻译角色')
+  return role
+}
+
+function translationVoiceLanguage() {
+  return translationState().targetLanguage === 'zh' ? 'zh' : 'en'
+}
+
+async function saveTranslationSeedRolePrompt(speakerId: string, prompt: string) {
+  const role = translationRole(speakerId)
+  mediaStore.seedAudioRolePrompts[speakerId] = prompt
+  const promptPath = `wiki/翻译/声音/${speakerId}-音色提示词.md`
+  const current = await window.electron.cloud
+    .readMarkdown(mediaStore.runId, promptPath)
+    .catch(() => null)
+  await window.electron.cloud.writeMarkdown(
+    mediaStore.runId,
+    promptPath,
+    `---\nentityType: seed-voice-prompt\ntranslationRoleId: ${speakerId}\nlanguage: ${translationVoiceLanguage()}\nstatus: ready\n---\n\n# ${role.displayName} 音色提示词\n\n${prompt}\n`,
+    current?.revision,
+  )
+  mediaStore.invalidateTranslation('voice-prompt')
+}
+
+async function generateTranslationSeedRolePromptCore(speakerId: string) {
+  const state = translationState()
+  const role = translationRole(speakerId)
+  const sample =
+    state.cues.find((cue) => cue.translationRoleId === speakerId)?.translatedText ||
+    (translationVoiceLanguage() === 'en'
+      ? 'Everything is ready. Let us begin when you are prepared.'
+      : '今天的安排已经确认了，准备好以后我们就开始。')
+  const character = {
+    id: role.translationRoleId,
+    label: role.displayName,
+    aliases: role.aliases,
+    description: role.description || '',
+  }
+  const design = await window.electron.cloud.runSkill(
+    'jc-voice-design',
+    JSON.stringify({
+      text: sample,
+      character,
+      language: translationVoiceLanguage(),
+      requirement: '只设计该角色唯一稳定基准音；保持目标语言口音和人物身份一致',
+    }),
+    mediaStore.runId,
+    mediaStore.textModel,
+  )
+  const result = await window.electron.cloud.runSkill(
+    'jc-doubao-seed-audio',
+    JSON.stringify({
+      mode: 'voice-profile',
+      language: translationVoiceLanguage(),
+      durationMs: 10000,
+      character,
+      voiceDesign: design.voicePrompt,
+      exampleLine: sample,
+      approvedScript: state.cues.map((cue) => cue.translatedText).join('\n'),
+    }),
+    mediaStore.runId,
+    mediaStore.textModel,
+  )
+  const prompt = String(result?.text_prompt || '').trim()
+  if (!prompt) throw new Error('角色音色提示词为空')
+  await saveTranslationSeedRolePrompt(speakerId, prompt)
+}
+
+async function generateAllTranslationSeedRolePrompts() {
+  await runAction('generate-seed-role-prompts', async () => {
+    const missing = mediaStore.videoTranslationRoles.filter(
+      (role) => !mediaStore.seedAudioRolePrompts[role.translationRoleId]?.trim(),
+    )
+    for (const role of missing) await generateTranslationSeedRolePromptCore(role.translationRoleId)
+    toast.success(missing.length ? `已生成 ${missing.length} 个角色提示词` : '角色提示词已齐全')
+  })
+}
+
+async function registerTranslationSeedReference(
+  speakerId: string,
+  sourceAudioPath: string,
+  displayName: string,
+) {
+  const role = translationRole(speakerId)
+  const profile = await window.electron.cloud.registerSeedVoiceProfile({
+    projectId: mediaStore.runId,
+    episodeId: mediaStore.episodeId,
+    speakerId,
+    displayName,
+    sourceAudioPath,
+    voiceDesignPrompt: mediaStore.seedAudioRolePrompts[speakerId]?.trim() || '',
+    language: translationVoiceLanguage(),
+    workflow: 'video-translation',
+  })
+  role.voiceProfileId = profile.voiceProfileId
+  mediaStore.invalidateTranslation('voice-binding')
+  mediaStore.seedAudioVoicePath = profile.referenceAudioPath
+  return profile
+}
+
+async function generateTranslationSeedReferenceCore(speakerId: string) {
+  const role = translationRole(speakerId)
+  const prompt = mediaStore.seedAudioRolePrompts[speakerId]?.trim()
+  if (!prompt) throw new Error(`请先生成 ${role.displayName} 的角色提示词`)
+  const audio = await window.electron.cloud.generateSeedAudio({
+    runId: mediaStore.runId,
+    episodeId: mediaStore.episodeId,
+    workflow: 'video-translation',
+    targetLanguage: translationState().targetLanguage,
+    mode: 'voice-profile',
+    durationMs: 10000,
+    prompt,
+    language: translationVoiceLanguage(),
+    outputName: `voice-${speakerId}`,
+  })
+  await registerTranslationSeedReference(speakerId, audio.path, `${role.displayName} Seed 音色`)
+}
+
+async function generateAllTranslationSeedReferences() {
+  await runAction('generate-seed-references', async () => {
+    const missing = mediaStore.videoTranslationRoles.filter((role) => !role.voiceProfileId)
+    for (const role of missing) await generateTranslationSeedReferenceCore(role.translationRoleId)
+    toast.success(missing.length ? `已生成并绑定 ${missing.length} 个参考音` : '角色参考音已齐全')
+  })
+}
+
+async function generateTranslationSeedReference(speakerId: string) {
+  await runAction('generate-seed-reference', async () => {
+    await generateTranslationSeedReferenceCore(speakerId)
+    toast.success(`${translationRole(speakerId).displayName} 参考音已生成并绑定`)
+  })
+}
+
+async function uploadTranslationSeedReference(speakerId: string) {
+  await runAction('upload-seed-reference', async () => {
+    const selected = await window.electron.cloud.selectSeedReferenceAudio(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      speakerId,
+    )
+    if (!selected) return
+    const role = translationRole(speakerId)
+    await registerTranslationSeedReference(
+      speakerId,
+      selected.path,
+      `${role.displayName} · ${selected.displayName}`,
+    )
+    toast.success(`${role.displayName} 参考音已上传并设为当前参考音`)
   })
 }
 
@@ -1601,6 +1806,9 @@ async function arrangeTranslationVoice() {
     state.seedArrangementPath = saved.arrangementPath
     state.seedPromptPath = saved.promptPath
     state.seedPromptText = plan.promptMarkdown
+    mediaStore.seedAudioArrangementPath = saved.arrangementPath
+    mediaStore.seedAudioGlobalPrompt = plan.promptMarkdown
+    mediaStore.seedAudioTrackPath = ''
     toast.success(`豆包纯人声安排已生成，共 ${plan.arrangement.tasks.length} 个任务`)
   })
 }
@@ -1613,15 +1821,18 @@ async function generateTranslationVoice() {
       mediaStore.episodeId,
       state.targetLanguage,
       plan.arrangement,
-      state.seedPromptText || plan.promptMarkdown,
+      mediaStore.seedAudioGlobalPrompt || state.seedPromptText || plan.promptMarkdown,
     )
     state.seedArrangementPath = saved.arrangementPath
     state.seedPromptPath = saved.promptPath
+    state.seedPromptText = mediaStore.seedAudioGlobalPrompt || plan.promptMarkdown
     state.targetVoicePath = await window.electron.cloud.generateVideoTranslationTargetVoice(
       mediaStore.runId,
       mediaStore.episodeId,
       state.targetLanguage,
     )
+    mediaStore.seedAudioArrangementPath = saved.arrangementPath
+    mediaStore.seedAudioTrackPath = state.targetVoicePath
     toast.success('目标语言纯人声已生成')
   })
 }
@@ -3828,6 +4039,9 @@ onBeforeUnmount(() => {
 }
 .workspace-grid.translation-workspace-mode {
   grid-template-columns: minmax(210px, 0.52fr) minmax(620px, 1.8fr) minmax(310px, 0.72fr);
+}
+.workspace-grid.translation-voice-mode {
+  grid-template-columns: minmax(720px, 1fr) minmax(300px, 0.42fr);
 }
 .workspace-grid.left-collapsed {
   grid-template-columns: minmax(520px, 1fr) minmax(300px, 0.52fr);

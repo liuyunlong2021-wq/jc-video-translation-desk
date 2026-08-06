@@ -24,7 +24,10 @@ test('splits final subtitle lines at punctuation and assigns contiguous timestam
   )
   assert.equal(parts[0].startMs, 34_100)
   assert.equal(parts.at(-1)?.endMs, 40_800)
-  assert.equal(parts.map((part) => part.text).join(''), '订婚宴上让我颜面扫地，抬不起头，那我也让你抬不起头！')
+  assert.equal(
+    parts.map((part) => part.text).join(''),
+    '订婚宴上让我颜面扫地，抬不起头，那我也让你抬不起头！',
+  )
   for (let index = 1; index < parts.length; index++)
     assert.equal(parts[index - 1].endMs, parts[index].startMs)
 })
@@ -148,6 +151,28 @@ test('clears stale translation when calibrated source dialogue changes', () => {
   assert.equal(next.cues[0].translatedText, '')
 })
 
+test('keeps translated text when only the role binding changes', () => {
+  const state = createVideoTranslationState()
+  state.translationStatus = 'ready'
+  state.reviewStatus = 'ready'
+  state.cues = [
+    {
+      cueId: 'cue-001',
+      startMs: 0,
+      endMs: 1000,
+      recognizedText: '你好',
+      sourceText: '你好',
+      translatedText: 'Hello',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+  ]
+  const next = invalidateVideoTranslation(state, 'role-binding')
+  assert.equal(next.translationStatus, 'ready')
+  assert.equal(next.reviewStatus, 'stale')
+  assert.equal(next.cues[0].translatedText, 'Hello')
+})
+
 test('requires ordered confirmed cues and known translation roles', () => {
   const cue = {
     cueId: 'cue-001',
@@ -202,7 +227,7 @@ test('plans pure target-language Seed tasks with at most three references', () =
   assert.match(plan.promptMarkdown, /禁止音乐、环境声、动作音效/)
 })
 
-test('keeps translation UI separate with six columns and one reverse-video entry', () => {
+test('routes translation review through voice workbench before a role-free subtitle workbench', () => {
   const read = (file: string) => fs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8')
   const workspace = read('src/views/Home/components/VideoTranslationWorkspace.vue')
   const inspector = read('src/views/Home/components/VideoTranslationInspector.vue')
@@ -218,6 +243,9 @@ test('keeps translation UI separate with six columns and one reverse-video entry
   )
   for (const column of ['时间轴', '视频片段预览', '说话角色', '原字幕', '译文字幕', '目标语言配音'])
     assert.match(workspace, new RegExp(column))
+  assert.match(workspace, /v-if="showRoles" class="role-column"/)
+  assert.match(workspace, /item\.proposedName\?\.trim\(\) === sameCandidate/)
+  assert.match(home, /:show-roles="!isTranslationSubtitleWorkspace"/)
   assert.doesNotMatch(workspace, /<v-btn/)
   assert.match(inspector, /!mediaStore\.runId/)
   assert.match(home, /请先新建或打开项目，再上传视频/)
@@ -225,15 +253,17 @@ test('keeps translation UI separate with six columns and one reverse-video entry
     '上传视频',
     '扒片',
     '翻译所有字幕',
-    '确认角色与字幕',
-    '生成豆包配音安排',
-    '生成目标语言配音',
+    '进入配音工作台',
     '分离原人声和背景声',
     '去除原人声',
     '混回背景声和目标语言配音',
     '烧录字幕和配音',
   ])
     assert.match(inspector, new RegExp(action))
+  assert.doesNotMatch(inspector, /确认角色与字幕/)
+  assert.match(home, /translation-mode/)
+  assert.match(home, /openTranslationSubtitleWorkspace/)
+  assert.match(home, /state\.cues\.map\(\(cue\) => \(\{ \.\.\.cue \}\)\)/)
   assert.doesNotMatch(inspector, /Whisper 生成时间轴|校准字幕与角色/)
   assert.doesNotMatch(inspector, /选择字幕行后设置角色声音|目标语言声音|voice-section/)
   assert.match(home, /roles: mediaStore\.videoTranslationRoles\.map/)

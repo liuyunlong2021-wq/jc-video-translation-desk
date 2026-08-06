@@ -2,15 +2,6 @@
   <v-sheet class="translation-inspector" border rounded>
     <div class="inspector-scroll">
       <header><strong>视频翻译操作</strong><small>扒片 · 豆包语音 · FFmpeg</small></header>
-      <v-textarea
-        v-if="state.seedPromptText"
-        :model-value="state.seedPromptText"
-        label="豆包语音稿"
-        rows="7"
-        auto-grow
-        density="compact"
-        @update:model-value="updatePrompt"
-      />
       <div class="actions">
         <template v-for="action in actions" :key="action.key">
           <v-btn
@@ -70,8 +61,8 @@ const state = computed(() => mediaStore.videoTranslation!)
 const available = computed(
   () => new Set(availableVideoTranslationActions(state.value, mediaStore.videoTranslationRoles)),
 )
-const actions = computed(
-  () =>
+const actions = computed(() =>
+  (
     [
       {
         key: 'upload-video',
@@ -94,9 +85,9 @@ const actions = computed(
         done: state.value.translationStatus === 'ready',
       },
       {
-        key: 'confirm-speakers-and-subtitles',
-        label: '确认角色与字幕',
-        icon: 'mdi-check-decagram-outline',
+        key: 'open-voice-workspace',
+        label: '进入配音工作台',
+        icon: 'mdi-account-voice',
         done: state.value.reviewStatus === 'ready',
       },
       {
@@ -141,7 +132,22 @@ const actions = computed(
       icon: string
       color?: string
       done: boolean
-    }>,
+    }>
+  ).filter((action) =>
+    mediaStore.workspaceView === 'dubbing'
+      ? [
+          'separate-source-audio',
+          'remove-original-vocal',
+          'mix-background-audio',
+          'burn-subtitles-and-voice',
+        ].includes(action.key)
+      : [
+          'upload-video',
+          'reverse-video',
+          'translate-all-subtitles',
+          'open-voice-workspace',
+        ].includes(action.key),
+  ),
 )
 
 let stopProgress: (() => void) | undefined
@@ -152,11 +158,6 @@ onMounted(() => {
   })
 })
 onBeforeUnmount(() => stopProgress?.())
-
-function updatePrompt(value: string) {
-  state.value.seedPromptText = value
-  mediaStore.invalidateTranslation('voice-prompt')
-}
 </script>
 
 <style scoped>

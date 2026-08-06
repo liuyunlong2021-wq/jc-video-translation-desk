@@ -1,6 +1,7 @@
 <template>
   <v-sheet class="workspace h-full min-h-0 flex flex-col" border rounded>
     <v-tabs
+      v-if="!translationMode"
       :model-value="mediaStore.workspaceView"
       class="workspace-tabs"
       density="compact"
@@ -76,93 +77,167 @@
         </div>
       </section>
 
-      <section v-else-if="mediaStore.workspaceView === 'seed-voice'" class="seed-voice-workspace">
+      <section
+        v-else-if="translationMode || mediaStore.workspaceView === 'seed-voice'"
+        class="seed-voice-workspace"
+      >
         <div class="seed-voice-header">
           <div>
             <h2>全局配音工作台</h2>
-            <p>先确定角色音色和整段声音，再进入分镜。Seed Audio 为默认路线。</p>
+            <p>
+              {{
+                translationMode
+                  ? '先确定角色参考音并生成整集目标语言配音，再进入字幕工作台。'
+                  : '先确定角色音色和整段声音，再进入分镜。Seed Audio 为默认路线。'
+              }}
+            </p>
           </div>
           <v-chip size="small" color="success" variant="tonal">Seed Audio</v-chip>
         </div>
+        <v-btn-toggle
+          v-model="mediaStore.seedVoiceTab"
+          class="seed-voice-tabs"
+          mandatory
+          density="compact"
+          color="success"
+          variant="outlined"
+          aria-label="配音工作区"
+        >
+          <v-btn value="roles" prepend-icon="mdi-account-voice">角色配音</v-btn>
+          <v-btn value="global" prepend-icon="mdi-waveform">全局配音</v-btn>
+        </v-btn-toggle>
         <div class="seed-voice-main">
-          <nav class="seed-role-list" aria-label="角色列表">
-            <button
-              v-for="character in seedCharacters"
-              :key="character.id"
-              type="button"
-              class="seed-role-item"
-              :class="{ selected: mediaStore.selectedAssetId === character.id }"
-              @click="mediaStore.selectedAssetId = character.id"
-            >
-              <span>{{ character.label }}</span>
-              <v-icon size="18" :color="seedRoleReady(character.id) ? 'success' : 'warning'">
-                {{ seedRoleReady(character.id) ? 'mdi-check-circle' : 'mdi-alert-circle-outline' }}
+          <nav
+            class="seed-role-list"
+            :aria-label="mediaStore.seedVoiceTab === 'roles' ? '角色列表' : '全局配音列表'"
+          >
+            <template v-if="mediaStore.seedVoiceTab === 'roles'">
+              <button
+                v-for="character in seedCharacters"
+                :key="character.id"
+                type="button"
+                class="seed-role-item"
+                :class="{ selected: mediaStore.selectedAssetId === character.id }"
+                @click="mediaStore.selectedAssetId = character.id"
+              >
+                <span>{{ character.label }}</span>
+                <v-icon size="18" :color="seedRoleReady(character.id) ? 'success' : 'warning'">
+                  {{
+                    seedRoleReady(character.id) ? 'mdi-check-circle' : 'mdi-alert-circle-outline'
+                  }}
+                </v-icon>
+              </button>
+            </template>
+            <button v-else type="button" class="seed-role-item selected" aria-current="true">
+              <span>整集全局配音</span>
+              <v-icon size="18" :color="mediaStore.seedAudioTrackPath ? 'success' : 'warning'">
+                {{
+                  mediaStore.seedAudioTrackPath ? 'mdi-check-circle' : 'mdi-alert-circle-outline'
+                }}
               </v-icon>
             </button>
           </nav>
           <div class="seed-voice-content">
-            <section v-if="selectedCharacter" class="seed-role-detail">
+            <template v-if="mediaStore.seedVoiceTab === 'roles'">
+              <section v-if="selectedCharacter" class="seed-role-detail">
+                <div class="seed-role-title">
+                  <div>
+                    <strong>{{ selectedCharacter.label }}</strong>
+                    <small>{{
+                      seedRoleReady(selectedCharacter.id)
+                        ? '角色参考音已绑定'
+                        : '请上传或生成参考音'
+                    }}</small>
+                  </div>
+                  <v-chip
+                    size="x-small"
+                    :color="seedRoleReady(selectedCharacter.id) ? 'success' : 'warning'"
+                    variant="tonal"
+                  >
+                    {{ seedRoleReady(selectedCharacter.id) ? '已就绪' : '待准备' }}
+                  </v-chip>
+                </div>
+                <v-textarea
+                  :model-value="mediaStore.seedAudioRolePrompts[selectedCharacter.id] || ''"
+                  rows="7"
+                  no-resize
+                  hide-details
+                  variant="outlined"
+                  label="角色音色提示词"
+                  placeholder="角色/身份 + 年龄性别 + 口音/语言 + 声线特征 + 气质 + 情绪 + 语速音量 + 场景风格 + 示例台词"
+                  @update:model-value="
+                    mediaStore.seedAudioRolePrompts[selectedCharacter.id] = $event
+                  "
+                />
+                <div class="seed-role-actions">
+                  <v-btn
+                    color="success"
+                    variant="tonal"
+                    prepend-icon="mdi-upload"
+                    @click="$emit('uploadSeedReference', selectedCharacter.id)"
+                    >上传参考音</v-btn
+                  >
+                  <v-btn
+                    v-if="voiceBindings[selectedCharacter.id]"
+                    icon="mdi-refresh"
+                    size="small"
+                    variant="tonal"
+                    title="重新生成参考音并保留旧版本"
+                    aria-label="重新生成参考音"
+                    @click="$emit('generateSeedReference', selectedCharacter.id)"
+                  />
+                </div>
+                <div class="seed-voice-candidates">
+                  <article
+                    v-for="profile in voiceProfiles"
+                    :key="profile.voiceProfileId"
+                    class="seed-voice-candidate"
+                  >
+                    <span>{{ profile.displayName }}</span>
+                    <audio controls :src="voiceProfileUrl(profile.voiceProfileId)" />
+                    <v-btn
+                      :icon="
+                        voiceBindings[selectedCharacter.id] === profile.voiceProfileId
+                          ? 'mdi-check-circle'
+                          : 'mdi-check-circle-outline'
+                      "
+                      :color="
+                        voiceBindings[selectedCharacter.id] === profile.voiceProfileId
+                          ? 'success'
+                          : undefined
+                      "
+                      variant="text"
+                      size="small"
+                      :title="
+                        voiceBindings[selectedCharacter.id] === profile.voiceProfileId
+                          ? '当前参考音'
+                          : '设为当前参考音'
+                      "
+                      @click="bindSeedVoice(selectedCharacter.id, profile.voiceProfileId)"
+                    />
+                  </article>
+                </div>
+                <small v-if="!voiceProfiles.length" class="empty-state"
+                  >尚无候选参考音，请上传或生成。</small
+                >
+              </section>
+              <div v-else class="empty-state">选择左侧角色后查看和修改音色提示词。</div>
+            </template>
+            <section v-else class="seed-role-detail">
               <div class="seed-role-title">
                 <div>
-                  <strong>{{ selectedCharacter.label }}</strong>
-                  <small>{{
-                    seedRoleReady(selectedCharacter.id)
-                      ? '角色参考音已绑定'
-                      : '请完成提示词和参考音'
-                  }}</small>
+                  <strong>整集全局配音</strong>
+                  <small>目标语言对白和生成音频都属于当前剧集。</small>
                 </div>
+                <v-chip size="x-small" color="success" variant="tonal">全局</v-chip>
+              </div>
+              <div class="seed-role-title">
+                <strong>声音导演稿</strong>
                 <v-chip
                   size="x-small"
-                  :color="seedRoleReady(selectedCharacter.id) ? 'success' : 'warning'"
+                  :color="mediaStore.seedAudioGlobalPrompt.trim() ? 'success' : 'warning'"
                   variant="tonal"
-                >
-                  {{ seedRoleReady(selectedCharacter.id) ? '已就绪' : '待准备' }}
-                </v-chip>
-              </div>
-              <v-textarea
-                :model-value="mediaStore.seedAudioRolePrompts[selectedCharacter.id] || ''"
-                rows="7"
-                no-resize
-                hide-details
-                variant="outlined"
-                label="角色音色提示词"
-                placeholder="角色/身份 + 年龄性别 + 口音/语言 + 声线特征 + 气质 + 情绪 + 语速音量 + 场景风格 + 示例台词"
-                @update:model-value="mediaStore.seedAudioRolePrompts[selectedCharacter.id] = $event"
-              />
-              <div class="seed-role-actions">
-                <v-select
-                  :model-value="voiceBindings[selectedCharacter.id] || ''"
-                  :items="voiceProfiles"
-                  item-title="displayName"
-                  item-value="voiceProfileId"
-                  density="compact"
-                  hide-details
-                  label="绑定已有参考音"
-                  @update:model-value="bindSeedVoice(selectedCharacter.id, $event)"
-                />
-                <v-btn
-                  v-if="voiceBindings[selectedCharacter.id]"
-                  icon="mdi-folder-open-outline"
-                  size="small"
-                  variant="tonal"
-                  title="打开参考音"
-                  aria-label="打开参考音"
-                  @click="openVoice(voiceBindings[selectedCharacter.id])"
-                />
-              </div>
-              <small v-if="voiceBindings[selectedCharacter.id]" class="seed-voice-id">
-                voiceProfileId：{{ voiceBindings[selectedCharacter.id] }}
-              </small>
-            </section>
-            <div v-else class="empty-state">选择左侧角色后查看和修改音色提示词。</div>
-            <section class="seed-global-panel">
-              <div class="seed-role-title">
-                <strong>全局声音导演稿</strong
-                ><v-chip
-                  size="x-small"
-                  :color="mediaStore.seedAudioDirectorDraftPath ? 'success' : 'warning'"
-                  variant="tonal"
-                  >{{ mediaStore.seedAudioDirectorDraftPath ? '已保存 Wiki' : '未生成' }}</v-chip
+                  >{{ mediaStore.seedAudioGlobalPrompt.trim() ? '已生成' : '未生成' }}</v-chip
                 >
               </div>
               <v-textarea
@@ -171,15 +246,19 @@
                 no-resize
                 hide-details
                 variant="outlined"
-                label="声音导演稿（可直接编辑）"
-                placeholder="安排对白、旁白、音乐、环境声和动作音。"
+                label="全局配音提示词（可直接编辑）"
+                placeholder="按时间轴安排全部目标语言对白。"
               />
-              <audio
-                v-if="mediaStore.seedAudioTrackPath"
-                controls
-                :src="fileUrl(mediaStore.seedAudioTrackPath)"
-                class="seed-track-player"
-              />
+              <div class="seed-audio-output">
+                <strong>成品配音</strong>
+                <audio
+                  v-if="mediaStore.seedAudioTrackPath"
+                  controls
+                  :src="fileUrl(mediaStore.seedAudioTrackPath)"
+                  class="seed-track-player"
+                />
+                <small v-else class="empty-state">尚未生成全局配音。</small>
+              </div>
             </section>
           </div>
         </div>
@@ -556,6 +635,11 @@ type Asset = {
   index?: number
 }
 
+const props = withDefaults(defineProps<{ translationMode?: boolean }>(), {
+  translationMode: false,
+})
+const { translationMode } = props
+
 defineEmits<{
   editScript: [value: string]
   markdownSaved: []
@@ -565,6 +649,7 @@ defineEmits<{
   generateSeedVoice: [speakerId: string]
   generateSeedRolePrompt: [speakerId: string]
   generateSeedReference: [speakerId: string]
+  uploadSeedReference: [speakerId: string]
   generateSeedPrompt: []
   generateSeedVoiceScript: []
   saveSeedDirectorDraft: []
@@ -579,15 +664,19 @@ const voiceProfiles = ref<VoiceProfile[]>([])
 const voiceBindings = ref<Record<string, string>>({})
 const selectedVoiceProfileId = ref('')
 const seedCharacters = computed(() =>
-  mediaStore.referenceAssets.filter((asset) => asset.role === 'character'),
+  translationMode
+    ? mediaStore.videoTranslationRoles.map((role) => ({
+        id: role.translationRoleId,
+        label: role.displayName,
+        aliases: role.aliases,
+      }))
+    : mediaStore.referenceAssets.filter((asset) => asset.role === 'character'),
 )
 function seedRoleReady(id: string) {
-  return Boolean(voiceBindings.value[id] && mediaStore.seedAudioRolePrompts[id]?.trim())
+  return Boolean(voiceBindings.value[id])
 }
 const selectedCharacter = computed(() =>
-  mediaStore.referenceAssets.find(
-    (asset) => asset.id === mediaStore.selectedAssetId && asset.role === 'character',
-  ),
+  seedCharacters.value.find((asset) => asset.id === mediaStore.selectedAssetId),
 )
 const selectedSpeakerId = computed(() =>
   mediaStore.confirmedProductionRoute === 'drama' && mediaStore.audioProductionRoute === 'post-dub'
@@ -629,7 +718,15 @@ onMounted(async () => {
   await loadVoiceBindings()
 })
 watch(() => mediaStore.runId, loadVoiceBindings)
-watch(() => mediaStore.referenceAssets.map((asset) => asset.id).join(','), loadVoiceBindings)
+watch(
+  () =>
+    translationMode
+      ? mediaStore.videoTranslationRoles
+          .map((role) => `${role.translationRoleId}:${role.voiceProfileId || ''}`)
+          .join(',')
+      : mediaStore.referenceAssets.map((asset) => asset.id).join(','),
+  loadVoiceBindings,
+)
 watch(() => mediaStore.audioProductionRoute, loadVoiceProfiles)
 watch(
   () => mediaStore.workspaceView,
@@ -655,6 +752,14 @@ watch(
 )
 
 async function loadVoiceBindings() {
+  if (translationMode) {
+    voiceBindings.value = Object.fromEntries(
+      mediaStore.videoTranslationRoles
+        .filter((role) => role.voiceProfileId)
+        .map((role) => [role.translationRoleId, role.voiceProfileId!]),
+    )
+    return
+  }
   const bindings: Record<string, string> = {}
   const speakerIds = [
     ...new Set([
@@ -701,17 +806,23 @@ async function bindSelectedVoice() {
 function openBoundVoice() {
   if (boundVoiceId.value) void window.electron.cloud.openVoicePack(boundVoiceId.value)
 }
-function openVoice(id: string) {
-  if (id) void window.electron.cloud.openVoicePack(id)
-}
 async function bindSeedVoice(speakerId: string, voiceProfileId: string) {
   if (!voiceProfileId) return
-  await window.electron.cloud.bindProjectSeedVoice(
-    mediaStore.runId,
-    mediaStore.episodeId,
-    speakerId,
-    voiceProfileId,
-  )
+  if (translationMode) {
+    const role = mediaStore.videoTranslationRoles.find(
+      (item) => item.translationRoleId === speakerId,
+    )
+    if (!role) return
+    role.voiceProfileId = voiceProfileId
+    await window.electron.cloud.bindVideoTranslationVoice(mediaStore.runId, role)
+    mediaStore.invalidateTranslation('voice-binding')
+  } else
+    await window.electron.cloud.bindProjectSeedVoice(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      speakerId,
+      voiceProfileId,
+    )
   voiceBindings.value = { ...voiceBindings.value, [speakerId]: voiceProfileId }
   mediaStore.seedAudioArrangementPath = ''
   mediaStore.seedAudioTrackPath = ''
@@ -722,6 +833,9 @@ async function bindSeedVoice(speakerId: string, voiceProfileId: string) {
   mediaStore.voicePath = ''
   mediaStore.voiceDuration = 0
   mediaStore.finalPath = ''
+}
+function voiceProfileUrl(id: string) {
+  return `voice-library-media://profile?id=${encodeURIComponent(id)}`
 }
 const scriptMeta = computed(
   () =>
@@ -1024,6 +1138,9 @@ function openSeedVoice() {
   border-radius: 6px;
   overflow: hidden;
 }
+.seed-voice-tabs {
+  align-self: flex-start;
+}
 .seed-role-list {
   display: flex;
   flex-direction: column;
@@ -1089,6 +1206,20 @@ function openSeedVoice() {
   margin-top: auto;
 }
 .seed-track-player {
+  width: 100%;
+}
+.seed-audio-output,
+.seed-voice-candidates {
+  display: grid;
+  gap: 8px;
+}
+.seed-voice-candidate {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.6fr) minmax(220px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.seed-voice-candidate audio {
   width: 100%;
 }
 .asset-document-layout {

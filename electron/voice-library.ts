@@ -45,6 +45,7 @@ export interface RegisterSeedVoiceProfileParams {
   voiceDesignPrompt: string
   language?: 'zh' | 'en'
   providerSpeakerId?: string
+  workflow?: 'creative' | 'video-translation'
 }
 export type VoiceSearchQuery = Partial<
   Pick<
@@ -468,23 +469,49 @@ export async function bindProjectVoice(
 
 export async function registerSeedVoiceProfile(params: RegisterSeedVoiceProfileParams) {
   if (!/^[A-Za-z0-9_-]+$/.test(params.speakerId)) throw new Error('无效的角色 ID')
-  const { assertEpisodeAsset, readProjectMarkdown } = await import('./media-workspace.ts')
-  const source = assertEpisodeAsset(params.projectId, params.episodeId, params.sourceAudioPath)
-  const directorPath = `wiki/项目总监/${params.episodeId}.md`
-  const director = await readProjectMarkdown(params.projectId, directorPath).catch(() => null)
-  if (!director || !directorReferencesSpeaker(director.content, params.speakerId))
-    throw new Error('Seed 音色只能绑定项目总监确认的角色')
-  const assetPath = `wiki/资产/角色/${params.speakerId}.md`
-  const asset = await readProjectMarkdown(params.projectId, assetPath).catch(() => null)
-  if (!asset || !assetHasEntityId(asset.content, params.speakerId))
-    throw new Error('Seed 音色必须绑定项目内已确认的角色 entityId')
+  const {
+    assertEpisodeAsset,
+    assertVideoTranslationAsset,
+    readProjectMarkdown,
+    writeProjectMarkdown,
+  } = await import('./media-workspace.ts')
+  const translationWorkflow = params.workflow === 'video-translation'
+  const source = (translationWorkflow ? assertVideoTranslationAsset : assertEpisodeAsset)(
+    params.projectId,
+    params.episodeId,
+    params.sourceAudioPath,
+  )
+  if (translationWorkflow) {
+    const role = await readProjectMarkdown(
+      params.projectId,
+      `wiki/翻译/角色/${params.speakerId}.md`,
+    ).catch(() => null)
+    if (
+      !role ||
+      !new RegExp(`^translationRoleId:\\s*["']?${params.speakerId}["']?\\s*$`, 'm').test(
+        role.content,
+      )
+    )
+      throw new Error('Seed 音色只能绑定已确认的翻译角色')
+  } else {
+    const directorPath = `wiki/项目总监/${params.episodeId}.md`
+    const director = await readProjectMarkdown(params.projectId, directorPath).catch(() => null)
+    if (!director || !directorReferencesSpeaker(director.content, params.speakerId))
+      throw new Error('Seed 音色只能绑定项目总监确认的角色')
+    const assetPath = `wiki/资产/角色/${params.speakerId}.md`
+    const asset = await readProjectMarkdown(params.projectId, assetPath).catch(() => null)
+    if (!asset || !assetHasEntityId(asset.content, params.speakerId))
+      throw new Error('Seed 音色必须绑定项目内已确认的角色 entityId')
+  }
 
   const sourceSha256 = createHash('sha256')
     .update(await fs.promises.readFile(source))
     .digest('hex')
   const voiceProfileId = `voice-${sourceSha256.slice(0, 16)}`
-  const generatedRelativePath = `generated/${voiceProfileId}.wav`
-  const referenceRelativePath = `reference/${voiceProfileId}.wav`
+  const sourceExtension = path.extname(source).toLowerCase()
+  const extension = AUDIO.has(sourceExtension) ? sourceExtension : '.wav'
+  const generatedRelativePath = `generated/${voiceProfileId}${extension}`
+  const referenceRelativePath = `reference/${voiceProfileId}${extension}`
   const generatedPath = path.join(libraryDir(), generatedRelativePath)
   const referencePath = path.join(libraryDir(), referenceRelativePath)
   await fs.promises.mkdir(path.dirname(generatedPath), { recursive: true })
@@ -502,7 +529,7 @@ export async function registerSeedVoiceProfile(params: RegisterSeedVoiceProfileP
     sourceRelativePath: generatedRelativePath,
     sourceSha256,
     referenceRelativePath,
-    format: 'wav',
+    format: extension === '.wav' ? 'wav' : extension === '.mp3' ? 'mp3' : 'other',
     durationMs: Math.round((metadata?.format.duration || 0) * 1000),
     sampleRate: metadata?.format.sampleRate,
     channels: metadata?.format.numberOfChannels,
@@ -524,12 +551,26 @@ export async function registerSeedVoiceProfile(params: RegisterSeedVoiceProfileP
   ].sort((a, b) => a.voiceProfileId.localeCompare(b.voiceProfileId))
   await saveCatalog(catalog)
 
-  const { voicePath } = await bindProjectSeedVoice(
-    params.projectId,
-    params.episodeId,
-    params.speakerId,
-    voiceProfileId,
-  )
+  let voicePath: string
+  if (translationWorkflow) {
+    voicePath = `wiki/翻译/声音/${params.speakerId}.md`
+    const current = await readProjectMarkdown(params.projectId, voicePath).catch(() => null)
+    await writeProjectMarkdown(
+      params.projectId,
+      voicePath,
+      `---\ntranslationRoleId: ${params.speakerId}\nvoiceProfileId: ${voiceProfileId}\nengine: seed-audio\nstatus: confirmed\n---\n\n# ${params.displayName}的翻译声音\n\n- 声音档案：[[声音库/音色/${voiceProfileId}]]\n`,
+      current?.revision,
+    )
+  } else {
+    voicePath = (
+      await bindProjectSeedVoice(
+        params.projectId,
+        params.episodeId,
+        params.speakerId,
+        voiceProfileId,
+      )
+    ).voicePath
+  }
   return { voiceProfileId, referenceAudioPath: referencePath, voicePath }
 }
 
@@ -582,7 +623,9 @@ export async function resolveProjectSeedReferences(projectId: string, speakerIds
       const binding = await readProjectMarkdown(projectId, `wiki/声音/角色/${speakerId}.md`).catch(
         () => null,
       )
-      const voiceProfileId = binding ? frontmatterValue(binding.content, 'voiceProfileId') : undefined
+      const voiceProfileId = binding
+        ? frontmatterValue(binding.content, 'voiceProfileId')
+        : undefined
       if (!voiceProfileId) throw new Error(`${speakerId} 尚未绑定 Seed 音色`)
       const profile = catalog.profiles.find((item) => item.voiceProfileId === voiceProfileId)
       if (!profile || profile.engine !== 'seed-audio' || !profile.referenceRelativePath)
@@ -622,7 +665,9 @@ export async function resolveSeedVoiceProfiles(
 }
 
 export async function voiceProfilePreviewDataUrl(voiceProfileId: string) {
-  const profile = (await loadCatalog()).profiles.find((item) => item.voiceProfileId === voiceProfileId)
+  const profile = (await loadCatalog()).profiles.find(
+    (item) => item.voiceProfileId === voiceProfileId,
+  )
   if (!profile?.referenceRelativePath) throw new Error('该声音没有可试听参考音')
   const file = path.resolve(libraryDir(), profile.referenceRelativePath)
   if (!file.startsWith(`${path.resolve(libraryDir())}${path.sep}`)) throw new Error('声音路径越界')

@@ -100,6 +100,8 @@ contextBridge.exposeInMainWorld('electron', {
     ) => ipcRenderer.invoke('material-write-episode-subtitles', runId, episodeId, language, cues),
     translateSubtitles: (params: import('./types').TranslateSubtitlesParams) =>
       ipcRenderer.invoke('cloud-translate-subtitles', params),
+    selectSeedReferenceAudio: (runId: string, episodeId: string, speakerId: string) =>
+      ipcRenderer.invoke('media-select-seed-reference', runId, episodeId, speakerId),
     selectVideoTranslationSource: (runId: string, episodeId: string) =>
       ipcRenderer.invoke('video-translation-select-source', runId, episodeId),
     identifyVideoTranslationSpeakers: (

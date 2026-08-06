@@ -79,10 +79,17 @@ function readProjectRegistry(): ProjectRegistry {
       return emptyProjectRegistry()
     return {
       schemaVersion: PROJECT_REGISTRY_VERSION,
-      lastOpenedProjectId: RUN_ID.test(value.lastOpenedProjectId) ? value.lastOpenedProjectId : undefined,
+      lastOpenedProjectId: RUN_ID.test(value.lastOpenedProjectId)
+        ? value.lastOpenedProjectId
+        : undefined,
       projects: value.projects
-        .filter((item: any) => RUN_ID.test(item?.projectId) && path.isAbsolute(item?.rootPath || ''))
-        .map((item: any) => ({ projectId: String(item.projectId), rootPath: path.resolve(item.rootPath) })),
+        .filter(
+          (item: any) => RUN_ID.test(item?.projectId) && path.isAbsolute(item?.rootPath || ''),
+        )
+        .map((item: any) => ({
+          projectId: String(item.projectId),
+          rootPath: path.resolve(item.rootPath),
+        })),
     }
   } catch {
     return emptyProjectRegistry()
@@ -128,7 +135,8 @@ function projectMarkdownPath(projectId: string, relativePath: string) {
   }
   const root = path.resolve(getRunDir(projectId), 'wiki')
   const resolved = path.resolve(getRunDir(projectId), normalized)
-  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) throw new Error('Wiki 路径越界')
+  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))
+    throw new Error('Wiki 路径越界')
   return { normalized, resolved }
 }
 
@@ -164,9 +172,13 @@ export async function writeProjectMarkdown(
   expectedRevision?: string,
 ) {
   const target = projectMarkdownPath(projectId, relativePath)
-  if (Buffer.byteLength(content, 'utf8') > 2 * 1024 * 1024) throw new Error('Markdown 不能超过 2 MB')
+  if (Buffer.byteLength(content, 'utf8') > 2 * 1024 * 1024)
+    throw new Error('Markdown 不能超过 2 MB')
   if (content.includes('\u0000')) throw new Error('Markdown 包含无效字符')
-  if (/^wiki\/文稿\/[^/]+\/确认文稿\.md$/.test(target.normalized) && !content.replace(/^# 确认文稿\s*/m, '').trim())
+  if (
+    /^wiki\/文稿\/[^/]+\/确认文稿\.md$/.test(target.normalized) &&
+    !content.replace(/^# 确认文稿\s*/m, '').trim()
+  )
     throw new Error('确认文稿不能为空')
   let current = ''
   let exists = true
@@ -211,7 +223,11 @@ export async function writeStoryboardMarkdownBatch(
   return documents
 }
 
-export async function finalizeStoryboardMarkdown(projectId: string, episodeId: string, writtenPaths: string[]) {
+export async function finalizeStoryboardMarkdown(
+  projectId: string,
+  episodeId: string,
+  writtenPaths: string[],
+) {
   const prefix = `wiki/分镜/${episodeId}/`
   if (writtenPaths.some((value) => !value.startsWith(prefix)))
     throw new Error('分镜提交包含其他剧集文件')
@@ -222,10 +238,7 @@ export async function finalizeStoryboardMarkdown(projectId: string, episodeId: s
   const current = await listProjectMarkdown(projectId)
   await Promise.all(
     current
-      .filter(
-        (value) =>
-          value.startsWith(`${prefix}镜头/`) && !keep.has(value),
-      )
+      .filter((value) => value.startsWith(`${prefix}镜头/`) && !keep.has(value))
       .map((value) => fs.promises.unlink(projectMarkdownPath(projectId, value).resolved)),
   )
   return writtenPaths
@@ -245,15 +258,23 @@ export async function beginStoryboardMarkdownUpdate(projectId: string, episodeId
     fs.promises.mkdir(backup, { recursive: true }),
     fs.promises.mkdir(path.join(wiki, '分镜', episodeId), { recursive: true }),
   ])
-  await fs.promises.cp(path.join(wiki, '分镜', episodeId), path.join(backup, '分镜'), { recursive: true })
+  await fs.promises.cp(path.join(wiki, '分镜', episodeId), path.join(backup, '分镜'), {
+    recursive: true,
+  })
   return transactionId
 }
 
-export async function rollbackStoryboardMarkdownUpdate(projectId: string, episodeId: string, transactionId: string) {
+export async function rollbackStoryboardMarkdownUpdate(
+  projectId: string,
+  episodeId: string,
+  transactionId: string,
+) {
   const backup = storyboardTransactionDir(projectId, transactionId)
   const wiki = path.join(getRunDir(projectId), 'wiki')
   await fs.promises.rm(path.join(wiki, '分镜', episodeId), { recursive: true, force: true })
-  await fs.promises.cp(path.join(backup, '分镜'), path.join(wiki, '分镜', episodeId), { recursive: true })
+  await fs.promises.cp(path.join(backup, '分镜'), path.join(wiki, '分镜', episodeId), {
+    recursive: true,
+  })
   await fs.promises.rm(backup, { recursive: true, force: true })
 }
 
@@ -281,10 +302,20 @@ export async function ensureRunDir(runId: string) {
   return dir
 }
 
-export async function writeEditingTimeline(runId: string, episodeId: string, timeline: EditingTimeline) {
+export async function writeEditingTimeline(
+  runId: string,
+  episodeId: string,
+  timeline: EditingTimeline,
+) {
   validateEditingTimeline(timeline)
   getEpisodeDir(runId, episodeId)
-  const filePath = path.join(await ensureRunDir(runId), 'wiki', '剪辑', episodeId, 'editing-timeline.json')
+  const filePath = path.join(
+    await ensureRunDir(runId),
+    'wiki',
+    '剪辑',
+    episodeId,
+    'editing-timeline.json',
+  )
   await writeAtomic(filePath, `${JSON.stringify(timeline, null, 2)}\n`)
   return relativeRunAsset(runId, filePath)
 }
@@ -309,11 +340,19 @@ export async function writeEpisodeSubtitles(
     if (!cue.shotId?.trim() || !cue.text?.trim() || cue.startMs < 0 || cue.endMs <= cue.startMs)
       throw new Error(`${cue.shotId || '未知镜头'} 字幕时间轴无效`)
   }
-  const content = cues.map((cue, index) =>
-    `${index + 1}\n${srtTime(cue.startMs)} --> ${srtTime(cue.endMs)}\n${cue.text.trim()}\n`,
-  ).join('\n')
+  const content = cues
+    .map(
+      (cue, index) =>
+        `${index + 1}\n${srtTime(cue.startMs)} --> ${srtTime(cue.endMs)}\n${cue.text.trim()}\n`,
+    )
+    .join('\n')
   getEpisodeDir(runId, episodeId)
-  const filePath = path.join(await ensureRunDir(runId), 'wiki', '字幕', `${episodeId}-${language}.srt`)
+  const filePath = path.join(
+    await ensureRunDir(runId),
+    'wiki',
+    '字幕',
+    `${episodeId}-${language}.srt`,
+  )
   await writeAtomic(filePath, content)
   return relativeRunAsset(runId, filePath)
 }
@@ -374,7 +413,8 @@ async function ensureProjectManifest(projectId: string, stage = 'draft', name = 
       manifest.wikiVersion === WIKI_VERSION &&
       Array.isArray(manifest.episodes) &&
       RUN_ID.test(manifest.lastOpenedEpisodeId)
-    ) return manifest
+    )
+      return manifest
   } catch {
     // Create a fresh unreleased-project manifest below.
   }
@@ -385,14 +425,16 @@ async function ensureProjectManifest(projectId: string, stage = 'draft', name = 
     name: name.trim() || path.basename(getRunDir(projectId)),
     createdAt,
     updatedAt: createdAt,
-    episodes: [{
-      episodeId: DEFAULT_EPISODE_ID,
-      episodeNumber: 1,
-      title: '第 1 集',
-      stage,
-      createdAt,
-      updatedAt: createdAt,
-    }],
+    episodes: [
+      {
+        episodeId: DEFAULT_EPISODE_ID,
+        episodeNumber: 1,
+        title: '第 1 集',
+        stage,
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ],
     lastOpenedEpisodeId: DEFAULT_EPISODE_ID,
     wikiVersion: WIKI_VERSION,
   }
@@ -428,7 +470,8 @@ export async function createProjectAt(projectId: string, rootPath: string, state
   if (rootExisted) {
     if (!fs.statSync(resolved).isDirectory()) throw new Error('请选择项目文件夹')
     const entries = await fs.promises.readdir(resolved)
-    if (entries.includes('project.json')) throw new Error('该文件夹已经是项目，请使用“打开已有项目目录”')
+    if (entries.includes('project.json'))
+      throw new Error('该文件夹已经是项目，请使用“打开已有项目目录”')
     if (entries.length) throw new Error('请选择空文件夹作为新项目目录')
   }
   creatingProjectRoots.set(projectId, resolved)
@@ -439,7 +482,12 @@ export async function createProjectAt(projectId: string, rootPath: string, state
     if (state.approvedScript)
       await writeInitial(
         path.join(getRunDir(projectId), 'wiki', '文稿', state.episodeId, '确认文稿.md'),
-        managedPage(projectId, 'script', 'approved-script', `# 确认文稿\n\n${state.approvedScript}`),
+        managedPage(
+          projectId,
+          'script',
+          'approved-script',
+          `# 确认文稿\n\n${state.approvedScript}`,
+        ),
       )
     await saveMediaState(projectId, state.episodeId, stateValue)
     await registerProjectRoot(projectId, resolved)
@@ -447,8 +495,18 @@ export async function createProjectAt(projectId: string, rootPath: string, state
   } catch (error) {
     if (rootExisted) {
       await Promise.all(
-        ['project.json', 'shared-state.json', 'run.json', 'episodes', '.raw', 'wiki', 'inputs', 'assets']
-          .map((entry) => fs.promises.rm(path.join(resolved, entry), { recursive: true, force: true })),
+        [
+          'project.json',
+          'shared-state.json',
+          'run.json',
+          'episodes',
+          '.raw',
+          'wiki',
+          'inputs',
+          'assets',
+        ].map((entry) =>
+          fs.promises.rm(path.join(resolved, entry), { recursive: true, force: true }),
+        ),
       )
     } else {
       await fs.promises.rm(resolved, { recursive: true, force: true })
@@ -473,20 +531,22 @@ export async function createProject(projectId: string, stateValue: string) {
 export async function listProjects(): Promise<ProjectManifest[]> {
   const projects = await Promise.all(
     readProjectRegistry().projects.map(async (entry) => {
-        try {
-          const manifest = (await readJson(path.join(entry.rootPath, 'project.json'))) as ProjectManifest
-          if (
-            manifest.schemaVersion !== PROJECT_SCHEMA_VERSION ||
-            manifest.projectId !== entry.projectId ||
-            manifest.wikiVersion !== WIKI_VERSION
-          )
-            return null
-          await initializeWiki(entry.projectId, manifest)
-          return manifest
-        } catch {
+      try {
+        const manifest = (await readJson(
+          path.join(entry.rootPath, 'project.json'),
+        )) as ProjectManifest
+        if (
+          manifest.schemaVersion !== PROJECT_SCHEMA_VERSION ||
+          manifest.projectId !== entry.projectId ||
+          manifest.wikiVersion !== WIKI_VERSION
+        )
           return null
-        }
-      }),
+        await initializeWiki(entry.projectId, manifest)
+        return manifest
+      } catch {
+        return null
+      }
+    }),
   )
   return projects
     .filter((project): project is ProjectManifest => Boolean(project))
@@ -550,10 +610,12 @@ export async function createEpisode(projectId: string, value: string) {
   if (state?.runId !== projectId) throw new Error('项目状态与项目 ID 不匹配')
   const manifest = await ensureProjectManifest(projectId)
   const usedIds = new Set(manifest.episodes.map((episode) => episode.episodeId))
-  const episodeNumber = Math.max(0, ...manifest.episodes.map((episode) => episode.episodeNumber)) + 1
+  const episodeNumber =
+    Math.max(0, ...manifest.episodes.map((episode) => episode.episodeNumber)) + 1
   let episodeId = `episode-${String(episodeNumber).padStart(3, '0')}`
   let suffix = 1
-  while (usedIds.has(episodeId)) episodeId = `episode-${String(episodeNumber).padStart(3, '0')}-${suffix++}`
+  while (usedIds.has(episodeId))
+    episodeId = `episode-${String(episodeNumber).padStart(3, '0')}-${suffix++}`
   const now = new Date().toISOString()
   await ensureEpisodeDir(projectId, episodeId)
   await writeAtomic(
@@ -564,7 +626,14 @@ export async function createEpisode(projectId: string, value: string) {
     ...manifest,
     episodes: [
       ...manifest.episodes,
-      { episodeId, episodeNumber, title: `第 ${episodeNumber} 集`, stage: 'draft', createdAt: now, updatedAt: now },
+      {
+        episodeId,
+        episodeNumber,
+        title: `第 ${episodeNumber} 集`,
+        stage: 'draft',
+        createdAt: now,
+        updatedAt: now,
+      },
     ],
     lastOpenedEpisodeId: episodeId,
     updatedAt: now,
@@ -661,6 +730,41 @@ export async function selectAssetImage(
   }
 }
 
+export async function selectSeedReferenceAudio(
+  runId: string,
+  episodeId: string,
+  speakerId: string,
+) {
+  if (!RUN_ID.test(speakerId)) throw new Error('无效的角色 ID')
+  const result = await dialog.showOpenDialog({
+    title: '上传角色参考音',
+    properties: ['openFile'],
+    filters: [{ name: '音频', extensions: ['wav', 'mp3', 'm4a', 'flac', 'ogg', 'aac'] }],
+  })
+  const sourcePath = result.filePaths[0]
+  if (result.canceled || !sourcePath) return null
+  const extension = path.extname(sourcePath).toLowerCase()
+  if (!['.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac'].includes(extension))
+    throw new Error('参考音格式不支持')
+  const stat = await fs.promises.stat(sourcePath)
+  if (!stat.isFile() || stat.size > 50 * 1024 * 1024)
+    throw new Error('参考音必须是小于 50 MB 的可读文件')
+  const outputPath = generateUniqueFileName(
+    path.join(
+      await ensureEpisodeDir(runId, episodeId),
+      'seed-audio',
+      'uploads',
+      `${speakerId}${extension}`,
+    ),
+  )
+  await fs.promises.mkdir(path.dirname(outputPath), { recursive: true })
+  await fs.promises.copyFile(sourcePath, outputPath)
+  return {
+    path: relativeRunAsset(runId, outputPath),
+    displayName: path.basename(sourcePath, extension),
+  }
+}
+
 export async function searchAssetImage(
   runId: string,
   assetId: string,
@@ -692,8 +796,12 @@ export async function searchAssetImage(
 async function assertDownloadedImage(filePath: string) {
   const bytes = await fs.promises.readFile(filePath)
   const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-  const png = bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-  const webp = bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  const png = bytes
+    .subarray(0, 8)
+    .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  const webp =
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
   if (!jpeg && !png && !webp) throw new Error('搜索结果不是可用图片')
 }
 
@@ -831,7 +939,9 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
         ? `\n\n![${asset.label}](${path.posix.relative(`wiki/资产/${roleFolder}`, active.relativePath)})`
         : ''
       const versions = (asset.versions || []).map((version: any) => {
-        const source = { search: '搜索', upload: '上传', generated: 'AI 生成' }[version.source as string] || version.source
+        const source =
+          { search: '搜索', upload: '上传', generated: 'AI 生成' }[version.source as string] ||
+          version.source
         return `| ${version.id} | ${source} | ${version.id === asset.activeVersionId ? '当前使用' : '参考/历史'} | \`${version.relativePath}\` | ${version.createdAt || '-'} |`
       })
       return writeAtomic(
@@ -848,8 +958,7 @@ async function renderWiki(projectId: string, state: any, manifest: ProjectManife
   const segments = Array.isArray(state.segments) ? state.segments : []
   if (segments.length) {
     const shotLinks = segments.map(
-      (shot: any) =>
-        `- [[镜头/shot-${String(shot.index).padStart(3, '0')}|镜头 ${shot.index}]]`,
+      (shot: any) => `- [[镜头/shot-${String(shot.index).padStart(3, '0')}|镜头 ${shot.index}]]`,
     )
     await writeInitial(
       path.join(dir, 'wiki', '分镜', episodeId, '导演总览.md'),
@@ -955,22 +1064,23 @@ function sharedStateOf(state: Record<string, unknown>) {
   )
 }
 
-function mergeSharedState(
-  existing: Record<string, any>,
-  state: Record<string, unknown>,
-) {
+function mergeSharedState(existing: Record<string, any>, state: Record<string, unknown>) {
   const incoming = sharedStateOf(state) as Record<string, any>
-  if (Array.isArray(existing.videoTranslationRoles) && Array.isArray(incoming.videoTranslationRoles)) {
-    const roles = new Map(existing.videoTranslationRoles.map((role: any) => [role.translationRoleId, role]))
+  if (
+    Array.isArray(existing.videoTranslationRoles) &&
+    Array.isArray(incoming.videoTranslationRoles)
+  ) {
+    const roles = new Map(
+      existing.videoTranslationRoles.map((role: any) => [role.translationRoleId, role]),
+    )
     for (const role of incoming.videoTranslationRoles) {
       const previous: any = roles.get(role.translationRoleId)
       roles.set(role.translationRoleId, {
         ...previous,
         ...role,
-        sourceEpisodeIds: [...new Set([
-          ...(previous?.sourceEpisodeIds || []),
-          ...(role.sourceEpisodeIds || []),
-        ])],
+        sourceEpisodeIds: [
+          ...new Set([...(previous?.sourceEpisodeIds || []), ...(role.sourceEpisodeIds || [])]),
+        ],
       })
     }
     incoming.videoTranslationRoles = [...roles.values()]
@@ -1013,7 +1123,8 @@ export async function saveMediaState(runId: string, episodeId: string, value: st
     } else {
       manifest.episodes.push({
         episodeId,
-        episodeNumber: Math.max(0, ...manifest.episodes.map((episode) => episode.episodeNumber)) + 1,
+        episodeNumber:
+          Math.max(0, ...manifest.episodes.map((episode) => episode.episodeNumber)) + 1,
         title: `第 ${manifest.episodes.length + 1} 集`,
         stage: String(state.stage || 'draft'),
         createdAt: now,
@@ -1045,25 +1156,25 @@ export async function loadLatestMediaState() {
   const registry = readProjectRegistry()
   const candidates = await Promise.all(
     registry.projects.map(async (entry) => {
-        const manifestPath = path.join(entry.rootPath, 'project.json')
-        try {
-          const manifest = (await readJson(manifestPath)) as ProjectManifest
-          if (
-            manifest.schemaVersion !== PROJECT_SCHEMA_VERSION ||
-            manifest.projectId !== entry.projectId ||
-            manifest.wikiVersion !== WIKI_VERSION ||
-            !RUN_ID.test(manifest.lastOpenedEpisodeId)
-          )
-            return null
-          return {
-            projectId: entry.projectId,
-            episodeId: manifest.lastOpenedEpisodeId,
-            mtime: (await fs.promises.stat(manifestPath)).mtimeMs,
-          }
-        } catch {
+      const manifestPath = path.join(entry.rootPath, 'project.json')
+      try {
+        const manifest = (await readJson(manifestPath)) as ProjectManifest
+        if (
+          manifest.schemaVersion !== PROJECT_SCHEMA_VERSION ||
+          manifest.projectId !== entry.projectId ||
+          manifest.wikiVersion !== WIKI_VERSION ||
+          !RUN_ID.test(manifest.lastOpenedEpisodeId)
+        )
           return null
+        return {
+          projectId: entry.projectId,
+          episodeId: manifest.lastOpenedEpisodeId,
+          mtime: (await fs.promises.stat(manifestPath)).mtimeMs,
         }
-      }),
+      } catch {
+        return null
+      }
+    }),
   )
   for (const candidate of candidates.filter(Boolean).sort((a, b) => b!.mtime - a!.mtime)) {
     try {
@@ -1104,18 +1215,25 @@ export function assertRunAsset(runId: string, filePath: string) {
   return resolved
 }
 
-function resolveEpisodeAsset(runId: string, episodeId: string, filePath: string, allowTranslation: boolean) {
+function resolveEpisodeAsset(
+  runId: string,
+  episodeId: string,
+  filePath: string,
+  allowTranslation: boolean,
+) {
   getEpisodeDir(runId, episodeId)
   const resolved = assertRunAsset(runId, filePath)
   const relative = relativeRunAsset(runId, resolved)
   const translationEpisodeRoot = `episodes/${episodeId}/video-translate/`
-  const owned = (relative.startsWith(`episodes/${episodeId}/`) && (allowTranslation || !relative.startsWith(translationEpisodeRoot)))
-    || relative.startsWith(`wiki/声音/${episodeId}/`)
-    || relative.startsWith(`wiki/转录/${episodeId}/`)
-    || relative.startsWith(`wiki/字幕/素材/${episodeId}/`)
-    || relative.startsWith(`wiki/剪辑/${episodeId}/`)
-    || relative.startsWith(`wiki/字幕/${episodeId}-`)
-    || (allowTranslation && relative.startsWith(`wiki/翻译/${episodeId}/`))
+  const owned =
+    (relative.startsWith(`episodes/${episodeId}/`) &&
+      (allowTranslation || !relative.startsWith(translationEpisodeRoot))) ||
+    relative.startsWith(`wiki/声音/${episodeId}/`) ||
+    relative.startsWith(`wiki/转录/${episodeId}/`) ||
+    relative.startsWith(`wiki/字幕/素材/${episodeId}/`) ||
+    relative.startsWith(`wiki/剪辑/${episodeId}/`) ||
+    relative.startsWith(`wiki/字幕/${episodeId}-`) ||
+    (allowTranslation && relative.startsWith(`wiki/翻译/${episodeId}/`))
   if (!owned) throw new Error('素材不属于当前剧集')
   return resolved
 }
@@ -1130,13 +1248,16 @@ export function assertVideoTranslationAsset(runId: string, episodeId: string, fi
   if (
     !relative.startsWith(`episodes/${episodeId}/video-translate/`) &&
     !relative.startsWith(`wiki/翻译/${episodeId}/`)
-  ) throw new Error('素材不属于当前视频翻译工作流')
+  )
+    throw new Error('素材不属于当前视频翻译工作流')
   return resolved
 }
 
 export function assertVideoTranslationSource(runId: string, episodeId: string, filePath: string) {
   const resolved = assertVideoTranslationAsset(runId, episodeId, filePath)
-  if (!relativeRunAsset(runId, resolved).startsWith(`episodes/${episodeId}/video-translate/source.`))
+  if (
+    !relativeRunAsset(runId, resolved).startsWith(`episodes/${episodeId}/video-translate/source.`)
+  )
     throw new Error('原片不属于当前视频翻译任务')
   return resolved
 }
@@ -1167,9 +1288,7 @@ export async function downloadMedia(
     const abort = () => {
       request.abort()
       finish(
-        new Error(
-          signal?.aborted ? '任务已停止；云端任务可能仍会继续并产生费用' : '媒体下载超时',
-        ),
+        new Error(signal?.aborted ? '任务已停止；云端任务可能仍会继续并产生费用' : '媒体下载超时'),
       )
     }
     const timeout = setTimeout(abort, 300_000)
@@ -1197,7 +1316,10 @@ export async function downloadMedia(
         void fs.promises
           .mkdir(path.dirname(outputPath), { recursive: true })
           .then(() => fs.promises.writeFile(outputPath, Buffer.concat(chunks)))
-          .then(() => finish(), (error) => finish(error))
+          .then(
+            () => finish(),
+            (error) => finish(error),
+          )
       })
     })
     request.on('error', (error) => finish(error))

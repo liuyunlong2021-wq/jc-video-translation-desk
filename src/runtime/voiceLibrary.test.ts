@@ -164,15 +164,55 @@ test('registers and rebinds a Seed voice with an app-owned voiceProfileId', asyn
   const voicePath = path.join(wiki, '声音', '角色', 'character-seed.md')
   fs.writeFileSync(
     voicePath,
-    fs.readFileSync(voicePath, 'utf8').replace(
-      `voiceProfileId: ${profile.voiceProfileId}`,
-      `voiceProfileId: "${profile.voiceProfileId}"`,
-    ),
+    fs
+      .readFileSync(voicePath, 'utf8')
+      .replace(
+        `voiceProfileId: ${profile.voiceProfileId}`,
+        `voiceProfileId: "${profile.voiceProfileId}"`,
+      ),
   )
   const resolved = await voices.resolveProjectSeedReferences(projectId, ['character-seed'])
   assert.equal(resolved[0].voiceProfileId, profile.voiceProfileId)
-  assert.match(
-    fs.readFileSync(voicePath, 'utf8'),
-    /engine: seed-audio/,
+  assert.match(fs.readFileSync(voicePath, 'utf8'), /engine: seed-audio/)
+})
+
+test('registers a translation reference voice without writing creative role bindings', async () => {
+  const projectId = 'translation-voice-project'
+  const episodeId = 'episode-001'
+  const root = path.join(userData, 'projects', projectId)
+  await workspace.registerProjectRoot(projectId, root, false)
+  const audio = path.join(
+    root,
+    'episodes',
+    episodeId,
+    'video-translate',
+    'en',
+    'seed-audio',
+    'role.mp3',
   )
+  fs.mkdirSync(path.dirname(audio), { recursive: true })
+  fs.writeFileSync(audio, 'translation seed voice')
+  fs.mkdirSync(path.join(root, 'wiki', '翻译', '角色'), { recursive: true })
+  fs.writeFileSync(
+    path.join(root, 'wiki', '翻译', '角色', 'role-one.md'),
+    '---\ntranslationRoleId: role-one\nstatus: confirmed\n---\n\n# Role One\n',
+  )
+
+  const registered = await voices.registerSeedVoiceProfile({
+    projectId,
+    episodeId,
+    speakerId: 'role-one',
+    displayName: 'Role One',
+    sourceAudioPath: audio,
+    voiceDesignPrompt: '',
+    language: 'en',
+    workflow: 'video-translation',
+  })
+
+  assert.match(registered.voiceProfileId, /^voice-[a-f0-9]{16}$/)
+  assert.match(
+    fs.readFileSync(path.join(root, 'wiki', '翻译', '声音', 'role-one.md'), 'utf8'),
+    new RegExp(`voiceProfileId: ${registered.voiceProfileId}`),
+  )
+  assert.equal(fs.existsSync(path.join(root, 'wiki', '声音', '角色', 'role-one.md')), false)
 })

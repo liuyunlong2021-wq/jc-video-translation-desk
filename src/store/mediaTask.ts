@@ -55,7 +55,15 @@ export type WorkflowStage =
 
 export type WorkspaceView = 'script' | 'director' | 'assets' | 'seed-voice' | 'storyboard' | 'media' | 'dubbing' | 'final'
 export type MediaFilter = 'all' | 'references' | 'audio' | 'storyboards' | 'videos'
-export type WorkflowStep = 'script' | 'seed-voice' | 'voice' | 'assets' | 'shots' | 'images' | 'videos' | 'final'
+export type WorkflowStep =
+  | 'script'
+  | 'seed-voice'
+  | 'voice'
+  | 'assets'
+  | 'shots'
+  | 'images'
+  | 'videos'
+  | 'final'
 export type { VoiceSource, AudioMode } from '~/electron/types'
 
 export interface MediaRunSnapshot {
@@ -155,6 +163,7 @@ export const useMediaTaskStore = defineStore(
     const seedAudioRolePrompts = ref<Record<string, string>>({})
     const seedAudioGlobalPrompt = ref('')
     const seedAudioDirectorDraftPath = ref('')
+    const seedVoiceTab = ref<'roles' | 'global'>('roles')
     const voicePath = ref('')
     const englishVoicePath = ref('')
     const voiceDuration = ref(0)
@@ -193,11 +202,15 @@ export const useMediaTaskStore = defineStore(
     const scriptEditing = ref(false)
     const revisionProposal = ref<RevisionProposal | null>(null)
     const revisionUndo = ref<{
-      targetType: 'script' | 'project-director' | 'voice-plan' | 'seed-role-prompt' | 'asset-prompt' | 'shot'
+      targetType:
+        | 'script'
+        | 'project-director'
+        | 'voice-plan'
+        | 'seed-role-prompt'
+        | 'asset-prompt'
+        | 'shot'
       value: any
-    } | null>(
-      null,
-    )
+    } | null>(null)
 
     const allImagesReady = computed(
       () =>
@@ -205,14 +218,18 @@ export const useMediaTaskStore = defineStore(
     )
     const allVideosReady = computed(
       () =>
-        segments.value.length > 0 &&
-        segments.value.every((item) => item.videoStatus === 'success'),
+        segments.value.length > 0 && segments.value.every((item) => item.videoStatus === 'success'),
     )
     const allTranscriptsReady = computed(
-      () => segments.value.length > 0 && segments.value.every((item) => item.transcriptStatus === 'ready'),
+      () =>
+        segments.value.length > 0 &&
+        segments.value.every((item) => item.transcriptStatus === 'ready'),
     )
     const allEditingReady = computed(
-      () => Boolean(editingTimelinePath.value) && allTranscriptsReady.value && segments.value.every((item) => item.editingStatus === 'ready' && item.editingAnalysis),
+      () =>
+        Boolean(editingTimelinePath.value) &&
+        allTranscriptsReady.value &&
+        segments.value.every((item) => item.editingStatus === 'ready' && item.editingAnalysis),
     )
     const allRequiredAssetsApproved = computed(() =>
       referenceAssets.value
@@ -229,7 +246,8 @@ export const useMediaTaskStore = defineStore(
         ((assetPlanCompletedRoles.value.includes('character') &&
           assetPlanCompletedRoles.value.includes('scene') &&
           assetPlanCompletedRoles.value.includes('prop')) ||
-          (referenceAssets.value.length > 0 && referenceAssets.value.every((asset) => Boolean(asset.design)))),
+          (referenceAssets.value.length > 0 &&
+            referenceAssets.value.every((asset) => Boolean(asset.design)))),
     )
     const requiredSpeakerIds = computed(() => [
       ...new Set(
@@ -243,7 +261,11 @@ export const useMediaTaskStore = defineStore(
       segments.value.some((segment) => segment.soundType && segment.soundType !== 'none'),
     )
     const voiceReady = computed(
-      () => segments.value.length > 0 && (!hasSoundSegments.value || audioMode.value === 'keep-original' || Boolean(outputLanguage.value === 'zh' ? voicePath.value : englishVoicePath.value)),
+      () =>
+        segments.value.length > 0 &&
+        (!hasSoundSegments.value ||
+          audioMode.value === 'keep-original' ||
+          Boolean(outputLanguage.value === 'zh' ? voicePath.value : englishVoicePath.value)),
     )
     const confirmedProductionRoute = computed<ProductionRoute | null>(() =>
       projectDirectorPlan.value && !projectDirectorDraft.value
@@ -413,7 +435,11 @@ export const useMediaTaskStore = defineStore(
       else if (view === 'seed-voice') workflowStep.value = 'seed-voice'
       else if (view === 'dubbing') workflowStep.value = 'voice'
       else if (view === 'final') workflowStep.value = 'final'
-      else if (view === 'media' && workflowStep.value !== 'images' && workflowStep.value !== 'videos')
+      else if (
+        view === 'media' &&
+        workflowStep.value !== 'images' &&
+        workflowStep.value !== 'videos'
+      )
         workflowStep.value = mediaFilter.value === 'videos' ? 'videos' : 'images'
       else if (view === 'script' && workflowStep.value !== 'script') workflowStep.value = 'script'
       if (view !== 'storyboard') selectedShotIndex.value = undefined
@@ -428,15 +454,17 @@ export const useMediaTaskStore = defineStore(
           ? 'script'
           : step === 'voice'
             ? 'dubbing'
-          : step === 'seed-voice'
-            ? 'seed-voice'
-          : step === 'shots'
-            ? 'storyboard'
-            : step === 'assets'
-              ? confirmedProductionRoute.value ? 'assets' : 'director'
-              : step === 'images' || step === 'videos'
-                ? 'media'
-                : 'final',
+            : step === 'seed-voice'
+              ? 'seed-voice'
+              : step === 'shots'
+                ? 'storyboard'
+                : step === 'assets'
+                  ? confirmedProductionRoute.value
+                    ? 'assets'
+                    : 'director'
+                  : step === 'images' || step === 'videos'
+                    ? 'media'
+                    : 'final',
       )
       workflowStep.value = step
       if (step === 'images') mediaFilter.value = 'storyboards'
@@ -494,7 +522,9 @@ export const useMediaTaskStore = defineStore(
       pictureMasterPath.value = ''
       invalidateAudioProcessing()
       const sequence = isCombinedVideoModel(videoModel.value)
-        ? buildGrokSequences(segments.value, videoModel.value).find((item) => item.segments.includes(segment))
+        ? buildGrokSequences(segments.value, videoModel.value).find((item) =>
+            item.segments.includes(segment),
+          )
         : undefined
       const targets = sequence?.segments || [segment]
       targets.forEach((item) => {
@@ -562,8 +592,9 @@ export const useMediaTaskStore = defineStore(
         asset.status = 'ready'
       } else {
         const generated =
-          asset.versions.find((item) => item.id === asset.activeVersionId && item.source === 'generated') ||
-          [...asset.versions].reverse().find((item) => item.source === 'generated')
+          asset.versions.find(
+            (item) => item.id === asset.activeVersionId && item.source === 'generated',
+          ) || [...asset.versions].reverse().find((item) => item.source === 'generated')
         asset.activeVersionId = generated?.id
         asset.status = generated ? 'ready' : 'design-ready'
       }
@@ -756,6 +787,7 @@ export const useMediaTaskStore = defineStore(
       seedAudioRolePrompts,
       seedAudioGlobalPrompt,
       seedAudioDirectorDraftPath,
+      seedVoiceTab,
       voicePath,
       englishVoicePath,
       voiceDuration,

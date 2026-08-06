@@ -67,6 +67,7 @@ import {
   saveMediaState,
   selectAssetImage,
   selectCoreReference,
+  selectSeedReferenceAudio,
   setLastOpenedProject,
   writeProjectMarkdown,
   writeEditingTimeline,
@@ -302,6 +303,9 @@ export default function initIPC() {
     ),
   )
   ipcMain.handle('material-generate-srt', (_event, params) => generateMaterialTranscript(params))
+  ipcMain.handle('media-select-seed-reference', (_event, runId, episodeId, speakerId) =>
+    selectSeedReferenceAudio(runId, episodeId, speakerId),
+  )
   ipcMain.handle('material-analyze-video', (_event, params) => analyzeMaterialVideo(params))
   ipcMain.handle(
     'material-write-editing-timeline',

@@ -13,8 +13,20 @@
           no-resize
           hide-details
           variant="plain"
-          :label="mediaStore.workspaceView === 'seed-voice' ? '修改角色音色提示词' : '修改意见'"
-          :placeholder="mediaStore.workspaceView === 'seed-voice' ? '描述你希望 AI 怎么修改当前角色的音色提示词' : '描述你希望 AI 怎么修改当前内容'"
+          :label="
+            mediaStore.workspaceView === 'seed-voice'
+              ? mediaStore.seedVoiceTab === 'roles'
+                ? '修改角色音色提示词'
+                : '修改全局配音提示词'
+              : '修改意见'
+          "
+          :placeholder="
+            mediaStore.workspaceView === 'seed-voice'
+              ? mediaStore.seedVoiceTab === 'roles'
+                ? '描述你希望 AI 怎么修改当前角色的音色提示词'
+                : '描述你希望 AI 怎么修改当前全局配音提示词'
+              : '描述你希望 AI 怎么修改当前内容'
+          "
           @keydown.meta.enter.prevent="sendRevision"
           @keydown.ctrl.enter.prevent="sendRevision"
         />
@@ -30,91 +42,79 @@
         </div>
       </div>
       <div v-if="mediaStore.workspaceView === 'seed-voice'" class="seed-voice-controls">
-        <strong>全局配音</strong>
-        <small v-if="selectedSeedCharacter"
-          >当前角色：{{ selectedSeedCharacter.label }}。在中栏查看和编辑提示词。</small
-        >
-        <small v-else>先在中栏选择一个角色。</small>
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-text-box-edit-outline"
-          :loading="mediaStore.busyAction === 'generate-seed-role-prompts'"
-          :disabled="Boolean(mediaStore.busyAction) || !seedCharacters.length"
-          block
-          @click="$emit('generateAllSeedRolePrompts')"
-          >生成角色提示词</v-btn
-        >
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-waveform"
-          :loading="mediaStore.busyAction === 'generate-seed-references'"
-          :disabled="Boolean(mediaStore.busyAction) || !allSeedRolePromptsReady"
-          block
-          @click="$emit('generateAllSeedReferences')"
-          >生成角色参考音</v-btn
-        >
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-format-list-checks"
-          :loading="mediaStore.busyAction === 'arrange-seed-track'"
-          :disabled="Boolean(mediaStore.busyAction) || !seedCharacters.length"
-          block
-          @click="$emit('arrangeSeedTrack')"
-          >整段配音安排</v-btn
-        >
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-auto-fix"
-          :loading="mediaStore.busyAction === 'generate-seed-prompt'"
-          :disabled="Boolean(mediaStore.busyAction) || !mediaStore.seedAudioArrangementPath"
-          block
-          @click="$emit('generateSeedPrompt')"
-          >生成全局声音提示词</v-btn
-        >
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-file-document-edit-outline"
-          :loading="mediaStore.busyAction === 'generate-seed-voice-script'"
-          :disabled="
-            Boolean(mediaStore.busyAction) ||
-            !mediaStore.apiConfigured ||
-            !mediaStore.seedAudioGlobalPrompt.trim()
-          "
-          block
-          @click="$emit('generateSeedVoiceScript')"
-          >生成豆包语音稿</v-btn
-        >
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-content-save-outline"
-          :loading="mediaStore.busyAction === 'save-seed-director-draft'"
-          :disabled="Boolean(mediaStore.busyAction) || !mediaStore.seedAudioGlobalPrompt.trim()"
-          block
-          @click="$emit('saveSeedDirectorDraft')"
-          >保存声音导演稿</v-btn
-        >
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-waveform"
-          :loading="mediaStore.busyAction === 'generate-seed-track'"
-          :disabled="
-            Boolean(mediaStore.busyAction) ||
-            !mediaStore.apiConfigured ||
-            !mediaStore.seedAudioDirectorDraftPath
-          "
-          block
-          @click="$emit('generateSeedTrack')"
-          >生成完整声音轨</v-btn
-        >
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-movie-edit-outline"
-          :loading="mediaStore.busyAction === 'shot-plan'"
-          :disabled="Boolean(mediaStore.busyAction) || !mediaStore.seedAudioDialogueTimelinePath"
-          block
-          @click="$emit('generateShotPlan')"
-          >生成分镜提示词</v-btn
-        >
+        <template v-if="mediaStore.seedVoiceTab === 'roles'">
+          <strong>角色配音</strong>
+          <small v-if="selectedSeedCharacter"
+            >当前角色：{{ selectedSeedCharacter.label }}。在中栏查看和编辑提示词。</small
+          >
+          <small v-else>先在中栏选择一个角色。</small>
+          <v-btn
+            color="success"
+            prepend-icon="mdi-text-box-edit-outline"
+            :loading="mediaStore.busyAction === 'generate-seed-role-prompts'"
+            :disabled="Boolean(mediaStore.busyAction) || !seedCharacters.length"
+            block
+            @click="$emit('generateAllSeedRolePrompts')"
+            >生成角色提示词</v-btn
+          >
+          <v-btn
+            color="success"
+            prepend-icon="mdi-waveform"
+            :loading="mediaStore.busyAction === 'generate-seed-references'"
+            :disabled="Boolean(mediaStore.busyAction) || !allSeedRolePromptsReady"
+            block
+            @click="$emit('generateAllSeedReferences')"
+            >生成角色参考音</v-btn
+          >
+        </template>
+        <template v-else>
+          <strong>全局配音</strong>
+          <small>按已经确认的翻译字幕和角色参考音生成整集目标语言对白。</small>
+          <small v-if="globalSeedDisabledReason" class="text-warning">{{
+            globalSeedDisabledReason
+          }}</small>
+          <v-btn
+            color="success"
+            prepend-icon="mdi-text-box-edit-outline"
+            :loading="mediaStore.busyAction === 'arrange-doubao-voice'"
+            :disabled="Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured"
+            block
+            @click="$emit('generateGlobalSeedPrompt')"
+            >生成全局配音提示词</v-btn
+          >
+          <v-btn
+            color="success"
+            prepend-icon="mdi-waveform"
+            :loading="mediaStore.busyAction === 'generate-target-voice'"
+            :disabled="
+              Boolean(mediaStore.busyAction) ||
+              !mediaStore.apiConfigured ||
+              !mediaStore.seedAudioGlobalPrompt.trim()
+            "
+            block
+            @click="$emit('generateGlobalSeedAudio')"
+            >{{ mediaStore.seedAudioTrackPath ? '重新生成全局配音' : '生成全局配音' }}</v-btn
+          >
+          <v-btn
+            v-if="translationMode"
+            color="success"
+            prepend-icon="mdi-subtitles-outline"
+            :disabled="Boolean(mediaStore.busyAction) || !mediaStore.seedAudioTrackPath"
+            block
+            @click="$emit('openTranslationSubtitles')"
+            >进入字幕工作台</v-btn
+          >
+          <v-btn
+            v-else
+            color="success"
+            prepend-icon="mdi-movie-edit-outline"
+            :loading="mediaStore.busyAction === 'shot-plan'"
+            :disabled="Boolean(mediaStore.busyAction) || !mediaStore.seedAudioDialogueTimelinePath"
+            block
+            @click="$emit('generateShotPlan')"
+            >生成分镜提示词</v-btn
+          >
+        </template>
       </div>
       <div v-else-if="mediaStore.workflowStep === 'voice'" class="voice-controls">
         <strong>后期处理</strong>
@@ -181,10 +181,7 @@
         color="primary"
         prepend-icon="mdi-movie-edit-outline"
         :loading="mediaStore.busyAction === 'shot-plan'"
-        :disabled="
-          Boolean(mediaStore.busyAction) ||
-          !mediaStore.allRequiredAssetsApproved
-        "
+        :disabled="Boolean(mediaStore.busyAction) || !mediaStore.allRequiredAssetsApproved"
         @click="openNextFromAssets"
         >{{ mediaStore.audioProductionRoute === 'seed-full-track' ? '全局配音' : '转分镜' }}</v-btn
       >
@@ -237,6 +234,10 @@ import {
 } from '@/runtime/videoWorkflow'
 import { assetVersionMatches } from '@/runtime/storyboardMarkdown'
 
+const props = withDefaults(defineProps<{ translationMode?: boolean }>(), {
+  translationMode: false,
+})
+const { translationMode } = props
 const emit = defineEmits([
   'generateScript',
   'approveScript',
@@ -249,6 +250,9 @@ const emit = defineEmits([
   'generateSeedVoiceScript',
   'saveSeedDirectorDraft',
   'generateSeedTrack',
+  'generateGlobalSeedPrompt',
+  'generateGlobalSeedAudio',
+  'openTranslationSubtitles',
   'editScriptMode',
   'generateShotPlan',
   'prepareAssets',
@@ -282,10 +286,15 @@ const selectedReferenceAsset = computed(() =>
   mediaStore.referenceAssets.find((asset) => asset.id === mediaStore.selectedAssetId),
 )
 const seedCharacters = computed(() =>
-  mediaStore.referenceAssets.filter((asset) => asset.role === 'character'),
+  translationMode
+    ? mediaStore.videoTranslationRoles.map((role) => ({
+        id: role.translationRoleId,
+        label: role.displayName,
+      }))
+    : mediaStore.referenceAssets.filter((asset) => asset.role === 'character'),
 )
 const selectedSeedCharacter = computed(() =>
-  mediaStore.workspaceView === 'seed-voice'
+  mediaStore.workspaceView === 'seed-voice' && mediaStore.seedVoiceTab === 'roles'
     ? seedCharacters.value.find((asset) => asset.id === mediaStore.selectedAssetId)
     : undefined,
 )
@@ -296,6 +305,13 @@ const allSeedRolePromptsReady = computed(
       Boolean(mediaStore.seedAudioRolePrompts[asset.id]?.trim()),
     ),
 )
+const globalSeedDisabledReason = computed(() => {
+  if (translationMode && mediaStore.videoTranslationRoles.some((role) => !role.voiceProfileId))
+    return '请先为全部角色绑定参考音。'
+  if (!mediaStore.seedAudioGlobalPrompt.trim()) return '下一步：生成全局配音提示词。'
+  if (!mediaStore.seedAudioTrackPath) return '下一步：生成全局配音。'
+  return ''
+})
 const selectedAsset = computed(() => {
   const id = mediaStore.selectedAssetId
   if (!id) return null
@@ -338,9 +354,7 @@ const revisionTarget = computed<{ type: RevisionTargetType; id: string } | null>
     (mediaStore.projectDirectorDraft || mediaStore.projectDirectorPlan)
   )
     return { type: 'project-director', id: 'project-director' }
-  if (
-    selectedSeedCharacter.value
-  )
+  if (selectedSeedCharacter.value)
     return { type: 'seed-role-prompt', id: selectedSeedCharacter.value.id }
   if (mediaStore.workflowStep === 'script') {
     if (mediaStore.script) return { type: 'script', id: 'script' }

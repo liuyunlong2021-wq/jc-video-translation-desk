@@ -95,11 +95,14 @@ export function splitTimedSubtitleText(
     const character = characters[index]
     punctuationPart += character
     const decimalPoint =
-      character === '.' && /\d/.test(characters[index - 1] || '') && /\d/.test(characters[index + 1] || '')
+      character === '.' &&
+      /\d/.test(characters[index - 1] || '') &&
+      /\d/.test(characters[index + 1] || '')
     if (!SUBTITLE_PUNCTUATION.has(character) || decimalPoint) continue
     while (
       index + 1 < characters.length &&
-      (SUBTITLE_PUNCTUATION.has(characters[index + 1]) || SUBTITLE_CLOSERS.has(characters[index + 1]))
+      (SUBTITLE_PUNCTUATION.has(characters[index + 1]) ||
+        SUBTITLE_CLOSERS.has(characters[index + 1]))
     )
       punctuationPart += characters[++index]
     punctuationParts.push(punctuationPart.trim())
@@ -184,7 +187,7 @@ export type VideoTranslationAction =
   | 'upload-video'
   | 'reverse-video'
   | 'translate-all-subtitles'
-  | 'confirm-speakers-and-subtitles'
+  | 'open-voice-workspace'
   | 'arrange-doubao-voice'
   | 'generate-target-voice'
   | 'separate-source-audio'
@@ -196,6 +199,7 @@ export type VideoTranslationChange =
   | 'source-video'
   | 'source-dialogue'
   | 'translation'
+  | 'role-binding'
   | 'language'
   | 'voice-binding'
   | 'voice-prompt'
@@ -245,9 +249,9 @@ export function availableVideoTranslationActions(
   if (
     state.speakerStatus === 'ready' &&
     state.translationStatus === 'ready' &&
-    actionable(state.reviewStatus)
+    state.reviewStatus !== 'running'
   )
-    actions.push('confirm-speakers-and-subtitles')
+    actions.push('open-voice-workspace')
   if (state.reviewStatus !== 'ready') return actions
   const roleById = new Map(roles.map((role) => [role.translationRoleId, role]))
   const dialogueReady = state.cues.every(
@@ -293,6 +297,8 @@ export function invalidateVideoTranslation(
     })
   } else if (change === 'translation') {
     next.reviewStatus = invalidate(next.reviewStatus)
+  } else if (change === 'role-binding') {
+    next.reviewStatus = invalidate(next.reviewStatus)
   } else if (change === 'language') {
     next.translationStatus = invalidate(next.translationStatus)
     next.reviewStatus = invalidate(next.reviewStatus)
@@ -300,10 +306,19 @@ export function invalidateVideoTranslation(
       cue.translatedText = ''
     })
   }
-  if (['source-dialogue', 'translation', 'language', 'voice-binding'].includes(change))
+  if (
+    ['source-dialogue', 'translation', 'role-binding', 'language', 'voice-binding'].includes(change)
+  )
     next.arrangementStatus = invalidate(next.arrangementStatus)
   if (
-    ['source-dialogue', 'translation', 'language', 'voice-binding', 'voice-prompt'].includes(change)
+    [
+      'source-dialogue',
+      'translation',
+      'role-binding',
+      'language',
+      'voice-binding',
+      'voice-prompt',
+    ].includes(change)
   )
     next.voiceStatus = invalidate(next.voiceStatus)
   if (change !== 'separation') next.mixStatus = invalidate(next.mixStatus)

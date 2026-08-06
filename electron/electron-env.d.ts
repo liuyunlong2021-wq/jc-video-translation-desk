@@ -126,6 +126,11 @@ interface Window {
       translateSubtitles: (
         params: import('./types').TranslateSubtitlesParams,
       ) => Promise<Array<{ shotId: string; text: string }>>
+      selectSeedReferenceAudio: (
+        runId: string,
+        episodeId: string,
+        speakerId: string,
+      ) => Promise<{ path: string; displayName: string } | null>
       selectVideoTranslationSource: (
         runId: string,
         episodeId: string,
