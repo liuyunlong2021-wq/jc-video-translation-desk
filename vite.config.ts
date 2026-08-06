@@ -1,4 +1,5 @@
 import path from 'node:path'
+import fs from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import electron from 'vite-plugin-electron/simple'
@@ -20,6 +21,17 @@ export default defineConfig({
       main: {
         // Shortcut of `build.lib.entry`.
         entry: 'electron/main.ts',
+        onstart({ startup }) {
+          const previewUserData = process.env.SVF_USER_DATA_DIR?.trim()
+          return startup(previewUserData
+            ? [
+                '.',
+                '--no-sandbox',
+                `--user-data-dir=${previewUserData}`,
+                `--svf-user-data-dir=${previewUserData}`,
+              ]
+            : undefined)
+        },
         vite: {
           build: {
             rollupOptions: {
@@ -47,6 +59,11 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
       '~': fileURLToPath(new URL('./', import.meta.url)),
+    },
+  },
+  server: {
+    fs: {
+      allow: [__dirname, fs.realpathSync(path.join(__dirname, 'node_modules'))],
     },
   },
   build: {

@@ -25,10 +25,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // Keep existing media and keys when the visible product name changes.
 const appDataPath = app.getPath('appData')
-const legacyUserDataCandidates = ['短视频工厂', 'short-video-factory', 'AI Short Video Factory']
-  .map((name) => path.join(appDataPath, name))
-  .filter((candidate) => fs.existsSync(path.join(candidate, 'media-runs')) || fs.existsSync(path.join(candidate, 'data.db')))
-if (legacyUserDataCandidates[0]) app.setPath('userData', legacyUserDataCandidates[0])
+const previewUserData = app.commandLine.getSwitchValue('svf-user-data-dir').trim()
+if (previewUserData) app.setPath('userData', path.resolve(previewUserData))
+else {
+  const legacyUserDataCandidates = ['短视频工厂', 'short-video-factory', 'AI Short Video Factory']
+    .map((name) => path.join(appDataPath, name))
+    .filter((candidate) => fs.existsSync(path.join(candidate, 'media-runs')) || fs.existsSync(path.join(candidate, 'data.db')))
+  if (legacyUserDataCandidates[0]) app.setPath('userData', legacyUserDataCandidates[0])
+}
 app.setName('点一点')
 
 // 已构建的目录结构
