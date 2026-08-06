@@ -1396,6 +1396,10 @@ async function runTranslationStep(
 }
 
 async function runTranslationAction(action: VideoTranslationAction) {
+  if (!mediaStore.runId) {
+    toast.warning('请先新建或打开项目，再上传视频')
+    return
+  }
   if (action === 'upload-video') return uploadTranslationVideo()
   if (action === 'generate-source-subtitles') return generateTranslationSubtitles()
   if (action === 'identify-speakers') return identifyTranslationSpeakers()

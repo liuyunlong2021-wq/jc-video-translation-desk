@@ -85,6 +85,13 @@ test('upload cancellation changes nothing and upload preserves the original sour
   assert.equal(fs.readFileSync(path.join(projectRoot, result!.rawSnapshotPath), 'utf8'), 'original-video-bytes')
 })
 
+test('accepts any extension when ffprobe confirms a real video stream', async () => {
+  selectedFile = path.join(root, 'source.uncommon-container')
+  fs.writeFileSync(selectedFile, Buffer.from('video-bytes'))
+  const result = await translation.selectVideoTranslationSource(projectId, episodeId)
+  assert.ok(result?.sourceVideoPath.endsWith('.uncommon-container'))
+})
+
 test('translation Wiki writes never rewrite creative Wiki files', async () => {
   const creative = path.join(projectRoot, 'wiki', '文稿', episodeId, '确认文稿.md')
   fs.mkdirSync(path.dirname(creative), { recursive: true })

@@ -44,7 +44,8 @@
           :prepend-icon="action.icon"
           :color="action.color"
           :variant="action.done ? 'tonal' : 'flat'"
-          :disabled="Boolean(mediaStore.busyAction) || !available.has(action.key)"
+          :title="!mediaStore.runId ? '请先新建或打开项目' : action.label"
+          :disabled="!mediaStore.runId || Boolean(mediaStore.busyAction) || !available.has(action.key)"
           :loading="mediaStore.busyAction === action.key"
           @click="emit('action', action.key)"
         >{{ action.label }}</v-btn>

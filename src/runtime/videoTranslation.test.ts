@@ -147,6 +147,8 @@ test('keeps translation UI separate with six columns and eleven right-side actio
   for (const column of ['时间轴', '视频片段预览', '说话角色', '原字幕', '译文字幕', '目标语言配音'])
     assert.match(workspace, new RegExp(column))
   assert.doesNotMatch(workspace, /<v-btn/)
+  assert.match(inspector, /!mediaStore\.runId/)
+  assert.match(home, /请先新建或打开项目，再上传视频/)
   for (const action of [
     '上传视频', '生成原字幕', '识别说话角色', '翻译所有字幕', '确认角色与字幕',
     '生成豆包配音安排', '生成目标语言配音', '分离原人声和背景声', '去除原人声',

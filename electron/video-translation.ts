@@ -24,7 +24,6 @@ import { generateSeedAudio, mixSeedAudioTracks } from './seed-audio.ts'
 import { runFasterWhisper } from './material-transcript.ts'
 import type { VideoTranslationUploadResult } from './types.ts'
 
-const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.webm', '.m4v', '.avi'])
 const runFile = promisify(execFile)
 const translationWrites = new Map<string, Promise<unknown>>()
 
@@ -118,12 +117,10 @@ export async function selectVideoTranslationSource(
   const selected = await dialog.showOpenDialog({
     title: '上传视频翻译原片',
     properties: ['openFile'],
-    filters: [{ name: 'Video', extensions: [...VIDEO_EXTENSIONS].map((item) => item.slice(1)) }],
   })
   const source = selected.filePaths[0]
   if (selected.canceled || !source) return null
   const extension = path.extname(source).toLowerCase()
-  if (!VIDEO_EXTENSIONS.has(extension)) throw new Error('请选择支持的视频文件')
   const stat = await fs.promises.stat(source)
   if (!stat.isFile() || !stat.size) throw new Error('视频文件不可读')
   const sourceFingerprint = await fileHash(source)
