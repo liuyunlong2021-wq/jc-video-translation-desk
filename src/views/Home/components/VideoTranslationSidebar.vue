@@ -20,14 +20,25 @@
       hide-details
       @update:model-value="updateLanguage('targetLanguage', $event)"
     />
-    <div class="role-heading"><strong>翻译角色</strong><small>{{ mediaStore.videoTranslationRoles.length }} 人</small></div>
-    <div v-if="!mediaStore.videoTranslationRoles.length" class="empty">确认说话角色后显示在这里</div>
-    <div v-else class="roles">
-      <div v-for="role in mediaStore.videoTranslationRoles" :key="role.translationRoleId" class="role">
-        <v-icon size="18">mdi-account-voice</v-icon>
-        <span><strong>{{ role.displayName }}</strong><small>{{ role.voiceProfileId ? '已选声音' : '待选声音' }}</small></span>
+    <template v-if="showRoles">
+      <div class="role-heading"><strong>翻译角色</strong><small>{{ mediaStore.videoTranslationRoles.length }} 人</small></div>
+      <div v-if="!mediaStore.videoTranslationRoles.length" class="empty">确认说话角色后显示在这里</div>
+      <div v-else class="roles">
+        <div v-for="role in mediaStore.videoTranslationRoles" :key="role.translationRoleId" class="role">
+          <v-icon size="18">mdi-account-voice</v-icon>
+          <span><strong>{{ role.displayName }}</strong><small>{{ role.voiceProfileId ? '已选声音' : '待选声音' }}</small></span>
+          <v-btn
+            icon="mdi-delete-outline"
+            size="x-small"
+            variant="text"
+            color="error"
+            title="删除角色"
+            aria-label="删除角色"
+            @click="requestRoleDeletion(role.translationRoleId)"
+          />
+        </div>
       </div>
-    </div>
+    </template>
   </v-sheet>
 </template>
 
@@ -35,6 +46,8 @@
 import { computed } from 'vue'
 import { useMediaTaskStore } from '@/store'
 
+withDefaults(defineProps<{ showRoles?: boolean }>(), { showRoles: true })
+const emit = defineEmits<{ deleteRole: [roleId: string] }>()
 const mediaStore = useMediaTaskStore()
 const state = computed(() => mediaStore.videoTranslation!)
 const sourceLanguages = [
@@ -51,6 +64,11 @@ function updateLanguage(key: 'sourceLanguage' | 'targetLanguage', value: string)
   state.value[key] = value
   mediaStore.invalidateTranslation('language')
 }
+function requestRoleDeletion(roleId: string) {
+  const role = mediaStore.videoTranslationRoles.find((item) => item.translationRoleId === roleId)
+  if (!role || !window.confirm(`删除角色“${role.displayName}”？共享剧集中的该角色也会移除。`)) return
+  emit('deleteRole', roleId)
+}
 </script>
 
 <style scoped>
@@ -62,5 +80,6 @@ header small, .role small, .role-heading small, .empty { color: rgba(0,0,0,.56);
 .role-heading { justify-content: space-between; margin-top: 4px; }
 .roles { display: grid; gap: 6px; }
 .role { padding: 8px; border-bottom: 1px solid rgba(0,0,0,.08); }
+.role span { flex: 1; }
 .empty { padding: 18px 4px; text-align: center; font-size: 13px; }
 </style>

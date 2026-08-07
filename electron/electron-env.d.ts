@@ -130,6 +130,7 @@ interface Window {
         runId: string,
         episodeId: string,
         speakerId: string,
+        workflow?: 'content-create' | 'video-translation',
       ) => Promise<{ path: string; displayName: string } | null>
       selectVideoTranslationSource: (
         runId: string,
@@ -166,6 +167,12 @@ interface Window {
       bindVideoTranslationVoice: (
         runId: string,
         role: import('../src/runtime/videoTranslation').TranslationRole,
+      ) => Promise<string>
+      deleteVideoTranslationRole: (
+        runId: string,
+        episodeId: string,
+        roleId: string,
+        remainingRoles: import('../src/runtime/videoTranslation').TranslationRole[],
       ) => Promise<string>
       writeVideoTranslationSeedPlan: (
         runId: string,

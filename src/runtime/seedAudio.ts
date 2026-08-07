@@ -85,6 +85,17 @@ export function detectScriptLanguage(text: string): 'zh' | 'en' {
   return latin > han ? 'en' : 'zh'
 }
 
+export function seedAudioErrorMessage(status: number | undefined, body: unknown) {
+  const detail =
+    typeof body === 'string'
+      ? body
+      : (body as any)?.error?.message ||
+        (body as any)?.message ||
+        (body as any)?.error_msg ||
+        (body as any)?.error
+  return `Seed Audio 请求失败 (${status || '网络错误'})${detail ? `：${String(detail).slice(0, 240)}` : ''}`
+}
+
 function cleanId(value: unknown, label: string) {
   const id = String(value || '').trim()
   if (!id) throw new Error(`${label}不能为空`)

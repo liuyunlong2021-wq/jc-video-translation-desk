@@ -522,6 +522,13 @@ export async function registerSeedVoiceProfile(params: RegisterSeedVoiceProfileP
   ])
   const metadata = await parseFile(source, { duration: true }).catch(() => undefined)
   const catalog = await loadCatalog()
+  const existing = catalog.profiles.find((item) => item.voiceProfileId === voiceProfileId)
+  let providerSpeakerId = params.providerSpeakerId?.trim() || existing?.providerSpeakerId
+  const seedKeyFile = path.join(app.getPath('userData'), 'seed-audio-api-key.bin')
+  if (!providerSpeakerId && (process.env.SEED_AUDIO_API_KEY?.trim() || fs.existsSync(seedKeyFile))) {
+    const { registerSeedAudioSpeaker } = await import('./seed-audio.ts')
+    providerSpeakerId = await registerSeedAudioSpeaker(source, params.language || 'zh')
+  }
   const profile: VoiceProfile = {
     voiceProfileId,
     displayName: params.displayName.trim() || params.speakerId,
@@ -542,7 +549,7 @@ export async function registerSeedVoiceProfile(params: RegisterSeedVoiceProfileP
     cloneReady: true,
     rights: 'commercial-cleared',
     engine: 'seed-audio',
-    providerSpeakerId: params.providerSpeakerId?.trim() || undefined,
+    providerSpeakerId: params.providerSpeakerId?.trim() || providerSpeakerId,
     voiceDesignPrompt: params.voiceDesignPrompt.trim(),
   }
   catalog.profiles = [
@@ -634,9 +641,8 @@ export async function resolveProjectSeedReferences(projectId: string, speakerIds
         speakerId,
         voiceProfileId,
         referenceAudioPath: path.join(libraryDir(), profile.referenceRelativePath),
-        // 产品 voiceProfileId 是唯一身份；若供应商未返回 speaker ID，直接用产品 ID
-        // 作为 references 标识，避免绑定后丢失参考音。
-        apiSpeakerId: profile.providerSpeakerId || voiceProfileId,
+        // voiceProfileId 只负责产品 Wiki 身份，不能冒充供应商 speaker。
+        ...(profile.providerSpeakerId ? { apiSpeakerId: profile.providerSpeakerId } : {}),
         voiceDesignPrompt: profile.voiceDesignPrompt,
         label: profile.displayName,
       }
@@ -657,7 +663,7 @@ export async function resolveSeedVoiceProfiles(
       speakerId: binding.speakerId,
       voiceProfileId: profile.voiceProfileId,
       referenceAudioPath: path.join(libraryDir(), profile.referenceRelativePath),
-      apiSpeakerId: profile.providerSpeakerId || profile.voiceProfileId,
+      ...(profile.providerSpeakerId ? { apiSpeakerId: profile.providerSpeakerId } : {}),
       voiceDesignPrompt: profile.voiceDesignPrompt,
       label: profile.displayName,
     }

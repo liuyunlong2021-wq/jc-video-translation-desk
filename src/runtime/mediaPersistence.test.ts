@@ -85,6 +85,40 @@ test('makes interrupted translation steps retryable after restore', () => {
   assert.equal(state.videoTranslation.finalStatus, 'ready')
 })
 
+test('clears legacy translation voice drafts so Skill output is required', () => {
+  const legacyPrompt = [
+    '# 豆包语音稿',
+    '',
+    '只生成en的干净对白人声。禁止音乐、环境声、动作音效、旁白补写和额外台词。',
+    '- 1000-2000ms | 角色: Hello!',
+  ].join('\n')
+  const state = deserializeMediaTask(JSON.stringify({
+    workspaceEntry: 'video-translate',
+    seedAudioGlobalPrompt: legacyPrompt,
+    seedAudioArrangementPath: 'wiki/翻译/episode-003/en/豆包配音安排.json',
+    seedAudioTrackPath: 'wiki/翻译/episode-003/en/目标人声.wav',
+    videoTranslation: {
+      seedPromptText: legacyPrompt,
+      seedPromptPath: 'wiki/翻译/episode-003/en/豆包语音稿.md',
+      seedArrangementPath: 'wiki/翻译/episode-003/en/豆包配音安排.json',
+      targetVoicePath: 'wiki/翻译/episode-003/en/目标人声.wav',
+      arrangementStatus: 'ready',
+      voiceStatus: 'failed',
+      mixStatus: 'ready',
+      finalStatus: 'ready',
+      cues: [],
+    },
+  }))
+  assert.equal(state.seedAudioGlobalPrompt, '')
+  assert.equal(state.videoTranslation.seedPromptText, '')
+  assert.equal(state.videoTranslation.seedPromptGeneratedBySkill, false)
+  assert.equal(state.videoTranslation.seedPromptPath, '')
+  assert.equal(state.videoTranslation.arrangementStatus, 'idle')
+  assert.equal(state.videoTranslation.voiceStatus, 'idle')
+  assert.equal(state.videoTranslation.targetVoicePath, '')
+  assert.equal(state.videoTranslation.mixStatus, 'idle')
+  assert.equal(state.videoTranslation.finalStatus, 'idle')
+})
 test('persists the project director gate and restores its center view', () => {
   const projectDirectorPlan = {
     productionRoute: 'drama',

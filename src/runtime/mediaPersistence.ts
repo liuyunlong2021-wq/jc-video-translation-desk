@@ -11,6 +11,11 @@ function relativeAsset(runId: string, filePath?: string) {
   return offset >= 0 ? normalized.slice(offset + marker.length) : normalized
 }
 
+function isLegacyTranslationSeedPrompt(value: unknown) {
+  const prompt = String(value || '')
+  return /只生成(?:zh|en)的干净对白人声。/.test(prompt) && /^\s*-\s*\d+-\d+ms\s*\|/m.test(prompt)
+}
+
 export function serializeMediaTask(state: any) {
   const copy = JSON.parse(JSON.stringify(state))
   copy.history?.forEach((run: any) => relativizeRun(run))
@@ -53,10 +58,20 @@ function relativizeRun(run: any) {
   run.finalPath = relativeAsset(run.runId, run.finalPath)
   if (run.videoTranslation) {
     for (const key of [
-      'sourceVideoPath', 'sourceTranscriptPath', 'sourceSrtPath', 'contextPath',
-      'confirmedDialoguePath', 'seedArrangementPath', 'seedPromptPath', 'targetVoicePath',
-      'vocalPath', 'instrumentPath', 'mixedPath', 'finalVideoPath',
-    ]) run.videoTranslation[key] = relativeAsset(run.runId, run.videoTranslation[key])
+      'sourceVideoPath',
+      'sourceTranscriptPath',
+      'sourceSrtPath',
+      'contextPath',
+      'confirmedDialoguePath',
+      'seedArrangementPath',
+      'seedPromptPath',
+      'targetVoicePath',
+      'vocalPath',
+      'instrumentPath',
+      'mixedPath',
+      'finalVideoPath',
+    ])
+      run.videoTranslation[key] = relativeAsset(run.runId, run.videoTranslation[key])
     run.videoTranslation.cues?.forEach((cue: any) => {
       cue.voicePath = relativeAsset(run.runId, cue.voicePath)
     })
@@ -139,10 +154,13 @@ function migrateRun(run: any) {
   run.seedAudioTrackPath ||= ''
   run.seedAudioDialogueTimelinePath ||= ''
   run.seedAudioSrtPath ||= ''
-  if (!run.seedAudioRolePrompts || typeof run.seedAudioRolePrompts !== 'object') run.seedAudioRolePrompts = {}
+  if (!run.seedAudioRolePrompts || typeof run.seedAudioRolePrompts !== 'object')
+    run.seedAudioRolePrompts = {}
   run.seedAudioGlobalPrompt ||= ''
   run.seedAudioDirectorDraftPath ||= ''
-  run.seedAudioDuration = Number.isFinite(Number(run.seedAudioDuration)) ? Number(run.seedAudioDuration) : 0
+  run.seedAudioDuration = Number.isFinite(Number(run.seedAudioDuration))
+    ? Number(run.seedAudioDuration)
+    : 0
   run.originalVocalRemoved = Boolean(run.originalVocalRemoved)
   if (run.workspaceEntry !== 'video-translate') run.workspaceEntry = 'content-create'
   if (!Array.isArray(run.videoTranslationRoles)) run.videoTranslationRoles = []
@@ -150,18 +168,46 @@ function migrateRun(run: any) {
     run.videoTranslation.sourceLanguage ||= 'auto'
     run.videoTranslation.targetLanguage ||= 'en'
     run.videoTranslation.durationMs = Number.isFinite(Number(run.videoTranslation.durationMs))
-      ? Number(run.videoTranslation.durationMs) : 0
+      ? Number(run.videoTranslation.durationMs)
+      : 0
     run.videoTranslation.hasAudio = Boolean(run.videoTranslation.hasAudio)
     if (!Array.isArray(run.videoTranslation.cues)) run.videoTranslation.cues = []
     for (const key of [
-      'transcriptStatus', 'speakerStatus', 'translationStatus', 'reviewStatus',
-      'arrangementStatus', 'voiceStatus', 'separationStatus', 'mixStatus', 'finalStatus',
+      'transcriptStatus',
+      'speakerStatus',
+      'translationStatus',
+      'reviewStatus',
+      'arrangementStatus',
+      'voiceStatus',
+      'separationStatus',
+      'mixStatus',
+      'finalStatus',
     ]) {
       if (run.videoTranslation[key] === 'running') run.videoTranslation[key] = 'idle'
       else if (!['idle', 'ready', 'failed', 'stale'].includes(run.videoTranslation[key]))
         run.videoTranslation[key] = 'idle'
     }
     run.videoTranslation.originalVocalRemoved = Boolean(run.videoTranslation.originalVocalRemoved)
+    const legacyPrompt = run.videoTranslation.seedPromptText || run.seedAudioGlobalPrompt
+    if (
+      !run.videoTranslation.seedPromptGeneratedBySkill &&
+      isLegacyTranslationSeedPrompt(legacyPrompt)
+    ) {
+      run.videoTranslation.seedPromptText = ''
+      run.videoTranslation.seedPromptPath = ''
+      run.videoTranslation.seedPromptGeneratedBySkill = false
+      run.videoTranslation.seedArrangementPath = ''
+      run.videoTranslation.targetVoicePath = ''
+      run.videoTranslation.arrangementStatus = 'idle'
+      run.videoTranslation.voiceStatus = 'idle'
+      run.videoTranslation.mixedPath = ''
+      run.videoTranslation.mixStatus = 'idle'
+      run.videoTranslation.finalVideoPath = ''
+      run.videoTranslation.finalStatus = 'idle'
+      run.seedAudioGlobalPrompt = ''
+      run.seedAudioArrangementPath = ''
+      run.seedAudioTrackPath = ''
+    }
   } else run.videoTranslation = null
   if (
     ![
@@ -182,9 +228,24 @@ function migrateRun(run: any) {
     ].includes(run.videoModel)
   )
     run.videoModel = 'veo-3.1-generate-preview'
-  if (!['script', 'seed-voice', 'voice', 'shots', 'assets', 'images', 'videos', 'final'].includes(run.workflowStep))
+  if (
+    !['script', 'seed-voice', 'voice', 'shots', 'assets', 'images', 'videos', 'final'].includes(
+      run.workflowStep,
+    )
+  )
     run.workflowStep = run.workspaceView === 'script' ? 'script' : run.workspaceView || 'script'
-  if (!['script', 'director', 'storyboard', 'assets', 'seed-voice', 'media', 'dubbing', 'final'].includes(run.workspaceView))
+  if (
+    ![
+      'script',
+      'director',
+      'storyboard',
+      'assets',
+      'seed-voice',
+      'media',
+      'dubbing',
+      'final',
+    ].includes(run.workspaceView)
+  )
     run.workspaceView = 'script'
   if (!['all', 'references', 'audio', 'storyboards', 'videos'].includes(run.mediaFilter))
     run.mediaFilter = 'all'
@@ -195,12 +256,14 @@ function migrateRun(run: any) {
     run.projectDirectorDraft &&
     (!['narration-promo', 'drama'].includes(run.projectDirectorDraft.productionRoute) ||
       !String(run.projectDirectorDraft.routeReason || '').trim())
-  ) run.projectDirectorDraft = null
+  )
+    run.projectDirectorDraft = null
   if (
     run.projectDirectorPlan &&
     (!['narration-promo', 'drama'].includes(run.projectDirectorPlan.productionRoute) ||
       !String(run.projectDirectorPlan.routeReason || '').trim())
-  ) run.projectDirectorPlan = null
+  )
+    run.projectDirectorPlan = null
   if (!Array.isArray(run.referenceAssets)) run.referenceAssets = []
   const legacyCoreId = run.coreReference?.id
   run.referenceAssets = run.referenceAssets.filter(
@@ -239,8 +302,7 @@ function migrateRun(run: any) {
       segment.generationDuration = generationDurationFor(playDuration)
     if (segment.coreReferenceVisible == null) segment.coreReferenceVisible = false
     if (!Array.isArray(segment.referenceAssetIds)) {
-      segment.referenceAssetIds =
-        segment.coreReferenceVisible && legacyCoreId ? [legacyCoreId] : []
+      segment.referenceAssetIds = segment.coreReferenceVisible && legacyCoreId ? [legacyCoreId] : []
     }
     segment.referenceAssetIds = segment.referenceAssetIds.filter(
       (id: string) => id !== legacyCoreId && (!directorAssetIds || directorAssetIds.has(id)),

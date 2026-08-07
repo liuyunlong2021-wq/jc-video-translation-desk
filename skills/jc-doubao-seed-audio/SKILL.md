@@ -1,6 +1,6 @@
 ---
 name: jc-doubao-seed-audio
-description: "为产品内部的豆包 Seed Audio 1.0 生成角色基准音、时间轴人声或完整声音轨提示词。用于宣传片整段声音轨、剧情片一至三人整段对白、旁白、OS、音乐、环境声、动作音效和参考音编排。只处理已完成角色/参考音预检的输入，不调用 API、不处理密钥或文件。"
+description: '为产品内部的豆包 Seed Audio 1.0 生成角色基准音、时间轴人声或完整声音轨提示词。用于宣传片整段声音轨、剧情片一至三人整段对白、旁白、OS、音乐、环境声、动作音效和参考音编排。只处理已完成角色/参考音预检的输入，不调用 API、不处理密钥或文件。'
 ---
 
 # 豆包 Seed Audio 提示词导演
@@ -24,9 +24,7 @@ description: "为产品内部的豆包 Seed Audio 1.0 生成角色基准音、�
     "speakerIds": ["character-a"],
     "referenceMap": { "character-a": 1 }
   },
-  "references": [
-    { "speakerId": "character-a", "referenceIndex": 1, "label": "角色A" }
-  ],
+  "references": [{ "speakerId": "character-a", "referenceIndex": 1, "label": "角色A" }],
   "segments": [
     {
       "startMs": 0,
@@ -41,7 +39,13 @@ description: "为产品内部的豆包 Seed Audio 1.0 生成角色基准音、�
 
 `references` 的顺序就是 `@音频N` 的顺序。`segments` 中的 `speakerId` 必须来自项目总监确认的角色白名单和当前剧集 `整段配音安排.json`，不能凭显示名称临时创建角色，也不依赖尚未生成的 `editing-timeline.json`。
 
+产品身份与供应商传输身份严格分离：`speakerId`、`translationRoleId` 和 `voiceProfileId` 是产品自己的稳定 ID，只用于角色身份、参考音顺序和 `@音频N` 映射。Skill 不读取、不要求、不生成、不校验任何云端注册 `speaker_id`、`providerSpeakerId` 或 `apiSpeakerId`；参考音未注册云端时仍必须正常生成提示词。是否存在供应商传输 ID，以及供应商接口如何消费参考音，由产品后端适配层单独处理，不能阻塞本 Skill。
+
 `language` 来自确认剧本的主语言，是强约束。`voice-profile` 的角色描述和示例台词必须使用该语言：英文剧本生成英文基准音，中文剧本生成中文基准音；不得为了套模板自行翻译成另一种语言。
+
+## 视频翻译语言规则
+
+视频翻译任务中，目标语言为英文时，正式英文台词必须逐字保留英文原文；所有导演说明、角色说明、情绪、强度、语速、停顿、重音、时间说明、禁止项和参考音映射说明统一使用中文。不得翻译、改写、删减或补写英文台词。目标语言为中文时，说明和台词均使用中文。`@音频N` 标记保持原样。
 
 调用前必须由产品后端完成并传入 `整段配音安排.json` 中当前段落的 `arrangement`。Skill 只使用安排中的角色、模式和参考音顺序；不重新统计角色、不自行拆段、不把 `timeline-voice` 补充任务写成完整声音轨。超过三个角色的拆分已经由安排规划器完成，缺少安排时拒绝生成提示词。
 

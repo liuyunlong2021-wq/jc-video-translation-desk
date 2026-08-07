@@ -1,7 +1,10 @@
 <template>
   <v-sheet class="translation-inspector" border rounded>
     <div class="inspector-scroll">
-      <header><strong>视频翻译操作</strong><small>扒片 · 豆包语音 · FFmpeg</small></header>
+      <header>
+        <strong>{{ mediaStore.workspaceView === 'dubbing' ? '成片工作台操作' : '字幕工作台操作' }}</strong>
+        <small>扒片 · 豆包语音 · FFmpeg</small>
+      </header>
       <div class="actions">
         <template v-for="action in actions" :key="action.key">
           <v-btn
@@ -29,6 +32,47 @@
           </v-alert>
         </template>
       </div>
+      <section v-if="mediaStore.workspaceView === 'script' && state.cues.length" class="manual-cue">
+        <strong>补充漏识别台词</strong>
+        <div class="manual-cue-times">
+          <v-text-field
+            v-model="manualStartSeconds"
+            type="number"
+            min="0"
+            step="0.001"
+            density="compact"
+            hide-details
+            label="开始秒"
+          />
+          <v-text-field
+            v-model="manualEndSeconds"
+            type="number"
+            min="0"
+            step="0.001"
+            density="compact"
+            hide-details
+            label="结束秒"
+          />
+        </div>
+        <v-textarea
+          v-model="manualText"
+          rows="3"
+          no-resize
+          hide-details
+          label="补充原字幕"
+          placeholder="输入漏掉的一句台词"
+        />
+        <small v-if="manualError" class="manual-cue-error">{{ manualError }}</small>
+        <v-btn
+          block
+          color="primary"
+          variant="tonal"
+          prepend-icon="mdi-plus"
+          :disabled="!manualText.trim()"
+          @click="addManualCue"
+          >添加字幕行</v-btn
+        >
+      </section>
       <v-btn
         v-if="mediaStore.busyAction"
         icon="mdi-stop-circle-outline"
@@ -46,18 +90,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useMediaTaskStore } from '@/store'
 import {
   availableVideoTranslationActions,
   type VideoTranslationAction,
 } from '@/runtime/videoTranslation'
 
-defineProps<{ selectedCueId: string }>()
-const emit = defineEmits<{ action: [action: VideoTranslationAction]; cancel: [] }>()
+const props = defineProps<{ selectedCueId: string }>()
+const emit = defineEmits<{
+  action: [action: VideoTranslationAction]
+  selectCue: [cueId: string]
+  cancel: []
+}>()
 const mediaStore = useMediaTaskStore()
 const progressText = ref('')
 const state = computed(() => mediaStore.videoTranslation!)
+const manualStartSeconds = ref('0')
+const manualEndSeconds = ref('1')
+const manualText = ref('')
+const manualError = ref('')
 const available = computed(
   () => new Set(availableVideoTranslationActions(state.value, mediaStore.videoTranslationRoles)),
 )
@@ -150,6 +202,56 @@ const actions = computed(() =>
   ),
 )
 
+function suggestManualCueTime() {
+  const selectedIndex = state.value.cues.findIndex((cue) => cue.cueId === props.selectedCueId)
+  const selected = state.value.cues[selectedIndex]
+  const startMs = selected?.endMs || state.value.cues.at(-1)?.endMs || 0
+  const nextStartMs = state.value.cues[selectedIndex + 1]?.startMs || state.value.durationMs
+  const endMs = Math.min(state.value.durationMs, Math.max(startMs + 1000, nextStartMs))
+  manualStartSeconds.value = (startMs / 1000).toFixed(3)
+  manualEndSeconds.value = (endMs / 1000).toFixed(3)
+  manualError.value = ''
+}
+
+function addManualCue() {
+  const startMs = Math.round(Number(manualStartSeconds.value) * 1000)
+  const endMs = Math.round(Number(manualEndSeconds.value) * 1000)
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs < 0 || endMs <= startMs) {
+    manualError.value = '开始和结束时间无效'
+    return
+  }
+  if (endMs > state.value.durationMs) {
+    manualError.value = '结束时间不能超过视频时长'
+    return
+  }
+  if (state.value.cues.some((cue) => startMs < cue.endMs && endMs > cue.startMs)) {
+    manualError.value = '这段时间与现有字幕重叠，请调整时间'
+    return
+  }
+  const selected = state.value.cues.find((cue) => cue.cueId === props.selectedCueId)
+  const cueId = `manual-cue-${crypto.randomUUID()}`
+  state.value.cues.push({
+    cueId,
+    startMs,
+    endMs,
+    recognizedText: manualText.value.trim(),
+    sourceText: manualText.value.trim(),
+    translatedText: '',
+    translationRoleId: selected?.translationRoleId,
+    proposedName: selected?.proposedName,
+    confidence: 1,
+    evidence: '人工补充',
+    needsReview: !selected?.translationRoleId,
+  })
+  state.value.cues.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
+  mediaStore.invalidateTranslation('source-dialogue')
+  manualText.value = ''
+  manualError.value = ''
+  emit('selectCue', cueId)
+}
+
+watch(() => props.selectedCueId, suggestManualCueTime, { immediate: true })
+
 let stopProgress: (() => void) | undefined
 onMounted(() => {
   stopProgress = window.electron.cloud.onVideoTranslationProgress((progress) => {
@@ -189,5 +291,19 @@ header small {
 .translation-action {
   min-height: 42px;
   justify-content: flex-start;
+}
+.manual-cue {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+.manual-cue-times {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.manual-cue-error {
+  color: rgb(var(--v-theme-error));
 }
 </style>

@@ -87,6 +87,32 @@ test('opens only the translation action whose dependencies are ready', () => {
   assert.ok(availableVideoTranslationActions(state, [role]).includes('burn-subtitles-and-voice'))
 })
 
+test('allows regenerating the Seed prompt after target voice generation fails', () => {
+  const state = createVideoTranslationState()
+  Object.assign(state, {
+    sourceVideoPath: 'episodes/episode-001/video-translate/source.mp4',
+    hasAudio: true,
+    speakerStatus: 'ready',
+    translationStatus: 'ready',
+    reviewStatus: 'ready',
+    arrangementStatus: 'ready',
+    voiceStatus: 'failed',
+    cues: [
+      {
+        cueId: 'cue-001',
+        startMs: 0,
+        endMs: 1000,
+        recognizedText: '你好',
+        sourceText: '你好',
+        translatedText: 'Hello',
+        translationRoleId: role.translationRoleId,
+        needsReview: false,
+      },
+    ],
+  })
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('arrange-doubao-voice'))
+})
+
 test('invalidates only translation state and preserves source separation where possible', () => {
   const state = createVideoTranslationState()
   Object.assign(state, {
@@ -207,6 +233,7 @@ test('plans pure target-language Seed tasks with at most three references', () =
     sourceText: `原文${index + 1}`,
     translatedText: `line ${index + 1}`,
     translationRoleId: item.translationRoleId,
+    evidence: index === 0 ? '角色听到拒绝后压着怒意追问' : undefined,
     needsReview: false,
   }))
   const plan = planVideoTranslationSeed(
@@ -225,16 +252,47 @@ test('plans pure target-language Seed tasks with at most three references', () =
   assert.ok(plan.arrangement.tasks.every((task) => task.references.length <= 3))
   assert.ok(plan.arrangement.tasks.every((task) => !task.includeMusicAndEffects))
   assert.match(plan.promptMarkdown, /禁止音乐、环境声、动作音效/)
+  assert.match(plan.promptMarkdown, /压着怒意追问/)
+  assert.match(plan.promptMarkdown, /情绪|自然表演/)
+})
+
+test('keeps product voice IDs independent from provider speaker IDs', () => {
+  const source = fs.readFileSync(new URL('../../src/views/Home/index.vue', import.meta.url), 'utf8')
+  assert.doesNotMatch(
+    source.slice(
+      source.indexOf('async function currentTranslationSeedPlan()'),
+      source.indexOf('async function generateTranslationSeedPrompt('),
+    ),
+    /尚未注册为 Seed 云端 speaker/,
+  )
+  assert.match(
+    source,
+    /目标语言为英文时，所有导演说明、角色说明、情绪、强度、语速、停顿、重音、时间说明、禁止项和参考音映射说明必须使用中文/,
+  )
+  const skill = fs.readFileSync(
+    new URL('../../skills/jc-doubao-seed-audio/SKILL.md', import.meta.url),
+    'utf8',
+  )
+  assert.match(skill, /产品身份与供应商传输身份严格分离/)
+  assert.match(skill, /不能阻塞本 Skill/)
+  assert.match(skill, /目标语言为英文时，正式英文台词必须逐字保留英文原文/)
+  assert.match(
+    skill,
+    /所有导演说明、角色说明、情绪、强度、语速、停顿、重音、时间说明、禁止项和参考音映射说明统一使用中文/,
+  )
 })
 
 test('routes translation review through voice workbench before a role-free subtitle workbench', () => {
   const read = (file: string) => fs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8')
   const workspace = read('src/views/Home/components/VideoTranslationWorkspace.vue')
   const inspector = read('src/views/Home/components/VideoTranslationInspector.vue')
+  const sidebar = read('src/views/Home/components/VideoTranslationSidebar.vue')
+  const manage = read('src/views/Home/components/VideoManage.vue')
   const home = read('src/views/Home/index.vue')
   assert.match(home, /value="content-create"[\s\S]*value="video-translate"/)
   assert.match(home, /VideoTranslationWorkspace/)
   assert.match(home, /VideoTranslationInspector/)
+  assert.match(home, /jc-doubao-seed-audio/)
   assert.match(inspector, /onVideoTranslationProgress/)
   assert.match(inspector, /v-progress-linear/)
   assert.match(
@@ -246,6 +304,11 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(workspace, /v-if="showRoles" class="role-column"/)
   assert.match(workspace, /item\.proposedName\?\.trim\(\) === sameCandidate/)
   assert.match(home, /:show-roles="!isTranslationSubtitleWorkspace"/)
+  assert.match(home, /VideoTranslationSidebar[\s\S]*:show-roles="!isTranslationSubtitleWorkspace"/)
+  for (const workspaceName of ['字幕工作台', '配音工作台', '成片工作台'])
+    assert.match(home, new RegExp(workspaceName))
+  assert.match(home, /@update:model-value="selectTranslationWorkspace"/)
+  assert.doesNotMatch(home, /if \(!state\.targetVoicePath\) return/)
   assert.doesNotMatch(workspace, /<v-btn/)
   assert.match(inspector, /!mediaStore\.runId/)
   assert.match(home, /请先新建或打开项目，再上传视频/)
@@ -269,4 +332,14 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(home, /roles: mediaStore\.videoTranslationRoles\.map/)
   assert.match(home, /sourceText: speaker\.correctedText/)
   assert.match(home, /invalidateVideoTranslation\(state, 'source-dialogue'\)/)
+  assert.match(inspector, /补充漏识别台词/)
+  assert.match(inspector, /manual-cue-/)
+  assert.match(sidebar, /mdi-delete-outline/)
+  assert.match(home, /@delete-role="deleteTranslationRole"/)
+  assert.match(home, /deleteVideoTranslationRole/)
+  assert.match(home, /JSON\.parse\([\s\S]*videoTranslationRoles\.filter/)
+  assert.match(manage, /translationRolePreview/)
+  assert.match(manage, /const previewSecond = \(cue\.startMs \+ cue\.endMs\) \/ 2000/)
+  assert.match(home, /approvedScript: approvedScript \|\| sample/)
+  assert.match(home, /speakerId,[\s\S]*'video-translation'/)
 })

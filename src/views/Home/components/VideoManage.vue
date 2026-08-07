@@ -87,7 +87,7 @@
             <p>
               {{
                 translationMode
-                  ? '先确定角色参考音并生成整集目标语言配音，再进入字幕工作台。'
+                  ? '先确定角色参考音并生成整集目标语言配音，再进入成片工作台。'
                   : '先确定角色音色和整段声音，再进入分镜。Seed Audio 为默认路线。'
               }}
             </p>
@@ -120,6 +120,14 @@
                 :class="{ selected: mediaStore.selectedAssetId === character.id }"
                 @click="mediaStore.selectedAssetId = character.id"
               >
+                <video
+                  v-if="translationMode && translationRolePreview(character.id)"
+                  class="seed-role-avatar"
+                  :src="translationRolePreview(character.id)"
+                  muted
+                  playsinline
+                  preload="metadata"
+                />
                 <span>{{ character.label }}</span>
                 <v-icon size="18" :color="seedRoleReady(character.id) ? 'success' : 'warning'">
                   {{
@@ -675,6 +683,13 @@ const seedCharacters = computed(() =>
 function seedRoleReady(id: string) {
   return Boolean(voiceBindings.value[id])
 }
+function translationRolePreview(id: string) {
+  if (!translationMode || !mediaStore.videoTranslation?.sourceVideoPath) return ''
+  const cue = mediaStore.videoTranslation.cues.find((item) => item.translationRoleId === id)
+  if (!cue) return ''
+  const previewSecond = (cue.startMs + cue.endMs) / 2000
+  return `${managedMediaUrl(mediaStore.runId, mediaStore.videoTranslation.sourceVideoPath)}#t=${Math.max(0.001, previewSecond)}`
+}
 const selectedCharacter = computed(() =>
   seedCharacters.value.find((asset) => asset.id === mediaStore.selectedAssetId),
 )
@@ -1162,6 +1177,18 @@ function openSeedVoice() {
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+.seed-role-avatar {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #111;
+}
+.seed-role-item > span {
+  flex: 1;
+  min-width: 0;
 }
 .seed-role-item:hover,
 .seed-role-item.selected {

@@ -99,10 +99,10 @@
             v-if="translationMode"
             color="success"
             prepend-icon="mdi-subtitles-outline"
-            :disabled="Boolean(mediaStore.busyAction) || !mediaStore.seedAudioTrackPath"
+            :disabled="Boolean(mediaStore.busyAction)"
             block
             @click="$emit('openTranslationSubtitles')"
-            >进入字幕工作台</v-btn
+            >进入成片工作台</v-btn
           >
           <v-btn
             v-else

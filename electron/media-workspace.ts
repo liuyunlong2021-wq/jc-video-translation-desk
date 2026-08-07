@@ -734,6 +734,7 @@ export async function selectSeedReferenceAudio(
   runId: string,
   episodeId: string,
   speakerId: string,
+  workflow: 'content-create' | 'video-translation' = 'content-create',
 ) {
   if (!RUN_ID.test(speakerId)) throw new Error('无效的角色 ID')
   const result = await dialog.showOpenDialog({
@@ -749,9 +750,11 @@ export async function selectSeedReferenceAudio(
   const stat = await fs.promises.stat(sourcePath)
   if (!stat.isFile() || stat.size > 50 * 1024 * 1024)
     throw new Error('参考音必须是小于 50 MB 的可读文件')
+  const episodeDir = await ensureEpisodeDir(runId, episodeId)
   const outputPath = generateUniqueFileName(
     path.join(
-      await ensureEpisodeDir(runId, episodeId),
+      episodeDir,
+      ...(workflow === 'video-translation' ? ['video-translate'] : []),
       'seed-audio',
       'uploads',
       `${speakerId}${extension}`,
@@ -1143,6 +1146,26 @@ export async function saveMediaState(runId: string, episodeId: string, value: st
       updated.wikiPending = true
     }
     await writeAtomic(projectManifestPath(runId), `${JSON.stringify(updated, null, 2)}\n`)
+  })
+  stateWrites.set(writeKey, next)
+  try {
+    await next
+  } finally {
+    if (stateWrites.get(writeKey) === next) stateWrites.delete(writeKey)
+  }
+}
+
+export async function removeSharedVideoTranslationRole(runId: string, roleId: string) {
+  if (!RUN_ID.test(roleId)) throw new Error('无效的翻译角色 ID')
+  const writeKey = runId
+  const previous = stateWrites.get(writeKey) || Promise.resolve()
+  const next = previous.then(async () => {
+    const sharedPath = path.join(await ensureRunDir(runId), 'shared-state.json')
+    const shared = await readJson(sharedPath).catch(() => ({}))
+    shared.videoTranslationRoles = Array.isArray(shared.videoTranslationRoles)
+      ? shared.videoTranslationRoles.filter((role: any) => role.translationRoleId !== roleId)
+      : []
+    await writeAtomic(sharedPath, `${JSON.stringify(shared, null, 2)}\n`)
   })
   stateWrites.set(writeKey, next)
   try {

@@ -9,6 +9,7 @@ import {
   ensureEpisodeDir,
   getRunDir,
   mediaDuration,
+  removeSharedVideoTranslationRole,
   relativeRunAsset,
 } from './media-workspace.ts'
 import type { TranslationRole, VideoTranslationCue } from '../src/runtime/videoTranslation.ts'
@@ -469,4 +470,24 @@ export async function writeVideoTranslationIndex(
     await replaceFiles(files)
     return relativeRunAsset(runId, files[1].path)
   })
+}
+
+export async function deleteVideoTranslationRole(
+  runId: string,
+  episodeId: string,
+  roleId: string,
+  remainingRoles: TranslationRole[],
+) {
+  safeId(episodeId, '剧集 ID')
+  safeId(roleId, '翻译角色 ID')
+  if (remainingRoles.some((role) => role.translationRoleId === roleId))
+    throw new Error('待删除角色仍在角色列表中')
+  await removeSharedVideoTranslationRole(runId, roleId)
+  const translationWiki = path.join(getRunDir(runId), 'wiki', '翻译')
+  await Promise.all([
+    fs.promises.rm(path.join(translationWiki, '角色', `${roleId}.md`), { force: true }),
+    fs.promises.rm(path.join(translationWiki, '声音', `${roleId}.md`), { force: true }),
+    fs.promises.rm(path.join(translationWiki, '声音', `${roleId}-音色提示词.md`), { force: true }),
+  ])
+  return writeVideoTranslationIndex(runId, episodeId, remainingRoles)
 }

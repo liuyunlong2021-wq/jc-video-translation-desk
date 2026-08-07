@@ -5,6 +5,7 @@ import {
   buildSeedAudioRequest,
   detectScriptLanguage,
   planSeedAudioArrangement,
+  seedAudioErrorMessage,
   seedLinesFromScript,
 } from './seedAudio.ts'
 
@@ -49,6 +50,13 @@ test('rejects more than three references and references on a base voice', () => 
         references: [{ speaker: 'a' }],
       }),
     /基准音不能携带参考音/,
+  )
+})
+
+test('surfaces the Seed Audio server error body', () => {
+  assert.equal(
+    seedAudioErrorMessage(400, { error: { message: 'invalid reference speaker' } }),
+    'Seed Audio 请求失败 (400)：invalid reference speaker',
   )
 })
 

@@ -3,7 +3,7 @@
     <section class="translation-preview">
       <header>
         <div>
-          <h2>{{ showRoles ? '翻译字幕确认' : '字幕工作台' }}</h2>
+          <h2>{{ showRoles ? '字幕工作台' : '成片工作台' }}</h2>
           <p>{{ previewCaption }}</p>
         </div>
       </header>

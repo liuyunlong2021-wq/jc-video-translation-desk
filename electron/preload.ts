@@ -100,8 +100,12 @@ contextBridge.exposeInMainWorld('electron', {
     ) => ipcRenderer.invoke('material-write-episode-subtitles', runId, episodeId, language, cues),
     translateSubtitles: (params: import('./types').TranslateSubtitlesParams) =>
       ipcRenderer.invoke('cloud-translate-subtitles', params),
-    selectSeedReferenceAudio: (runId: string, episodeId: string, speakerId: string) =>
-      ipcRenderer.invoke('media-select-seed-reference', runId, episodeId, speakerId),
+    selectSeedReferenceAudio: (
+      runId: string,
+      episodeId: string,
+      speakerId: string,
+      workflow?: 'content-create' | 'video-translation',
+    ) => ipcRenderer.invoke('media-select-seed-reference', runId, episodeId, speakerId, workflow),
     selectVideoTranslationSource: (runId: string, episodeId: string) =>
       ipcRenderer.invoke('video-translation-select-source', runId, episodeId),
     identifyVideoTranslationSpeakers: (
@@ -145,6 +149,19 @@ contextBridge.exposeInMainWorld('electron', {
       runId: string,
       role: import('../src/runtime/videoTranslation').TranslationRole,
     ) => ipcRenderer.invoke('video-translation-bind-voice', runId, role),
+    deleteVideoTranslationRole: (
+      runId: string,
+      episodeId: string,
+      roleId: string,
+      remainingRoles: import('../src/runtime/videoTranslation').TranslationRole[],
+    ) =>
+      ipcRenderer.invoke(
+        'video-translation-delete-role',
+        runId,
+        episodeId,
+        roleId,
+        remainingRoles,
+      ),
     writeVideoTranslationSeedPlan: (
       runId: string,
       episodeId: string,

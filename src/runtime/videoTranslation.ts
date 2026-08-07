@@ -48,6 +48,7 @@ export interface VideoTranslationState {
   seedArrangementPath?: string
   seedPromptPath?: string
   seedPromptText?: string
+  seedPromptGeneratedBySkill?: boolean
   targetVoicePath?: string
   vocalPath?: string
   instrumentPath?: string
@@ -261,7 +262,8 @@ export function availableVideoTranslationActions(
       cue.translationRoleId &&
       roleById.get(cue.translationRoleId)?.voiceProfileId,
   )
-  if (dialogueReady && actionable(state.arrangementStatus)) actions.push('arrange-doubao-voice')
+  if (dialogueReady && (actionable(state.arrangementStatus) || state.voiceStatus === 'failed'))
+    actions.push('arrange-doubao-voice')
   if (state.arrangementStatus === 'ready' && actionable(state.voiceStatus))
     actions.push('generate-target-voice')
   if (actionable(state.separationStatus)) actions.push('separate-source-audio')
@@ -373,6 +375,9 @@ export function planVideoTranslationSeed(
     lines: cues.map((cue) => ({
       speakerId: cue.translationRoleId,
       text: cue.translatedText.trim(),
+      emotion: cue.evidence?.trim()
+        ? `依据原片证据表演：${cue.evidence.trim()}`
+        : '根据原片语义、角色关系和标点自然表演，禁止中性朗读',
       startMs: cue.startMs,
       endMs: cue.endMs,
     })),
@@ -392,7 +397,7 @@ export function planVideoTranslationSeed(
       `只生成${targetLanguage}的干净对白人声。禁止音乐、环境声、动作音效、旁白补写和额外台词。严格按毫秒时间窗留白，不改写台词。`,
       ...task.lines.map(
         (line) =>
-          `- ${line.startMs}-${line.endMs}ms | ${roleById.get(line.speakerId!)?.displayName || line.speakerId}: ${line.text}`,
+          `- ${line.startMs}-${line.endMs}ms | ${roleById.get(line.speakerId!)?.displayName || line.speakerId}（${line.emotion || '按剧情自然表演'}）：${line.text}`,
       ),
       '',
     ]),

@@ -97,6 +97,7 @@ import {
   writeSeedAudioArrangement,
 } from './seed-audio'
 import {
+  deleteVideoTranslationRole,
   selectVideoTranslationSource,
   generateVideoTranslationTargetVoice,
   writeConfirmedVideoTranslation,
@@ -303,8 +304,8 @@ export default function initIPC() {
     ),
   )
   ipcMain.handle('material-generate-srt', (_event, params) => generateMaterialTranscript(params))
-  ipcMain.handle('media-select-seed-reference', (_event, runId, episodeId, speakerId) =>
-    selectSeedReferenceAudio(runId, episodeId, speakerId),
+  ipcMain.handle('media-select-seed-reference', (_event, runId, episodeId, speakerId, workflow) =>
+    selectSeedReferenceAudio(runId, episodeId, speakerId, workflow),
   )
   ipcMain.handle('material-analyze-video', (_event, params) => analyzeMaterialVideo(params))
   ipcMain.handle(
@@ -341,6 +342,11 @@ export default function initIPC() {
   )
   ipcMain.handle('video-translation-bind-voice', (_event, runId, role) =>
     writeTranslationVoiceBinding(runId, role),
+  )
+  ipcMain.handle(
+    'video-translation-delete-role',
+    (_event, runId, episodeId, roleId, remainingRoles) =>
+      deleteVideoTranslationRole(runId, episodeId, roleId, remainingRoles),
   )
   ipcMain.handle(
     'video-translation-write-seed-plan',

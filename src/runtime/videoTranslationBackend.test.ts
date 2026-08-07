@@ -123,6 +123,52 @@ test('upload cancellation changes nothing and upload preserves the original sour
   )
 })
 
+test('stores uploaded translation reference audio inside the translation sandbox', async () => {
+  selectedFile = path.join(root, 'reference.wav')
+  fs.writeFileSync(selectedFile, 'reference-audio')
+  const result = await workspace.selectSeedReferenceAudio(
+    projectId,
+    episodeId,
+    'role-1',
+    'video-translation',
+  )
+  assert.match(result!.path, /^episodes\/episode-001\/video-translate\/seed-audio\/uploads\//)
+  assert.doesNotThrow(() =>
+    workspace.assertVideoTranslationAsset(projectId, episodeId, result!.path),
+  )
+})
+
+test('deletes a translation role from shared state and translation Wiki only', async () => {
+  const role = {
+    translationRoleId: 'role-delete',
+    displayName: '误建角色',
+    aliases: [],
+    sourceEpisodeIds: [episodeId],
+    status: 'confirmed' as const,
+  }
+  await workspace.saveMediaState(
+    projectId,
+    episodeId,
+    JSON.stringify({ runId: projectId, episodeId, stage: 'draft', videoTranslationRoles: [role] }),
+  )
+  const translationWiki = path.join(projectRoot, 'wiki', '翻译')
+  for (const file of [
+    path.join(translationWiki, '角色', 'role-delete.md'),
+    path.join(translationWiki, '声音', 'role-delete.md'),
+    path.join(translationWiki, '声音', 'role-delete-音色提示词.md'),
+  ]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, 'temporary')
+  }
+
+  await translation.deleteVideoTranslationRole(projectId, episodeId, role.translationRoleId, [])
+
+  const shared = JSON.parse(fs.readFileSync(path.join(projectRoot, 'shared-state.json'), 'utf8'))
+  assert.deepEqual(shared.videoTranslationRoles, [])
+  assert.equal(fs.existsSync(path.join(translationWiki, '角色', 'role-delete.md')), false)
+  assert.equal(fs.existsSync(path.join(projectRoot, 'voice-library')), false)
+})
+
 test('accepts any extension when ffprobe confirms a real video stream', async () => {
   selectedFile = path.join(root, 'source.uncommon-container')
   fs.writeFileSync(selectedFile, Buffer.from('video-bytes'))

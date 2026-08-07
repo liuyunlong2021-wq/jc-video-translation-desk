@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import axios from 'axios'
 import { app, safeStorage } from 'electron'
 import { generateUniqueFileName } from './lib/tools.ts'
@@ -20,11 +21,13 @@ import {
   type SeedAudioReference,
   type SeedAudioLine,
   alignSeedDialogue,
+  seedAudioErrorMessage,
 } from '../src/runtime/seedAudio.ts'
 import type { MaterialTranscript } from '../src/runtime/productionContract.ts'
 
 const KEY_FILE = 'seed-audio-api-key.bin'
 const DEFAULT_URL = 'https://openspeech.bytedance.com/api/v3/tts/create'
+const VOICE_CLONE_URL = 'https://openspeech.bytedance.com/api/v3/tts/voice_clone'
 const DEFAULT_MODEL = 'seed-audio-1.0'
 let sessionApiKey = ''
 
@@ -129,6 +132,36 @@ async function saveResponseAudio(data: any, target: string, abortSignal?: AbortS
   }
 }
 
+export async function registerSeedAudioSpeaker(sourceAudioPath: string, language: 'zh' | 'en' = 'zh') {
+  const apiKey = await readSeedAudioApiKey()
+  const audio = await fs.promises.readFile(sourceAudioPath)
+  if (audio.byteLength > 10 * 1024 * 1024) throw new Error('参考音超过豆包音色训练的 10MB 限制')
+  const extension = path.extname(sourceAudioPath).toLowerCase().replace('.', '') || 'wav'
+  const response = await axios.post(
+    VOICE_CLONE_URL,
+    {
+      speaker_id: '',
+      audio: { data: audio.toString('base64'), format: extension },
+      language: language === 'en' ? 1 : 0,
+      extra_params: { voice_clone_denoise_model_id: '' },
+    },
+    {
+      timeout: 300_000,
+      headers: {
+        'X-Api-Key': apiKey,
+        'X-Api-Request-Id': randomUUID(),
+        'Content-Type': 'application/json',
+      },
+    },
+  )
+  const data = response.data?.data || response.data
+  if (Number(data?.code || response.data?.code || 0) !== 0)
+    throw new Error(seedAudioErrorMessage(response.status, data))
+  const providerSpeakerId = String(data?.speaker_id || '').trim()
+  if (!providerSpeakerId) throw new Error('豆包音色注册没有返回 speaker_id')
+  return providerSpeakerId
+}
+
 export async function generateSeedAudio(params: GenerateSeedAudioParams) {
   const apiKey = await readSeedAudioApiKey()
   const references = params.references
@@ -144,14 +177,21 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
   await ensureEpisodeDir(params.runId, params.episodeId)
   const directory = path.dirname(outputPath({ ...params, outputName: 'probe' }))
   await fs.promises.mkdir(directory, { recursive: true })
-  const response = await axios.post(process.env.SEED_AUDIO_URL || DEFAULT_URL, payload, {
-    timeout: 300_000,
-    signal: params.abortSignal,
-    headers: {
-      'X-Api-Key': apiKey,
-      'Content-Type': 'application/json',
-    },
-  })
+  let response
+  try {
+    response = await axios.post(process.env.SEED_AUDIO_URL || DEFAULT_URL, payload, {
+      timeout: 300_000,
+      signal: params.abortSignal,
+      headers: {
+        'X-Api-Key': apiKey,
+        'Content-Type': 'application/json',
+      },
+    })
+  } catch (error) {
+    const detail = (error as any)?.response
+    if (detail?.status) throw new Error(seedAudioErrorMessage(detail.status, detail.data))
+    throw error
+  }
   const mp3Path = outputPath(params)
   await saveResponseAudio(response.data, mp3Path, params.abortSignal)
   const wavPath = mp3Path.replace(/\.mp3$/i, '.wav')
