@@ -6,17 +6,28 @@ import { promisify } from 'node:util'
 import { dialog } from 'electron'
 import {
   assertVideoTranslationAsset,
+  assertVideoTranslationSource,
   ensureEpisodeDir,
   getRunDir,
   mediaDuration,
   removeSharedVideoTranslationRole,
   relativeRunAsset,
 } from './media-workspace.ts'
-import type { TranslationRole, VideoTranslationCue } from '../src/runtime/videoTranslation.ts'
-import { validateConfirmedTranslation } from '../src/runtime/videoTranslation.ts'
-import type { SeedAudioArrangement } from '../src/runtime/seedAudio.ts'
-import { generateSeedAudio, mixSeedAudioTracks } from './seed-audio.ts'
-import type { VideoTranslationUploadResult } from './types.ts'
+import type {
+  TranslationRole,
+  VideoTranslationCue,
+  VideoTranslationDialogueArrangement,
+  VideoTranslationVoiceVersion,
+} from '../src/runtime/videoTranslation.ts'
+import {
+  alignDialogueBlockWords,
+  validateConfirmedTranslation,
+  validateVideoTranslationDialoguePrompt,
+} from '../src/runtime/videoTranslation.ts'
+import { generateSeedAudio } from './seed-audio.ts'
+import { runFasterWhisper } from './material-transcript.ts'
+import { executeFFmpeg } from './ffmpeg/index.ts'
+import type { VideoTranslationMasterUploadResult, VideoTranslationUploadResult } from './types.ts'
 import { appendVideoTranslationTrace } from './video-translation-trace.ts'
 
 const runFile = promisify(execFile)
@@ -25,20 +36,44 @@ const translationWrites = new Map<string, Promise<unknown>>()
 async function probeVideo(filePath: string) {
   const { stdout } = await runFile(
     process.env.FFPROBE_PATH || 'ffprobe',
-    ['-v', 'error', '-show_entries', 'stream=codec_type:format=duration', '-of', 'json', filePath],
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'stream=codec_type,width,height,avg_frame_rate:format=duration',
+      '-of',
+      'json',
+      filePath,
+    ],
     { maxBuffer: 1024 * 1024 },
   )
   const value = JSON.parse(stdout) as {
     format?: { duration?: string }
-    streams?: Array<{ codec_type?: string }>
+    streams?: Array<{
+      codec_type?: string
+      width?: number
+      height?: number
+      avg_frame_rate?: string
+    }>
   }
   const durationMs = Math.round(Number(value.format?.duration) * 1000)
   const streams = value.streams || []
   const hasVideo = streams.some((stream) => stream.codec_type === 'video')
   const hasAudio = streams.some((stream) => stream.codec_type === 'audio')
+  const video = streams.find((stream) => stream.codec_type === 'video')
   if (!hasVideo || !Number.isFinite(durationMs) || durationMs <= 0)
     throw new Error('上传文件不是可读取的视频')
-  return { durationMs, hasAudio }
+  const [numerator, denominator] = String(video?.avg_frame_rate || '')
+    .split('/')
+    .map(Number)
+  const fps = denominator ? numerator / denominator : numerator
+  return {
+    durationMs,
+    hasAudio,
+    width: Number(video?.width) || 0,
+    height: Number(video?.height) || 0,
+    fps: Number.isFinite(fps) ? fps : 0,
+  }
 }
 
 function safeId(value: string, label: string) {
@@ -150,6 +185,44 @@ export async function selectVideoTranslationSource(
   }
 }
 
+export async function selectVideoTranslationFinalMaster(
+  runId: string,
+  episodeId: string,
+  sourceVideoPath: string,
+): Promise<VideoTranslationMasterUploadResult | null> {
+  safeId(episodeId, '剧集 ID')
+  const source = assertVideoTranslationSource(runId, episodeId, sourceVideoPath)
+  const sourceInfo = await probeVideo(source)
+  const selected = await dialog.showOpenDialog({
+    title: '上传无字幕成片母版',
+    properties: ['openFile'],
+  })
+  const chosen = selected.filePaths[0]
+  if (selected.canceled || !chosen) return null
+  const stat = await fs.promises.stat(chosen)
+  if (!stat.isFile() || !stat.size) throw new Error('视频文件不可读')
+  const chosenInfo = await probeVideo(chosen)
+  if (!chosenInfo.hasAudio) throw new Error('无字幕成片母版必须包含可分离的音轨')
+  if (
+    Math.abs(chosenInfo.durationMs - sourceInfo.durationMs) > 250 ||
+    chosenInfo.width !== sourceInfo.width ||
+    chosenInfo.height !== sourceInfo.height ||
+    Math.abs(chosenInfo.fps - sourceInfo.fps) > 0.01
+  )
+    throw new Error('无字幕成片母版与识别视频不是同一剪辑')
+  const fingerprint = await fileHash(chosen)
+  const extension = path.extname(chosen).toLowerCase()
+  const episodeDir = await ensureEpisodeDir(runId, episodeId)
+  const controlled = path.join(episodeDir, 'video-translate', `final-master${extension}`)
+  await atomicCopy(chosen, controlled)
+  return {
+    finalMasterVideoPath: relativeRunAsset(runId, controlled),
+    finalMasterFingerprint: fingerprint,
+    durationMs: chosenInfo.durationMs,
+    hasAudio: chosenInfo.hasAudio,
+  }
+}
+
 export async function writeVideoTranslationContext(
   runId: string,
   episodeId: string,
@@ -235,23 +308,26 @@ export async function writeVideoTranslationSeedPlan(
   runId: string,
   episodeId: string,
   targetLanguage: string,
-  arrangement: SeedAudioArrangement,
+  arrangement: VideoTranslationDialogueArrangement,
   promptMarkdown: string,
 ) {
   safeId(episodeId, '剧集 ID')
   const language = safeLanguage(targetLanguage)
   if (
-    !arrangement?.tasks?.length ||
-    arrangement.tasks.some(
-      (task) => task.includeMusicAndEffects || task.references.length > 3 || !task.lines.length,
+    !arrangement?.blocks?.length ||
+    arrangement.blocks.some(
+      (block) =>
+        block.references.length > 3 ||
+        !block.lines.length ||
+        block.lines.some((line) => !line.cueId || !line.speakerId || !line.text.trim()),
     )
   )
-    throw new Error('视频翻译豆包配音安排无效')
+    throw new Error('视频翻译连续对白安排无效')
   if (!promptMarkdown.trim() || Buffer.byteLength(promptMarkdown, 'utf8') > 2 * 1024 * 1024)
     throw new Error('豆包语音稿无效')
   const base = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, language)
-  const arrangementPath = path.join(base, '豆包配音安排.json')
-  const promptPath = path.join(base, '豆包语音稿.md')
+  const arrangementPath = path.join(base, '连续对白安排.json')
+  const promptPath = path.join(base, '连续对白导演稿.md')
   await Promise.all([
     atomicWrite(arrangementPath, `${JSON.stringify(arrangement, null, 2)}\n`),
     atomicWrite(promptPath, `${promptMarkdown.trim()}\n`),
@@ -262,7 +338,7 @@ export async function writeVideoTranslationSeedPlan(
   }
 }
 
-function taskPrompts(markdown: string) {
+function blockPrompts(markdown: string) {
   return new Map(
     markdown
       .split(/^##\s+/m)
@@ -276,151 +352,406 @@ function taskPrompts(markdown: string) {
   )
 }
 
+function voiceVersionId(prefix: string, value: string) {
+  return `${prefix}-${createHash('sha256').update(value).digest('hex').slice(0, 12)}`
+}
+
+export async function listVideoTranslationVoiceVersions(
+  runId: string,
+  episodeId: string,
+  targetLanguage: string,
+): Promise<VideoTranslationVoiceVersion[]> {
+  safeId(episodeId, '剧集 ID')
+  const language = safeLanguage(targetLanguage)
+  const base = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, language)
+  const readJson = (filePath: string) =>
+    fs.promises
+      .readFile(filePath, 'utf8')
+      .then(JSON.parse)
+      .catch(() => null)
+  const continuousRecord = await readJson(path.join(base, '连续对白生成记录.json'))
+  const versions: VideoTranslationVoiceVersion[] = Array.isArray(continuousRecord?.versions)
+    ? continuousRecord.versions.filter(
+        (version: VideoTranslationVoiceVersion) =>
+          version?.versionId && version.previewPath && version.targetVoicePath,
+      )
+    : []
+  const usedPreviewPaths = new Set(versions.map((version) => version.previewPath))
+  const continuousTimeline = await readJson(path.join(base, '连续对白时间轴.json'))
+  const continuousGeneration = [...(continuousRecord?.generations || [])]
+    .reverse()
+    .find((generation: any) => generation?.wavPath && !usedPreviewPaths.has(generation.wavPath))
+  if (continuousGeneration && continuousTimeline?.targetVoicePath)
+    versions.push({
+      versionId: voiceVersionId(
+        'continuous-legacy',
+        `${continuousGeneration.createdAt}:${continuousGeneration.wavPath}`,
+      ),
+      kind: 'continuous',
+      createdAt: continuousGeneration.createdAt || new Date(0).toISOString(),
+      prompt: continuousGeneration.prompt || '',
+      previewPath: continuousGeneration.wavPath,
+      targetVoicePath: continuousTimeline.targetVoicePath,
+      blockAudioPaths: [continuousGeneration.wavPath],
+      durationMs: Math.round(Number(continuousGeneration.duration || 0) * 1000),
+      model: continuousGeneration.model,
+    })
+  const timelineRecord = await readJson(path.join(base, '声音生成记录.json'))
+  const timeline = await readJson(path.join(base, '目标人声时间轴.json'))
+  for (const generation of timelineRecord?.generations || []) {
+    if (!generation?.wavPath || usedPreviewPaths.has(generation.wavPath)) continue
+    versions.push({
+      versionId: voiceVersionId('timeline-legacy', `${generation.createdAt}:${generation.wavPath}`),
+      kind: 'timeline',
+      createdAt: generation.createdAt || new Date(0).toISOString(),
+      prompt: generation.prompt || '',
+      previewPath: generation.wavPath,
+      targetVoicePath: timeline?.targetVoicePath || generation.wavPath,
+      blockAudioPaths: [generation.wavPath],
+      durationMs: Math.round(Number(generation.duration || 0) * 1000),
+      model: generation.model,
+    })
+  }
+  const available: VideoTranslationVoiceVersion[] = []
+  for (const version of versions) {
+    const [preview, target] = await Promise.all(
+      [version.previewPath, version.targetVoicePath].map((value) =>
+        fs.promises.stat(assertVideoTranslationAsset(runId, episodeId, value)).catch(() => null),
+      ),
+    )
+    if (preview?.size && target?.size) available.push(version)
+  }
+  return available.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+}
+
 export async function generateVideoTranslationTargetVoice(
   runId: string,
   episodeId: string,
   targetLanguage: string,
+  options: { forceNewVersion?: boolean } = {},
   abortSignal?: AbortSignal,
-) {
+  reportProgress: (message: string) => void = () => {},
+): Promise<VideoTranslationVoiceVersion> {
   safeId(episodeId, '剧集 ID')
   const language = safeLanguage(targetLanguage)
   const base = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, language)
   const arrangement = JSON.parse(
-    await fs.promises.readFile(path.join(base, '豆包配音安排.json'), 'utf8'),
-  ) as SeedAudioArrangement
-  const prompts = taskPrompts(await fs.promises.readFile(path.join(base, '豆包语音稿.md'), 'utf8'))
-  if (!arrangement?.tasks?.length) throw new Error('豆包配音安排无效')
-  const recordPath = path.join(base, '声音生成记录.json')
+    await fs.promises.readFile(path.join(base, '连续对白安排.json'), 'utf8'),
+  ) as VideoTranslationDialogueArrangement
+  const promptMarkdown = await fs.promises.readFile(path.join(base, '连续对白导演稿.md'), 'utf8')
+  const prompts = blockPrompts(promptMarkdown)
+  if (!arrangement?.blocks?.length) throw new Error('连续对白安排无效')
+  const recordPath = path.join(base, '连续对白生成记录.json')
   const readRecord = () =>
     fs.promises
       .readFile(recordPath, 'utf8')
       .then((value) => JSON.parse(value))
-      .catch(() => ({ schemaVersion: 1, generations: [] })) as {
+      .catch(() => ({ schemaVersion: 2, generations: [], versions: [] })) as {
       schemaVersion?: number
       generations?: unknown[]
-      tasks?: Record<string, { fingerprint: string; path: string }>
+      versions?: Array<VideoTranslationVoiceVersion & { fingerprint?: string }>
+      pending?: {
+        versionId: string
+        fingerprint: string
+        createdAt: string
+        tasks: Record<string, { fingerprint: string; path: string; durationMs: number }>
+      }
     }
-  const record = await readRecord()
-  const generated: string[] = []
-  const timelines: Array<{
-    taskId: string
-    audioPath: string
-    durationMs: number
-    cues: Array<{
-      cueId: string
-      text: string
-      expectedStartMs: number
-      expectedEndMs: number
-      observedStartMs: number
-      observedEndMs: number
-    }>
+  let record = await readRecord()
+  const generationFingerprint = createHash('sha256')
+    .update(JSON.stringify({ language, arrangement, promptMarkdown }))
+    .digest('hex')
+  const completed = [...(record.versions || [])]
+    .reverse()
+    .find((version) => version.fingerprint === generationFingerprint)
+  if (!options.forceNewVersion && completed) return completed
+  const pending =
+    !options.forceNewVersion && record.pending?.fingerprint === generationFingerprint
+      ? record.pending
+      : {
+          versionId: `voice-${Date.now()}-${randomUUID().slice(0, 8)}`,
+          fingerprint: generationFingerprint,
+          createdAt: new Date().toISOString(),
+          tasks: {},
+        }
+  if (record.pending?.versionId !== pending.versionId) {
+    record.pending = pending
+    record.schemaVersion = 2
+    await atomicWrite(recordPath, `${JSON.stringify(record, null, 2)}\n`)
+  }
+  const versionId = safeId(pending.versionId, '声音版本 ID')
+  const alignedCues: Array<{
+    blockId: string
+    cueId: string
+    speakerId: string
+    text: string
+    expectedStartMs: number
+    expectedEndMs: number
+    observedStartMs: number
+    observedEndMs: number
+    clipPath: string
+    warning?: string
   }> = []
-  record.tasks ||= {}
-  for (const task of arrangement.tasks) {
+  const nextCueStartById = new Map<string, number>()
+  const allLines = arrangement.blocks.flatMap((block) => block.lines)
+  for (let index = 0; index < allLines.length - 1; index++)
+    nextCueStartById.set(allLines[index].cueId, allLines[index + 1].expectedStartMs)
+  const blockAudioPaths: string[] = []
+  let previewDurationMs = 0
+  for (let blockIndex = 0; blockIndex < arrangement.blocks.length; blockIndex++) {
+    const block = arrangement.blocks[blockIndex]
     if (abortSignal?.aborted) throw new Error('任务已停止')
-    const prompt = prompts.get(task.taskId)
-    if (!prompt) throw new Error(`${task.taskId} 缺少已保存豆包语音稿`)
-    if (task.includeMusicAndEffects || task.references.length > 3)
-      throw new Error(`${task.taskId} 不是纯人声翻译任务`)
+    const prompt = prompts.get(block.blockId)
+    if (!prompt) throw new Error(`${block.blockId} 缺少已保存连续对白导演稿`)
+    if (block.references.length > 3) throw new Error(`${block.blockId} 超过三个角色参考音`)
+    validateVideoTranslationDialoguePrompt(prompt, block)
     const fingerprint = createHash('sha256')
       .update(
         JSON.stringify({
           targetLanguage: language,
-          taskId: task.taskId,
-          startMs: task.startMs,
-          endMs: task.endMs,
-          speakerIds: task.speakerIds,
-          lines: task.lines,
-          references: task.references.map(({ speakerId, voiceProfileId, apiSpeakerId }) => ({
+          blockId: block.blockId,
+          speakerIds: block.speakerIds,
+          lines: block.lines,
+          references: block.references.map(({ speakerId, voiceProfileId }) => ({
             speakerId,
             voiceProfileId,
-            apiSpeakerId,
           })),
           prompt,
         }),
       )
       .digest('hex')
-    const checkpoint = record.tasks[task.taskId]
-    let taskAudioPath = ''
-    let taskDurationMs = 0
+    const checkpoint = pending.tasks[block.blockId]
+    let blockAudioPath = ''
+    let blockDurationMs = 0
     if (checkpoint?.fingerprint === fingerprint) {
       const existing = assertVideoTranslationAsset(runId, episodeId, checkpoint.path)
       if ((await fs.promises.stat(existing).catch(() => null))?.size) {
-        taskAudioPath = existing
-        taskDurationMs = Math.round((await mediaDuration(existing)) * 1000)
+        blockAudioPath = existing
+        blockDurationMs = Math.round((await mediaDuration(existing)) * 1000)
       }
     }
-    if (!taskAudioPath) {
+    if (!blockAudioPath) {
+      reportProgress(`正在生成连续对白 ${blockIndex + 1}/${arrangement.blocks.length}`)
       const result = await generateSeedAudio({
         runId,
         episodeId,
         workflow: 'video-translation',
         targetLanguage: language,
-        mode: 'timeline-voice',
-        durationMs: task.endMs - task.startMs,
+        mode: 'dialogue-performance',
+        durationMs: Math.max(
+          1_000,
+          block.lines.reduce((total, line) => total + line.expectedEndMs - line.expectedStartMs, 0),
+        ),
         prompt,
         language: language === 'zh' ? 'zh' : 'en',
-        references: task.references,
-        outputName: task.taskId,
+        references: block.references,
+        outputName: `${versionId}-${block.blockId}`,
         abortSignal,
       })
-      taskAudioPath = result.path
-      taskDurationMs = Math.round(result.duration * 1000)
+      blockAudioPath = result.path
+      blockDurationMs = Math.round(result.duration * 1000)
     }
-    const taskRelativePath = relativeRunAsset(runId, taskAudioPath)
+    const blockRelativePath = relativeRunAsset(runId, blockAudioPath)
+    blockAudioPaths.push(blockRelativePath)
+    previewDurationMs += blockDurationMs
     if (!checkpoint || checkpoint.fingerprint !== fingerprint) {
       const latestRecord = await readRecord()
-      latestRecord.tasks ||= {}
-      latestRecord.tasks[task.taskId] = {
+      latestRecord.pending = pending
+      latestRecord.pending.tasks[block.blockId] = {
         fingerprint,
-        path: taskRelativePath,
+        path: blockRelativePath,
+        durationMs: blockDurationMs,
       }
       await atomicWrite(recordPath, `${JSON.stringify(latestRecord, null, 2)}\n`)
     }
-    const cues = task.lines.map((line, index) => {
-      const startMs = line.startMs as number
-      const endMs = line.endMs as number
-      return {
-        cueId: `${task.taskId}-line-${String(index + 1).padStart(3, '0')}`,
+    const recognitionPath = path.join(
+      base,
+      '连续对白版本',
+      versionId,
+      '识别',
+      `${block.blockId}-whisper.json`,
+    )
+    const cachedRecognition = await fs.promises
+      .readFile(recognitionPath, 'utf8')
+      .then(JSON.parse)
+      .catch(() => null)
+    let recognition = cachedRecognition
+    if (cachedRecognition?.fingerprint !== fingerprint) {
+      reportProgress(`正在识别连续对白 ${blockIndex + 1}/${arrangement.blocks.length}`)
+      recognition = { fingerprint, ...(await runFasterWhisper(blockAudioPath, abortSignal)) }
+    }
+    if (!Array.isArray(recognition.words) || !recognition.words.length)
+      throw new Error(`${block.blockId} 没有识别到单词时间`)
+    if (cachedRecognition?.fingerprint !== fingerprint)
+      await atomicWrite(recognitionPath, `${JSON.stringify(recognition, null, 2)}\n`)
+    const alignment = alignDialogueBlockWords(block.lines, recognition.words, blockDurationMs)
+    reportProgress(`正在对齐并裁剪对白 ${blockIndex + 1}/${arrangement.blocks.length}`)
+    const alignmentByCue = new Map(alignment.map((item) => [item.cueId, item]))
+    for (let index = 0; index < block.lines.length; index++) {
+      const line = block.lines[index]
+      const observed = alignmentByCue.get(line.cueId)!
+      safeId(line.cueId, 'Cue ID')
+      const clip = path.join(
+        getRunDir(runId),
+        'episodes',
+        episodeId,
+        'video-translate',
+        language,
+        '连续对白片段',
+        versionId,
+        `${line.cueId}.wav`,
+      )
+      await fs.promises.mkdir(path.dirname(clip), { recursive: true })
+      await executeFFmpeg(
+        [
+          '-ss',
+          String(observed.observedStartMs / 1000),
+          '-to',
+          String(observed.observedEndMs / 1000),
+          '-i',
+          blockAudioPath,
+          '-ar',
+          '48000',
+          '-ac',
+          '2',
+          '-c:a',
+          'pcm_s16le',
+          '-y',
+          clip,
+        ],
+        { abortSignal },
+      )
+      const actualEndMs = line.expectedStartMs + observed.observedEndMs - observed.observedStartMs
+      const nextStartMs = nextCueStartById.get(line.cueId)
+      alignedCues.push({
+        blockId: block.blockId,
+        cueId: line.cueId,
+        speakerId: line.speakerId,
         text: line.text,
-        expectedStartMs: startMs,
-        expectedEndMs: endMs,
-        observedStartMs: startMs,
-        observedEndMs: endMs,
-      }
-    })
-    timelines.push({
-      taskId: task.taskId,
-      audioPath: taskRelativePath,
-      durationMs: taskDurationMs,
-      cues,
-    })
-    generated.push(taskAudioPath)
+        expectedStartMs: line.expectedStartMs,
+        expectedEndMs: line.expectedEndMs,
+        observedStartMs: observed.observedStartMs,
+        observedEndMs: observed.observedEndMs,
+        clipPath: relativeRunAsset(runId, clip),
+        ...(nextStartMs != null && actualEndMs > nextStartMs + 1_000
+          ? { warning: `目标人声超过下一句起点 ${actualEndMs - nextStartMs}ms` }
+          : {}),
+      })
+    }
   }
-  const durationMs = Math.max(...arrangement.tasks.map((task) => task.endMs))
-  const targetVoicePath = await mixSeedAudioTracks(
-    runId,
+  let previewPath = blockAudioPaths[0]
+  if (blockAudioPaths.length > 1) {
+    const preview = path.join(
+      getRunDir(runId),
+      'episodes',
+      episodeId,
+      'video-translate',
+      language,
+      '连续对白版本',
+      versionId,
+      '原始连续对白.wav',
+    )
+    const previewInputs = blockAudioPaths.map((value) =>
+      assertVideoTranslationAsset(runId, episodeId, value),
+    )
+    await fs.promises.mkdir(path.dirname(preview), { recursive: true })
+    await executeFFmpeg([
+      ...previewInputs.flatMap((input) => ['-i', input]),
+      '-filter_complex',
+      `${previewInputs.map((_, index) => `[${index}:a]`).join('')}concat=n=${previewInputs.length}:v=0:a=1[out]`,
+      '-map',
+      '[out]',
+      '-ar',
+      '48000',
+      '-ac',
+      '2',
+      '-c:a',
+      'pcm_s16le',
+      '-y',
+      preview,
+    ])
+    previewPath = relativeRunAsset(runId, preview)
+  }
+  const target = path.join(
+    getRunDir(runId),
+    'episodes',
     episodeId,
-    generated,
-    durationMs,
-    'video-translation',
+    'video-translate',
     language,
-    abortSignal,
+    '连续对白版本',
+    versionId,
+    '对齐目标人声.wav',
+  )
+  await fs.promises.mkdir(path.dirname(target), { recursive: true })
+  const inputs = alignedCues.map((cue) =>
+    assertVideoTranslationAsset(runId, episodeId, cue.clipPath),
+  )
+  const filters = inputs.map((_, index) => {
+    const delay = alignedCues[index].expectedStartMs
+    return `[${index}:a]aresample=48000,adelay=${delay}|${delay}[a${index}]`
+  })
+  filters.push(
+    `${inputs.map((_, index) => `[a${index}]`).join('')}amix=inputs=${inputs.length}:duration=longest:normalize=0,apad,atrim=0:${arrangement.durationMs / 1000}[out]`,
+  )
+  reportProgress('正在把对白贴回原片时间轴')
+  await executeFFmpeg(
+    [
+      ...inputs.flatMap((input) => ['-i', input]),
+      '-filter_complex',
+      filters.join(';'),
+      '-map',
+      '[out]',
+      '-ar',
+      '48000',
+      '-ac',
+      '2',
+      '-c:a',
+      'pcm_s16le',
+      '-y',
+      target,
+    ],
+    { abortSignal },
+  )
+  const targetVoicePath = relativeRunAsset(runId, target)
+  await atomicWrite(
+    path.join(base, '连续对白版本', versionId, '对齐.json'),
+    `${JSON.stringify({ schemaVersion: 1, targetLanguage: language, cues: alignedCues }, null, 2)}\n`,
   )
   await atomicWrite(
-    path.join(base, '目标人声时间轴.json'),
+    path.join(base, '连续对白版本', versionId, '时间轴.json'),
     `${JSON.stringify(
       {
         schemaVersion: 1,
         targetLanguage: language,
         targetVoicePath,
-        tasks: timelines,
+        durationMs: arrangement.durationMs,
+        cues: alignedCues,
       },
       null,
       2,
     )}\n`,
   )
-  return targetVoicePath
+  const version: VideoTranslationVoiceVersion & { fingerprint: string } = {
+    versionId,
+    kind: 'continuous',
+    createdAt: pending.createdAt,
+    prompt: promptMarkdown.trim(),
+    previewPath,
+    targetVoicePath,
+    blockAudioPaths,
+    durationMs: previewDurationMs,
+    model: 'seed-audio-1.0',
+    fingerprint: generationFingerprint,
+  }
+  record = await readRecord()
+  record.schemaVersion = 2
+  record.versions = [
+    ...(record.versions || []).filter((item) => item.versionId !== versionId),
+    version,
+  ]
+  if (record.pending?.versionId === versionId) delete record.pending
+  await atomicWrite(recordPath, `${JSON.stringify(record, null, 2)}\n`)
+  return version
 }
 
 async function videoTranslationIndexFiles(

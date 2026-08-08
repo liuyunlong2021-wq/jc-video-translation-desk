@@ -382,6 +382,7 @@ export interface VideoTranslationSpeakerDraft {
   evidence: string
   ocrText: string
   needsReview: boolean
+  suspectedMissing?: boolean
 }
 
 export interface VideoTranslationContextSource {
@@ -394,6 +395,13 @@ export interface VideoTranslationUploadResult {
   sourceVideoPath: string
   rawSnapshotPath: string
   sourceFingerprint: string
+  durationMs: number
+  hasAudio: boolean
+}
+
+export interface VideoTranslationMasterUploadResult {
+  finalMasterVideoPath: string
+  finalMasterFingerprint: string
   durationMs: number
   hasAudio: boolean
 }

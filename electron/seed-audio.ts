@@ -1,6 +1,5 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
 import axios from 'axios'
 import { app, safeStorage } from 'electron'
 import { generateUniqueFileName } from './lib/tools.ts'
@@ -27,7 +26,6 @@ import type { MaterialTranscript } from '../src/runtime/productionContract.ts'
 
 const KEY_FILE = 'seed-audio-api-key.bin'
 const DEFAULT_URL = 'https://openspeech.bytedance.com/api/v3/tts/create'
-const VOICE_CLONE_URL = 'https://openspeech.bytedance.com/api/v3/tts/voice_clone'
 const DEFAULT_MODEL = 'seed-audio-1.0'
 let sessionApiKey = ''
 
@@ -103,9 +101,15 @@ function outputPath(params: GenerateSeedAudioParams) {
     /[^A-Za-z0-9_-]/g,
     '-',
   )
-  const directory = params.workflow === 'video-translation'
-    ? path.join(getEpisodeDir(params.runId, params.episodeId), 'video-translate', safeLanguage(params.targetLanguage), 'seed-audio')
-    : path.join(getEpisodeDir(params.runId, params.episodeId), 'seed-audio')
+  const directory =
+    params.workflow === 'video-translation'
+      ? path.join(
+          getEpisodeDir(params.runId, params.episodeId),
+          'video-translate',
+          safeLanguage(params.targetLanguage),
+          params.mode === 'dialogue-performance' ? '连续对白块' : 'seed-audio',
+        )
+      : path.join(getEpisodeDir(params.runId, params.episodeId), 'seed-audio')
   const target = path.join(directory, `${safeName}.mp3`)
   return params.workflow === 'video-translation' ? target : generateUniqueFileName(target)
 }
@@ -132,41 +136,24 @@ async function saveResponseAudio(data: any, target: string, abortSignal?: AbortS
   }
 }
 
-export async function registerSeedAudioSpeaker(sourceAudioPath: string, language: 'zh' | 'en' = 'zh') {
-  const apiKey = await readSeedAudioApiKey()
-  const audio = await fs.promises.readFile(sourceAudioPath)
-  if (audio.byteLength > 10 * 1024 * 1024) throw new Error('参考音超过豆包音色训练的 10MB 限制')
-  const extension = path.extname(sourceAudioPath).toLowerCase().replace('.', '') || 'wav'
-  const response = await axios.post(
-    VOICE_CLONE_URL,
-    {
-      speaker_id: '',
-      audio: { data: audio.toString('base64'), format: extension },
-      language: language === 'en' ? 1 : 0,
-      extra_params: { voice_clone_denoise_model_id: '' },
-    },
-    {
-      timeout: 300_000,
-      headers: {
-        'X-Api-Key': apiKey,
-        'X-Api-Request-Id': randomUUID(),
-        'Content-Type': 'application/json',
-      },
-    },
-  )
-  const data = response.data?.data || response.data
-  if (Number(data?.code || response.data?.code || 0) !== 0)
-    throw new Error(seedAudioErrorMessage(response.status, data))
-  const providerSpeakerId = String(data?.speaker_id || '').trim()
-  if (!providerSpeakerId) throw new Error('豆包音色注册没有返回 speaker_id')
-  return providerSpeakerId
-}
-
 export async function generateSeedAudio(params: GenerateSeedAudioParams) {
   const apiKey = await readSeedAudioApiKey()
-  const references = params.references
-    ?.filter((reference) => reference.apiSpeakerId?.trim())
-    .map((reference) => ({ speaker: reference.apiSpeakerId! }))
+  const references = params.references?.length
+    ? await Promise.all(
+        params.references.map(async (reference) => {
+          const speaker = reference.voiceProfileId?.trim()
+          if (!speaker) throw new Error(`${reference.speakerId} 缺少产品 voiceProfileId`)
+          const audio = await fs.promises.readFile(reference.referenceAudioPath)
+          return {
+            speaker,
+            audio: {
+              data: audio.toString('base64'),
+              format: path.extname(reference.referenceAudioPath).slice(1).toLowerCase() || 'wav',
+            },
+          }
+        }),
+      )
+    : undefined
   const payload = buildSeedAudioRequest({
     mode: params.mode,
     language: params.language || 'zh',
@@ -195,18 +182,10 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
   const mp3Path = outputPath(params)
   await saveResponseAudio(response.data, mp3Path, params.abortSignal)
   const wavPath = mp3Path.replace(/\.mp3$/i, '.wav')
-  await executeFFmpeg([
-    '-i',
-    mp3Path,
-    '-ar',
-    '48000',
-    '-ac',
-    '2',
-    '-c:a',
-    'pcm_s16le',
-    '-y',
-    wavPath,
-  ], { abortSignal: params.abortSignal })
+  await executeFFmpeg(
+    ['-i', mp3Path, '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', '-y', wavPath],
+    { abortSignal: params.abortSignal },
+  )
   const duration = await mediaDuration(wavPath)
   const result = {
     path: wavPath,
@@ -216,9 +195,24 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
     responseDuration:
       Number(response.data?.duration || response.data?.original_duration || 0) || undefined,
   }
-  const recordPath = params.workflow === 'video-translation'
-    ? path.join(getRunDir(params.runId), 'wiki', '翻译', params.episodeId, safeLanguage(params.targetLanguage), '声音生成记录.json')
-    : path.join(getRunDir(params.runId), 'wiki', '声音', params.episodeId, 'seed-audio', '声音生成记录.json')
+  const recordPath =
+    params.workflow === 'video-translation'
+      ? path.join(
+          getRunDir(params.runId),
+          'wiki',
+          '翻译',
+          params.episodeId,
+          safeLanguage(params.targetLanguage),
+          params.mode === 'dialogue-performance' ? '连续对白生成记录.json' : '声音生成记录.json',
+        )
+      : path.join(
+          getRunDir(params.runId),
+          'wiki',
+          '声音',
+          params.episodeId,
+          'seed-audio',
+          '声音生成记录.json',
+        )
   const existing = await fs.promises
     .readFile(recordPath, 'utf8')
     .then(JSON.parse)
@@ -229,10 +223,9 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
       mode: params.mode,
       prompt: params.prompt,
       references:
-        params.references?.map(({ speakerId, voiceProfileId, apiSpeakerId }) => ({
+        params.references?.map(({ speakerId, voiceProfileId }) => ({
           speakerId,
           voiceProfileId,
-          apiSpeakerId,
         })) || [],
       wavPath: relativeRunAsset(params.runId, wavPath),
       mp3Path: relativeRunAsset(params.runId, mp3Path),
@@ -257,11 +250,18 @@ export async function mixSeedAudioTracks(
   abortSignal?: AbortSignal,
 ) {
   if (!audioPaths.length) throw new Error('没有可混合的 Seed Audio 音轨')
-  const assertAsset = workflow === 'video-translation' ? assertVideoTranslationAsset : assertEpisodeAsset
+  const assertAsset =
+    workflow === 'video-translation' ? assertVideoTranslationAsset : assertEpisodeAsset
   const inputs = audioPaths.map((audioPath) => assertAsset(runId, episodeId, audioPath))
-  const target = workflow === 'video-translation'
-    ? path.join(getEpisodeDir(runId, episodeId), 'video-translate', safeLanguage(targetLanguage), '目标人声.wav')
-    : path.join(getEpisodeDir(runId, episodeId), 'seed-audio', '完整声音轨.wav')
+  const target =
+    workflow === 'video-translation'
+      ? path.join(
+          getEpisodeDir(runId, episodeId),
+          'video-translate',
+          safeLanguage(targetLanguage),
+          '目标人声.wav',
+        )
+      : path.join(getEpisodeDir(runId, episodeId), 'seed-audio', '完整声音轨.wav')
   await fs.promises.mkdir(path.dirname(target), { recursive: true })
   if (inputs.length === 1) {
     await fs.promises.copyFile(inputs[0], target)

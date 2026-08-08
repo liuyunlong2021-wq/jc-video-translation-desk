@@ -207,6 +207,7 @@ export const useMediaTaskStore = defineStore(
         | 'project-director'
         | 'voice-plan'
         | 'seed-role-prompt'
+        | 'seed-global-prompt'
         | 'asset-prompt'
         | 'shot'
       value: any

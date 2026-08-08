@@ -27,15 +27,27 @@
                 : '描述你希望 AI 怎么修改当前全局配音提示词'
               : '描述你希望 AI 怎么修改当前内容'
           "
+          @update:model-value="revisionFeedback = null"
           @keydown.meta.enter.prevent="sendRevision"
           @keydown.ctrl.enter.prevent="sendRevision"
         />
+        <div v-if="mediaStore.busyAction === 'revision'" class="revision-feedback pending">
+          <v-progress-circular indeterminate size="16" width="2" />
+          <span>AI 正在修改当前内容，请稍候…</span>
+        </div>
+        <div
+          v-else-if="revisionFeedback"
+          class="revision-feedback"
+          :class="revisionFeedback.type"
+        >
+          {{ revisionFeedback.text }}
+        </div>
         <div class="revision-actions">
           <v-btn
             color="primary"
             size="small"
             :loading="mediaStore.busyAction === 'revision'"
-            :disabled="!revisionInstruction.trim()"
+            :disabled="Boolean(mediaStore.busyAction) || !revisionInstruction.trim()"
             @click="sendRevision"
             >确认修改</v-btn
           >
@@ -58,18 +70,19 @@
             >生成角色提示词</v-btn
           >
           <v-btn
+            v-if="!translationMode"
             color="success"
             prepend-icon="mdi-waveform"
             :loading="mediaStore.busyAction === 'generate-seed-references'"
             :disabled="Boolean(mediaStore.busyAction) || !allSeedRolePromptsReady"
             block
             @click="$emit('generateAllSeedReferences')"
-            >生成角色参考音</v-btn
+            >按提示词生成角色参考音</v-btn
           >
         </template>
         <template v-else>
           <strong>全局配音</strong>
-          <small>按已经确认的翻译字幕和角色参考音生成整集目标语言对白。</small>
+          <small>按确认字幕生成无时间戳连续对白，再识别裁剪并贴回原时间轴。</small>
           <small v-if="globalSeedDisabledReason" class="text-warning">{{
             globalSeedDisabledReason
           }}</small>
@@ -80,7 +93,7 @@
             :disabled="Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured"
             block
             @click="$emit('generateGlobalSeedPrompt')"
-            >生成全局配音提示词</v-btn
+            >生成连续对白导演稿</v-btn
           >
           <v-btn
             color="success"
@@ -93,8 +106,21 @@
             "
             block
             @click="$emit('generateGlobalSeedAudio')"
-            >{{ mediaStore.seedAudioTrackPath ? '重新生成全局配音' : '生成全局配音' }}</v-btn
+            >{{
+              mediaStore.seedAudioTrackPath ? '重新生成并对齐连续对白' : '生成并对齐连续对白'
+            }}</v-btn
           >
+          <v-alert
+            v-if="
+              translationMode && progressText && mediaStore.busyAction === 'generate-target-voice'
+            "
+            type="info"
+            density="compact"
+            variant="tonal"
+          >
+            <v-progress-linear indeterminate class="mb-2" />
+            {{ progressText }}
+          </v-alert>
           <v-btn
             v-if="translationMode"
             color="success"
@@ -224,7 +250,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useMediaTaskStore } from '@/store'
 import {
   buildGrokSequences,
@@ -278,7 +304,10 @@ const emit = defineEmits([
   'exportFinal',
 ])
 const mediaStore = useMediaTaskStore()
+const progressText = ref('')
 const revisionInstruction = ref('')
+const revisionPending = ref(false)
+const revisionFeedback = ref<{ type: 'success' | 'error'; text: string } | null>(null)
 const selectedShot = computed(() =>
   mediaStore.segments.find((item) => item.index === mediaStore.selectedShotIndex),
 )
@@ -308,10 +337,20 @@ const allSeedRolePromptsReady = computed(
 const globalSeedDisabledReason = computed(() => {
   if (translationMode && mediaStore.videoTranslationRoles.some((role) => !role.voiceProfileId))
     return '请先为全部角色绑定参考音。'
-  if (!mediaStore.seedAudioGlobalPrompt.trim()) return '下一步：生成全局配音提示词。'
-  if (!mediaStore.seedAudioTrackPath) return '下一步：生成全局配音。'
+  if (!mediaStore.seedAudioGlobalPrompt.trim()) return '下一步：生成连续对白导演稿。'
+  if (!mediaStore.seedAudioTrackPath) return '下一步：生成并对齐连续对白。'
   return ''
 })
+
+let stopTranslationProgress: (() => void) | undefined
+onMounted(() => {
+  if (!translationMode) return
+  stopTranslationProgress = window.electron.cloud.onVideoTranslationProgress((progress) => {
+    if (progress.runId === mediaStore.runId && progress.episodeId === mediaStore.episodeId)
+      progressText.value = progress.message
+  })
+})
+onBeforeUnmount(() => stopTranslationProgress?.())
 const selectedAsset = computed(() => {
   const id = mediaStore.selectedAssetId
   if (!id) return null
@@ -356,6 +395,13 @@ const revisionTarget = computed<{ type: RevisionTargetType; id: string } | null>
     return { type: 'project-director', id: 'project-director' }
   if (selectedSeedCharacter.value)
     return { type: 'seed-role-prompt', id: selectedSeedCharacter.value.id }
+  if (
+    translationMode &&
+    mediaStore.workspaceView === 'seed-voice' &&
+    mediaStore.seedVoiceTab === 'global' &&
+    mediaStore.seedAudioGlobalPrompt.trim()
+  )
+    return { type: 'seed-global-prompt', id: 'seed-global-prompt' }
   if (mediaStore.workflowStep === 'script') {
     if (mediaStore.script) return { type: 'script', id: 'script' }
   }
@@ -602,15 +648,40 @@ const displayError = computed(() =>
       ? '当前模型响应超时，内容尚未生成。请重试或切换其他文本模型。'
       : mediaStore.error.replace(/^Error invoking remote method '[^']+': Error:\s*/, ''),
 )
+watch(
+  () => mediaStore.busyAction,
+  (current, previous) => {
+    if (!revisionPending.value || previous !== 'revision' || current === 'revision') return
+    revisionPending.value = false
+    if (mediaStore.error) {
+      revisionFeedback.value = {
+        type: 'error',
+        text: `修改失败：${displayError.value || '请重试。'}`,
+      }
+      return
+    }
+    revisionInstruction.value = ''
+    revisionFeedback.value = { type: 'success', text: 'AI 修改已完成，结果已更新。' }
+  },
+)
 function sendRevision() {
   if (!revisionTarget.value || !revisionInstruction.value.trim()) return
+  if (mediaStore.busyAction) {
+    revisionFeedback.value = { type: 'error', text: '当前有其他任务正在执行，请稍后再试。' }
+    return
+  }
+  revisionPending.value = true
+  revisionFeedback.value = null
   emit(
     'requestRevision',
     revisionTarget.value.type,
     revisionTarget.value.id,
     revisionInstruction.value.trim(),
   )
-  revisionInstruction.value = ''
+  if (mediaStore.busyAction !== 'revision') {
+    revisionPending.value = false
+    revisionFeedback.value = { type: 'error', text: '修改任务未能启动，请重试。' }
+  }
 }
 type DubbingAction = {
   key: string
@@ -793,7 +864,7 @@ function runSecondary() {
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   border: 1px solid rgba(21, 122, 53, 0.3);
   border-radius: 6px;
   overflow: hidden;
@@ -818,6 +889,22 @@ function runSecondary() {
 }
 .revision-actions {
   padding: 0 10px 10px;
+}
+.revision-feedback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.revision-feedback.pending {
+  color: rgb(var(--v-theme-primary));
+}
+.revision-feedback.success {
+  color: rgb(var(--v-theme-success));
+}
+.revision-feedback.error {
+  color: rgb(var(--v-theme-error));
 }
 .operation-empty {
   flex: 1;

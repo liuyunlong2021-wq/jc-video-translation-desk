@@ -2,12 +2,17 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 import {
+  alignDialogueBlockWords,
   availableVideoTranslationActions,
   createVideoTranslationState,
+  findUncoveredSpeechIntervals,
+  insertVideoTranslationCueAt,
   invalidateVideoTranslation,
-  planVideoTranslationSeed,
+  planVideoTranslationDialogueBlocks,
   splitTimedSubtitleText,
+  setVideoTranslationCueBoundary,
   validateConfirmedTranslation,
+  validateVideoTranslationDialoguePrompt,
   type TranslationRole,
 } from './videoTranslation.ts'
 
@@ -133,6 +138,38 @@ test('invalidates only translation state and preserves source separation where p
   assert.equal(next.instrumentPath, 'instrument.wav')
   assert.equal(next.finalStatus, 'stale')
   assert.equal(state.finalStatus, 'ready')
+
+  const voicePromptChanged = invalidateVideoTranslation(state, 'voice-prompt')
+  assert.equal(voicePromptChanged.arrangementStatus, 'stale')
+  assert.equal(voicePromptChanged.voiceStatus, 'stale')
+  assert.equal(voicePromptChanged.separationStatus, 'ready')
+})
+
+test('changing only the final master preserves subtitles and target voice', () => {
+  const state = createVideoTranslationState()
+  Object.assign(state, {
+    finalMasterVideoPath: 'episodes/episode-001/video-translate/final-master.mp4',
+    speakerStatus: 'ready',
+    translationStatus: 'ready',
+    reviewStatus: 'ready',
+    arrangementStatus: 'ready',
+    voiceStatus: 'ready',
+    separationStatus: 'ready',
+    mixStatus: 'ready',
+    finalStatus: 'ready',
+    targetVoicePath: 'voice.wav',
+    vocalPath: 'vocal.wav',
+    instrumentPath: 'instrument.wav',
+    mixedPath: 'mixed.wav',
+    finalVideoPath: 'final.mp4',
+  })
+  const next = invalidateVideoTranslation(state, 'final-master-video')
+  assert.equal(next.reviewStatus, 'ready')
+  assert.equal(next.voiceStatus, 'ready')
+  assert.equal(next.targetVoicePath, 'voice.wav')
+  assert.equal(next.separationStatus, 'stale')
+  assert.equal(next.vocalPath, undefined)
+  assert.equal(next.finalVideoPath, undefined)
 })
 
 test('invalidates translated text when the selected language changes', () => {
@@ -199,6 +236,63 @@ test('keeps translated text when only the role binding changes', () => {
   assert.equal(next.cues[0].translatedText, 'Hello')
 })
 
+test('adds, splits, and adjusts subtitles from the video playhead without overlap', () => {
+  const cues = [
+    {
+      cueId: 'cue-1',
+      startMs: 1000,
+      endMs: 2000,
+      recognizedText: 'one',
+      sourceText: 'one',
+      translatedText: '',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+    {
+      cueId: 'cue-2',
+      startMs: 3000,
+      endMs: 4000,
+      recognizedText: 'two',
+      sourceText: 'two',
+      translatedText: '',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+  ]
+  const inserted = insertVideoTranslationCueAt(cues, 5000, 2500, 'manual-1')
+  assert.equal(inserted.mode, 'insert')
+  assert.deepEqual([inserted.cue.startMs, inserted.cue.endMs], [2500, 3000])
+  const split = insertVideoTranslationCueAt(cues, 5000, 1500, 'manual-2')
+  assert.equal(split.mode, 'split')
+  assert.deepEqual(
+    split.cues.slice(0, 2).map((cue) => [cue.startMs, cue.endMs]),
+    [
+      [1000, 1500],
+      [1500, 2000],
+    ],
+  )
+  assert.equal(
+    setVideoTranslationCueBoundary(cues, 'cue-2', 'start', 2500).find(
+      (cue) => cue.cueId === 'cue-2',
+    )?.startMs,
+    2500,
+  )
+  assert.throws(() => setVideoTranslationCueBoundary(cues, 'cue-2', 'start', 1500), /上一条字幕/)
+})
+
+test('marks only speech portions not covered by Gemini subtitle cues', () => {
+  assert.deepEqual(
+    findUncoveredSpeechIntervals(
+      [{ startMs: 1200, endMs: 1800 }],
+      [{ startMs: 500, endMs: 2500, recognizedText: 'whisper candidate' }],
+    ),
+    [
+      { startMs: 500, endMs: 1200, recognizedText: 'whisper candidate' },
+      { startMs: 1800, endMs: 2500, recognizedText: 'whisper candidate' },
+    ],
+  )
+})
+
 test('requires ordered confirmed cues and known translation roles', () => {
   const cue = {
     cueId: 'cue-001',
@@ -216,7 +310,7 @@ test('requires ordered confirmed cues and known translation roles', () => {
   )
 })
 
-test('plans pure target-language Seed tasks with at most three references', () => {
+test('deterministically splits continuous dialogue before a fourth reference', () => {
   const roles = Array.from(
     { length: 4 },
     (_, index): TranslationRole => ({
@@ -236,7 +330,7 @@ test('plans pure target-language Seed tasks with at most three references', () =
     evidence: index === 0 ? '角色听到拒绝后压着怒意追问' : undefined,
     needsReview: false,
   }))
-  const plan = planVideoTranslationSeed(
+  const plan = planVideoTranslationDialogueBlocks(
     'episode-001',
     4000,
     'English',
@@ -246,39 +340,135 @@ test('plans pure target-language Seed tasks with at most three references', () =
       speakerId: item.translationRoleId,
       voiceProfileId: item.voiceProfileId,
       referenceAudioPath: `/voice/${item.voiceProfileId}.wav`,
-      apiSpeakerId: item.voiceProfileId,
     })),
   )
-  assert.ok(plan.arrangement.tasks.every((task) => task.references.length <= 3))
-  assert.ok(plan.arrangement.tasks.every((task) => !task.includeMusicAndEffects))
-  assert.match(plan.promptMarkdown, /禁止音乐、环境声、动作音效/)
-  assert.match(plan.promptMarkdown, /压着怒意追问/)
-  assert.match(plan.promptMarkdown, /情绪|自然表演/)
+  assert.deepEqual(
+    plan.arrangement.blocks.map((block) => block.cueIds),
+    [['cue-1', 'cue-2', 'cue-3'], ['cue-4']],
+  )
+  assert.ok(plan.arrangement.blocks.every((block) => block.references.length <= 3))
+  assert.equal(
+    plan.arrangement.blocks[0].lines[0].performanceEvidence,
+    '角色听到拒绝后压着怒意追问',
+  )
+  assert.doesNotMatch(plan.promptMarkdown, /ms|时间窗/)
 })
 
-test('keeps product voice IDs independent from provider speaker IDs', () => {
-  const source = fs.readFileSync(new URL('../../src/views/Home/index.vue', import.meta.url), 'utf8')
-  assert.doesNotMatch(
-    source.slice(
-      source.indexOf('async function currentTranslationSeedPlan()'),
-      source.indexOf('async function generateTranslationSeedPrompt('),
-    ),
-    /尚未注册为 Seed 云端 speaker/,
+test('aligns confirmed lines to generated dialogue word timestamps in order', () => {
+  const aligned = alignDialogueBlockWords(
+    [
+      {
+        cueId: 'cue-1',
+        speakerId: 'role-1',
+        text: 'I trusted you.',
+        expectedStartMs: 5_000,
+        expectedEndMs: 6_000,
+      },
+      {
+        cueId: 'cue-2',
+        speakerId: 'role-2',
+        text: "You don't understand.",
+        expectedStartMs: 8_000,
+        expectedEndMs: 9_000,
+      },
+    ],
+    [
+      { word: 'I', start: 0.2, end: 0.3 },
+      { word: 'trusted', start: 0.31, end: 0.7 },
+      { word: 'you', start: 0.71, end: 0.9 },
+      { word: 'You', start: 1.2, end: 1.35 },
+      { word: "don't", start: 1.36, end: 1.55 },
+      { word: 'understand', start: 1.56, end: 2.0 },
+    ],
+    2_100,
   )
+  assert.deepEqual(
+    aligned.map((cue) => [cue.cueId, cue.observedStartMs, cue.observedEndMs]),
+    [
+      ['cue-1', 120, 1020],
+      ['cue-2', 1120, 2100],
+    ],
+  )
+})
+
+test('fails alignment instead of inventing timing when a line has no matched words', () => {
+  assert.throws(() =>
+    alignDialogueBlockWords(
+      [
+        {
+          cueId: 'cue-1',
+          speakerId: 'role-1',
+          text: 'Completely different',
+          expectedStartMs: 0,
+          expectedEndMs: 1_000,
+        },
+      ],
+      [{ word: 'hello', start: 0, end: 0.4 }],
+      500,
+    ),
+  )
+})
+
+test('accepts canonical role names with optional voice traits before Seed generation', () => {
+  const block = {
+    blockId: 'dialogue-block-001',
+    cueIds: ['cue-1'],
+    speakerIds: ['role-1'],
+    references: [
+      {
+        speakerId: 'role-1',
+        referenceAudioPath: 'reference.wav',
+        label: '林夏 · 青年女声、美式英语',
+      },
+    ],
+    lines: [
+      {
+        cueId: 'cue-1',
+        speakerId: 'role-1',
+        text: 'I know what you did.',
+        expectedStartMs: 0,
+        expectedEndMs: 1_000,
+      },
+    ],
+  }
+  assert.doesNotThrow(() =>
+    validateVideoTranslationDialoguePrompt(
+      '林夏饰演者为@音频1。\n\n林夏先压住愤怒，最后一个词明显加重：“I know what you did.”',
+      block,
+    ),
+  )
+  assert.doesNotThrow(() =>
+    validateVideoTranslationDialoguePrompt(
+      '林夏是青年女性，medium-high pitch，声线清亮，饰演者为@音频1。\n\n林夏先压住愤怒，最后一个词明显加重：“I know what you did.”',
+      block,
+    ),
+  )
+  assert.throws(
+    () =>
+      validateVideoTranslationDialoguePrompt(
+        '林夏饰演者为@音频1，全程保持固定音色，不能串音。\n\n林夏愤怒地说：“I know what you did.”',
+        block,
+      ),
+    /压制自然表演/,
+  )
+})
+
+test('uses voiceProfileId as the only reference voice identity', () => {
+  const source = fs.readFileSync(new URL('../../src/views/Home/index.vue', import.meta.url), 'utf8')
   assert.match(
     source,
-    /目标语言为英文时，所有导演说明、角色说明、情绪、强度、语速、停顿、重音、时间说明、禁止项和参考音映射说明必须使用中文/,
+    /无时间戳连续对白[\s\S]*正式英文台词逐字保留[\s\S]*不要输出绝对时间、目标总时长、cue ID/,
   )
   const skill = fs.readFileSync(
     new URL('../../skills/jc-doubao-seed-audio/SKILL.md', import.meta.url),
     'utf8',
   )
-  assert.match(skill, /产品身份与供应商传输身份严格分离/)
-  assert.match(skill, /不能阻塞本 Skill/)
+  assert.match(skill, /`voiceProfileId` 是唯一声音 ID/)
+  assert.match(skill, /参考音文件由产品在正式声音请求中直接传入/)
   assert.match(skill, /目标语言为英文时，正式英文台词必须逐字保留英文原文/)
   assert.match(
     skill,
-    /所有导演说明、角色说明、情绪、强度、语速、停顿、重音、时间说明、禁止项和参考音映射说明统一使用中文/,
+    /无时间戳连续对白提示词[\s\S]*不写绝对时间、目标总时长、cue ID、low、medium、high/,
   )
 })
 
@@ -288,11 +478,19 @@ test('routes translation review through voice workbench before a role-free subti
   const inspector = read('src/views/Home/components/VideoTranslationInspector.vue')
   const sidebar = read('src/views/Home/components/VideoTranslationSidebar.vue')
   const manage = read('src/views/Home/components/VideoManage.vue')
+  const render = read('src/views/Home/components/VideoRender.vue')
   const home = read('src/views/Home/index.vue')
   assert.match(home, /value="content-create"[\s\S]*value="video-translate"/)
   assert.match(home, /VideoTranslationWorkspace/)
   assert.match(home, /VideoTranslationInspector/)
   assert.match(home, /jc-doubao-seed-audio/)
+  assert.match(home, /voiceDesignPrompt/)
+  assert.match(
+    home,
+    /seedAudioRolePrompts\[reference\.speakerId\]\?\.trim\(\)[\s\S]*reference\.voiceDesignPrompt/,
+  )
+  assert.match(home, /isVideoTranslation\.value[\s\S]*saveTranslationSeedRolePrompt/)
+  assert.match(home, /上次输出未通过产品校验/)
   assert.match(inspector, /onVideoTranslationProgress/)
   assert.match(inspector, /v-progress-linear/)
   assert.match(
@@ -313,7 +511,8 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(inspector, /!mediaStore\.runId/)
   assert.match(home, /请先新建或打开项目，再上传视频/)
   for (const action of [
-    '上传视频',
+    '上传识别视频',
+    '上传无字幕成片母版',
     '扒片',
     '翻译所有字幕',
     '进入配音工作台',
@@ -332,14 +531,77 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(home, /roles: mediaStore\.videoTranslationRoles\.map/)
   assert.match(home, /sourceText: speaker\.correctedText/)
   assert.match(home, /invalidateVideoTranslation\(state, 'source-dialogue'\)/)
-  assert.match(inspector, /补充漏识别台词/)
+  assert.match(inspector, /播放头字幕编辑/)
+  assert.match(inspector, /在当前位置新增字幕/)
+  assert.match(inspector, /从当前位置拆分字幕/)
   assert.match(inspector, /manual-cue-/)
   assert.match(sidebar, /mdi-delete-outline/)
   assert.match(home, /@delete-role="deleteTranslationRole"/)
   assert.match(home, /deleteVideoTranslationRole/)
   assert.match(home, /JSON\.parse\([\s\S]*videoTranslationRoles\.filter/)
   assert.match(manage, /translationRolePreview/)
+  assert.match(manage, /label="当前参考音"/)
+  assert.match(manage, /:items="voiceProfiles"/)
+  assert.match(manage, />上传参考音<\/v-btn/)
+  assert.match(manage, />按提示词生成参考音<\/v-btn/)
+  assert.doesNotMatch(
+    manage,
+    /重新生成参考音|seed-voice-candidates|v-for="profile in voiceProfiles"/,
+  )
+  assert.match(render, /v-if="!translationMode"[\s\S]*>按提示词生成角色参考音<\/v-btn/)
+  for (const label of ['连续对白实验', '连续对白导演稿', '连续对白版本', '当前使用版本'])
+    assert.match(manage, new RegExp(label))
+  assert.match(manage, /activeTranslationVoiceVersion/)
+  assert.match(home, /selectTranslationVoiceVersion/)
+  assert.match(home, /version\.targetVoicePath/)
   assert.match(manage, /const previewSecond = \(cue\.startMs \+ cue\.endMs\) \/ 2000/)
   assert.match(home, /approvedScript: approvedScript \|\| sample/)
+  assert.match(home, /outputName: `voice-\$\{speakerId\}-\$\{Date\.now\(\)\}`/)
   assert.match(home, /speakerId,[\s\S]*'video-translation'/)
+})
+
+test('reference voice generation always creates from the prompt before binding', () => {
+  const home = fs.readFileSync(new URL('../../src/views/Home/index.vue', import.meta.url), 'utf8')
+  const start = home.indexOf('async function generateSeedReferenceCore')
+  const end = home.indexOf('async function generateAllSeedReferences', start)
+  const generation = home.slice(start, end)
+  assert.match(generation, /generateSeedAudio\(\{[\s\S]*mode: 'voice-profile'/)
+  assert.match(generation, /outputName: `voice-\$\{speakerId\}-\$\{Date\.now\(\)\}`/)
+  assert.match(generation, /registerSeedReference\(speakerId, audio\.path\)/)
+  assert.doesNotMatch(generation, /episodes\/.*voice-\$\{speakerId\}\.wav/)
+  assert.doesNotMatch(generation, /references:/)
+})
+
+test('global dialogue prompt uses the existing AI revision box without clearing voice versions', () => {
+  const read = (file: string) => fs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8')
+  const render = read('src/views/Home/components/VideoRender.vue')
+  const home = read('src/views/Home/index.vue')
+  assert.match(render, /translationMode &&[\s\S]*seedVoiceTab === 'global'/)
+  assert.match(render, /return \{ type: 'seed-global-prompt', id: 'seed-global-prompt' \}/)
+  assert.match(render, /修改全局配音提示词/)
+  assert.match(render, /AI 正在修改当前内容，请稍候/)
+  assert.match(render, /修改失败：[\s\S]*AI 修改已完成，结果已更新/)
+  assert.match(render, /Boolean\(mediaStore\.busyAction\) \|\| !revisionInstruction\.trim\(\)/)
+  const translationRender = home.slice(
+    home.indexOf('<VideoRender\n              translation-mode'),
+    home.indexOf('/>', home.indexOf('<VideoRender\n              translation-mode')),
+  )
+  assert.match(translationRender, /@request-revision="requestRevision"/)
+  const submit = render.slice(
+    render.indexOf('function sendRevision()'),
+    render.indexOf('type DubbingAction'),
+  )
+  assert.doesNotMatch(submit, /revisionInstruction\.value = ''/)
+  assert.match(home, /confirmedTranslationCues:[\s\S]*referenceMappings:/)
+  assert.match(
+    home,
+    /proposal\.targetType === 'seed-global-prompt'[\s\S]*saveTranslationSeedGlobalPrompt/,
+  )
+  const helper = home.slice(
+    home.indexOf('async function saveTranslationSeedGlobalPrompt'),
+    home.indexOf('async function generateTranslationSeedPrompt'),
+  )
+  assert.match(helper, /writeVideoTranslationSeedPlan/)
+  assert.match(helper, /seedAudioGlobalPrompt = prompt/)
+  assert.doesNotMatch(helper, /voiceVersions\s*=|activeVoiceVersionId\s*=|seedAudioTrackPath\s*=/)
 })

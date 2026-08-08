@@ -24,7 +24,8 @@ VEO/Grok 继续按原分镜提示词生成原生声音。Seed 路线只在后期
 
 - Seed 官方客户端使用 `X-Api-Key`，支持安全存储和 `SEED_AUDIO_API_KEY` 环境变量；临时 URL 立即下载，Base64 为备用。
 - MP3 落盘后转换为 48kHz 双声道 WAV，并写 `声音生成记录.json`。
-- 产品自己的 `voiceProfileId` 是角色声音身份；Seed 基准音、声音设计和角色 `entityId` 写入项目声音 Wiki 并回链角色页。
+- 产品自己的 `voiceProfileId` 是唯一角色声音身份；Seed 基准音、声音设计和角色 `entityId` 写入项目声音 Wiki 并回链角色页。
+- 正式 Seed 请求直接携带当前选中的参考音文件；`references[].speaker` 固定使用对应的 `voiceProfileId`，不执行任何额外的声音注册步骤。
 - “整段配音安排”由确定性程序统计角色；每个任务最多三个角色，第四人起按每组三人拆为纯人声补充轨，最终由 FFmpeg 混合，不能静默丢角色。
 - 已确认的新合同把 `jc-doubao-seed-audio` 提升为独立“生成豆包语音稿”按钮，并将结果保存为可编辑 `声音导演稿.md`；该拆分尚待代码执行。
 - “生成完整声音轨”只读取用户当前保存的声音导演稿并调用 Seed Audio，不能在内部重新调用 Skill 覆盖用户修改；现有代码仍为按钮内部即时编译，属于待修正差异。
@@ -35,16 +36,16 @@ VEO/Grok 继续按原分镜提示词生成原生声音。Seed 路线只在后期
 
 ## 按钮与后端
 
-| 按钮 | 后端 | 主要产物 |
-|---|---|---|
-| 生成角色音色提示词 | `jc-voice-design` | 角色声音提示词、角色声音 Wiki |
-| 生成角色参考音 | `jc-doubao-seed-audio` + Seed API + 产品音色库 | 角色 `voiceProfileId`、基准音、角色声音 Wiki |
-| 整段配音安排 | `planSeedAudioArrangement` | `整段配音安排.json` |
-| 生成全局声音提示词 | `jc-doubao-seed-audio` | 全局声音导演稿输入记录 |
-| 生成豆包语音稿 | `jc-doubao-seed-audio` | 可编辑 `声音导演稿.md` |
-| 生成完整声音轨 | Seed API + FFmpeg + Faster-Whisper | `完整声音轨.wav`、生成记录、Whisper JSON、时间轴、SRT |
-| 分离完整声音轨的人声和背景声 | Spleeter | `vocal.wav`、`instrument.wav`、音频处理记录 |
-| 烧录配音和字幕 | FFmpeg | 本集成片和成片 Wiki |
+| 按钮                         | 后端                                           | 主要产物                                              |
+| ---------------------------- | ---------------------------------------------- | ----------------------------------------------------- |
+| 生成角色音色提示词           | `jc-voice-design`                              | 角色声音提示词、角色声音 Wiki                         |
+| 生成角色参考音               | `jc-doubao-seed-audio` + Seed API + 产品音色库 | 角色 `voiceProfileId`、基准音、角色声音 Wiki          |
+| 整段配音安排                 | `planSeedAudioArrangement`                     | `整段配音安排.json`                                   |
+| 生成全局声音提示词           | `jc-doubao-seed-audio`                         | 全局声音导演稿输入记录                                |
+| 生成豆包语音稿               | `jc-doubao-seed-audio`                         | 可编辑 `声音导演稿.md`                                |
+| 生成完整声音轨               | Seed API + FFmpeg + Faster-Whisper             | `完整声音轨.wav`、生成记录、Whisper JSON、时间轴、SRT |
+| 分离完整声音轨的人声和背景声 | Spleeter                                       | `vocal.wav`、`instrument.wav`、音频处理记录           |
+| 烧录配音和字幕               | FFmpeg                                         | 本集成片和成片 Wiki                                   |
 
 ## 唯一事实源
 
@@ -59,13 +60,24 @@ VEO/Grok 继续按原分镜提示词生成原生声音。Seed 路线只在后期
 
 ## 验证与边界
 
-- 原代码主链 `pnpm test`：`147/147` 通过，输出指纹 `sha256:7102f1031f66`。
+- 当前全量 `pnpm test`：`197/197` 通过。
 - `pnpm exec vue-tsc --noEmit` 与 `git diff --check`：通过。
 - 独立“生成豆包语音稿”按钮、Markdown 编辑和“完整声音轨只读该稿”的新合同已实现，并通过类型检查与运行时测试。
-- 尚未使用真实 Seed Audio Key 跑通付费请求、自动 Whisper 和完整成片，不写成真实端到端已验收。
-- 用户提供的官方资料只描述 `references[].speaker`，没有提供“上传本地基准音并注册 provider speaker ID”的接口。当前产品会保存并绑定自己的基准音和 `voiceProfileId`；只有档案中已有传输层 `providerSpeakerId` 时才向官方请求携带 `references`，否则使用已确认的文字声音设计，不能把产品角色 ID 伪装成官方 speaker ID。
+- 本次修复没有重新发起付费 Seed 请求；“请求直接携带参考音数据 + `voiceProfileId`”仍待用当前项目执行一次真实配音验收。
+- 参考音传输是一次正式 Seed 生成请求内的原子动作：请求同时携带音频数据、格式和对应 `voiceProfileId`。未取到当前参考音文件或 `voiceProfileId` 时必须在发起请求前失败，不得静默过滤角色参考音。
 - 无对白纯动作项目仍不属于本轮 Seed 声音优先路线的验收范围。
 
 ## 下一次进入
 
-先读 `docs/tdd/10-Seed Audio声音设计整段配音与完整声音轨TDD.md` 和本页，再用一个单人旁白项目、一个两至三人剧情项目分别完成真实 API 与成片验收。若火山补充参考音注册接口，再在主进程适配器中写入 `providerSpeakerId`，不改变产品 `voiceProfileId`。
+先读 `docs/tdd/10-Seed Audio声音设计整段配音与完整声音轨TDD.md` 和本页，再用一个单人旁白项目、一个两至三人剧情项目分别完成真实 API 与成片验收。验收时必须检查请求中每个参考音都携带当前文件数据，且 `speaker` 与产品 `voiceProfileId` 完全一致。
+
+## 2026-08-07 参考音身份最终合同
+
+- 来源角色：产品负责人当前会话确认。
+- 确认结论：`voiceProfileId` 是唯一声音 ID；参考音文件只在正式 Seed 生成请求中直接传入；不存在独立声音注册环节。
+- 实现来源：`electron/seed-audio.ts` `sha256:f7d366d218c03745c9144932cd17b9b700285f536cbc9caf255b2d1cf9634b29`；`electron/voice-library.ts` `sha256:73142fb886ee5eff0033e1f5a140e483304cb96d7dc7444e062ba3c806dd346c`；`src/runtime/seedAudio.ts` `sha256:663f98958a1d64b7b080586573d87adeec3e192aa5d10c1db0a51bfbdef5ec1e`。
+- UI 来源：`src/views/Home/components/VideoManage.vue` `sha256:76ad094ada9346743f9a562f4514f53a6e707c184dc6149aaa0a6fd84edf28a0`。
+- 执行规则：`skills/jc-doubao-seed-audio/SKILL.md` `sha256:91f5707f922374779d74ca60dd14060a79920b7e11a6a6b768fe5c6b7673a8a3`；`docs/tdd/13-视频翻译工作流TDD.md` `sha256:cf5fed4e99646226bbf0e27abfcca995fd6690240842f44a70498ad803b29c59`。
+- 验证：`pnpm test` `197/197`；`pnpm exec vue-tsc --noEmit`、`git diff --check`、macOS universal APP 签名与 DMG 构建通过；桌面实际显示风千雪当前参考音 `0:10`，旧参考音仍在下拉框可选。
+- 已处理范围：声音库保存与绑定、Seed 参考音请求、连续对白参考音传递、参考音试听、Skill、TDD 和研发 Wiki。
+- 记录时间：2026-08-07 23:03:32 CST。

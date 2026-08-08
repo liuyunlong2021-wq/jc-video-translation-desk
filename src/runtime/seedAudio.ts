@@ -1,12 +1,23 @@
-export type SeedAudioMode = 'voice-profile' | 'full-track' | 'timeline-voice'
+export type SeedAudioMode =
+  | 'voice-profile'
+  | 'dialogue-performance'
+  | 'full-track'
+  | 'timeline-voice'
 
 export interface SeedAudioReference {
   speakerId: string
   referenceAudioPath: string
   voiceProfileId?: string
-  apiSpeakerId?: string
   voiceDesignPrompt?: string
   label?: string
+}
+
+export interface SeedAudioRequestReference {
+  speaker: string
+  audio: {
+    data: string
+    format: string
+  }
 }
 
 export interface SeedAudioLine {
@@ -50,7 +61,7 @@ export interface SeedAudioPromptInput {
   language: string
   durationMs: number
   prompt: string
-  references?: Array<{ speaker: string }>
+  references?: SeedAudioRequestReference[]
 }
 
 export interface SeedScriptCharacter {
@@ -76,7 +87,7 @@ export interface SeedAudioRequestPayload {
     loudness_rate: number
   }
   watermark: Record<string, never>
-  references?: Array<{ speaker: string }>
+  references?: SeedAudioRequestReference[]
 }
 
 export function detectScriptLanguage(text: string): 'zh' | 'en' {
@@ -110,12 +121,18 @@ function finiteMs(value: unknown, label: string) {
 
 export function buildSeedAudioRequest(input: SeedAudioPromptInput): SeedAudioRequestPayload {
   const mode = input.mode
-  if (!['voice-profile', 'full-track', 'timeline-voice'].includes(mode))
+  if (!['voice-profile', 'dialogue-performance', 'full-track', 'timeline-voice'].includes(mode))
     throw new Error('Seed Audio 模式无效')
   if (!String(input.prompt || '').trim()) throw new Error('Seed Audio 提示词不能为空')
   const durationMs = Number(input.durationMs)
   if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error('Seed Audio 时长无效')
-  const references = input.references?.map((item) => ({ speaker: cleanId(item.speaker, '参考音') }))
+  const references = input.references?.map((item) => ({
+    speaker: cleanId(item.speaker, '参考音 ID'),
+    audio: {
+      data: cleanId(item.audio?.data, '参考音数据'),
+      format: cleanId(item.audio?.format, '参考音格式'),
+    },
+  }))
   if (references && references.length > 3) throw new Error('Seed Audio 最多支持 3 个参考音')
   if (mode === 'voice-profile' && references?.length) throw new Error('基准音不能携带参考音')
   return {

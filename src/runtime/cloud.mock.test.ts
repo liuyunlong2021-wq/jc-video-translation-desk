@@ -184,6 +184,30 @@ mock.module('node:child_process', {
     },
   },
 })
+mock.module('../../electron/video-translation-speech.ts', {
+  namedExports: {
+    prepareVideoTranslationSpeechEvidence: async () => ({
+      transcript: {
+        schemaVersion: 1,
+        mediaId: 'video-translation-source',
+        sourceMediaPath: 'wiki/翻译/episode-001/识别/vocal.wav',
+        durationMs: 12000,
+        cues: [
+          {
+            cueId: 'speech-1',
+            mediaId: 'video-translation-source',
+            startMs: 700,
+            endMs: 2400,
+            recognizedText: '你过来 我送你去',
+          },
+        ],
+      },
+      transcriptPath: 'wiki/翻译/episode-001/识别/source-whisper.json',
+      srtPath: 'wiki/翻译/episode-001/识别/source-whisper.srt',
+      evidencePath: 'wiki/翻译/episode-001/00-人声识别与漏句证据.md',
+    }),
+  },
+})
 
 process.env.APP_ROOT = process.cwd()
 const cloud = await import('../../electron/cloud.ts')
@@ -1489,7 +1513,7 @@ test('Gemini plans FFmpeg slices and each slice directly becomes the final dialo
   const prompt = content.find((part: any) => part.type === 'text').text
   assert.match(prompt, /FFmpeg 切片/)
   assert.match(prompt, /不得概括、跳过短句或把画面字幕忽略掉/)
-  assert.doesNotMatch(JSON.stringify(calibrationRequests), /Whisper/)
+  assert.match(JSON.stringify(calibrationRequests), /Whisper/)
   assert.match(progress.join('\n'), /片段 1\/1/)
   assert.match(progress.at(-1) || '', /04-最终稿\.md/)
 

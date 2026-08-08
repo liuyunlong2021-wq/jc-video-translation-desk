@@ -12,10 +12,12 @@
         ref="sourcePreview"
         class="source-preview"
         :class="{ 'full-width': !state.finalVideoPath }"
-        :src="fileUrl(state.sourceVideoPath)"
+        :src="fileUrl(previewVideoPath)"
         controls
         preload="metadata"
-        @timeupdate="stopAtSelectedEnd"
+        @play="armSelectedEnd"
+        @timeupdate="updatePlayhead"
+        @seeked="updatePlayhead"
       />
       <div v-else class="source-placeholder">
         <v-icon size="42">mdi-video-outline</v-icon><span>请从右栏上传视频</span>
@@ -28,7 +30,7 @@
         preload="metadata"
       />
     </section>
-    <div class="translation-table-wrap">
+    <div ref="tableWrap" class="translation-table-wrap">
       <table class="translation-table">
         <thead>
           <tr>
@@ -55,15 +57,18 @@
             <td>
               <strong>{{ formatTime(cue.startMs) }}</strong
               ><small>{{ formatTime(cue.endMs) }}</small>
+              <v-chip v-if="cue.suspectedMissing" size="x-small" color="warning" variant="tonal">
+                疑似漏句
+              </v-chip>
             </td>
             <td>
               <video
-                :src="`${fileUrl(state.sourceVideoPath!)}#t=${cue.startMs / 1000},${cue.endMs / 1000}`"
+                :src="`${fileUrl(previewVideoPath)}#t=${cue.startMs / 1000},${cue.endMs / 1000}`"
                 muted
                 preload="metadata"
               />
             </td>
-            <td v-if="showRoles" @click.stop>
+            <td v-if="showRoles" @click.stop="selectCue(cue.cueId)">
               <v-select
                 :model-value="cue.translationRoleId || ''"
                 :items="roleItems(cue)"
@@ -76,14 +81,16 @@
                 >置信度 {{ Math.round((cue.confidence || 0) * 100) }}%</small
               >
             </td>
-            <td @click.stop>
+            <td @click.stop="selectCue(cue.cueId)">
               <textarea
                 :value="cue.sourceText"
+                :data-cue-id="cue.cueId"
                 aria-label="原字幕"
+                :placeholder="cue.suspectedMissing ? cue.recognizedText : undefined"
                 @input="updateText(cue, 'sourceText', $event)"
               />
             </td>
-            <td @click.stop>
+            <td @click.stop="selectCue(cue.cueId)">
               <textarea
                 :value="cue.translatedText"
                 aria-label="译文字幕"
@@ -116,10 +123,12 @@ const props = withDefaults(defineProps<{ selectedCueId: string; showRoles?: bool
   showRoles: true,
 })
 const { showRoles } = props
-const emit = defineEmits<{ selectCue: [cueId: string] }>()
+const emit = defineEmits<{ selectCue: [cueId: string]; playhead: [playheadMs: number] }>()
 const mediaStore = useMediaTaskStore()
 const state = computed(() => mediaStore.videoTranslation!)
 const sourcePreview = ref<HTMLVideoElement>()
+const tableWrap = ref<HTMLDivElement>()
+const selectedEndMs = ref<number>()
 const selectedCue = computed(() =>
   state.value.cues.find((cue) => cue.cueId === props.selectedCueId),
 )
@@ -127,6 +136,11 @@ const previewCaption = computed(() =>
   state.value.sourceVideoPath
     ? `${Math.round(state.value.durationMs / 1000)} 秒 · ${state.value.cues.length} 条字幕`
     : '保持原片完整画面和时间轴',
+)
+const previewVideoPath = computed(() =>
+  !showRoles && state.value.finalMasterVideoPath
+    ? state.value.finalMasterVideoPath
+    : state.value.sourceVideoPath!,
 )
 
 function fileUrl(filePath: string) {
@@ -176,7 +190,9 @@ function bindRole(cue: VideoTranslationCue, value: string) {
   }
   const sameCandidate = cue.proposedName?.trim()
   state.value.cues
-    .filter((item) => item === cue || (sameCandidate && item.proposedName?.trim() === sameCandidate))
+    .filter(
+      (item) => item === cue || (sameCandidate && item.proposedName?.trim() === sameCandidate),
+    )
     .forEach((item) => {
       item.translationRoleId = roleId
       item.needsReview = false
@@ -190,13 +206,21 @@ function updateText(cue: VideoTranslationCue, key: 'sourceText' | 'translatedTex
 function selectCue(cueId: string) {
   emit('selectCue', cueId)
 }
-function stopAtSelectedEnd() {
-  if (
-    sourcePreview.value &&
-    selectedCue.value &&
-    sourcePreview.value.currentTime >= selectedCue.value.endMs / 1000
-  )
+function armSelectedEnd() {
+  const currentMs = Math.round((sourcePreview.value?.currentTime || 0) * 1000)
+  selectedEndMs.value =
+    selectedCue.value && Math.abs(currentMs - selectedCue.value.startMs) <= 150
+      ? selectedCue.value.endMs
+      : undefined
+}
+function updatePlayhead() {
+  if (!sourcePreview.value) return
+  const currentMs = Math.round(sourcePreview.value.currentTime * 1000)
+  emit('playhead', currentMs)
+  if (selectedEndMs.value !== undefined && currentMs >= selectedEndMs.value) {
     sourcePreview.value.pause()
+    selectedEndMs.value = undefined
+  }
 }
 watch(
   () => props.selectedCueId,
@@ -206,6 +230,14 @@ watch(
       sourcePreview.value.currentTime = selectedCue.value.startMs / 1000
   },
 )
+
+function focusSourceCue(cueId: string) {
+  void nextTick(() => {
+    tableWrap.value?.querySelector<HTMLTextAreaElement>(`textarea[data-cue-id="${cueId}"]`)?.focus()
+  })
+}
+
+defineExpose({ focusSourceCue })
 </script>
 
 <style scoped>

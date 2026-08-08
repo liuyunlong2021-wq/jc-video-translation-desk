@@ -4,6 +4,7 @@ import { validateMaterialTranscript } from './productionContract.ts'
 export interface WhisperOutput {
   duration: number
   segments: Array<{ start: number; end: number; text: string }>
+  words?: Array<{ word: string; start: number; end: number }>
 }
 
 export function normalizeWhisperOutput(

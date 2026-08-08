@@ -20,12 +20,30 @@ test('builds the official Seed Audio payload and preserves reference order', () 
     language: 'zh',
     durationMs: 12000,
     prompt: '角色A饰演者为@音频1，严格朗读确认台词。',
-    references: [{ speaker: 'ref-a' }, { speaker: 'ref-b' }],
+    references: [
+      { speaker: 'ref-a', audio: { data: 'YQ==', format: 'wav' } },
+      { speaker: 'ref-b', audio: { data: 'Yg==', format: 'mp3' } },
+    ],
   })
   assert.equal(payload.model, 'seed-audio-1.0')
   assert.equal(payload.audio_config.sample_rate, 48000)
-  assert.deepEqual(payload.references, [{ speaker: 'ref-a' }, { speaker: 'ref-b' }])
+  assert.deepEqual(payload.references, [
+    { speaker: 'ref-a', audio: { data: 'YQ==', format: 'wav' } },
+    { speaker: 'ref-b', audio: { data: 'Yg==', format: 'mp3' } },
+  ])
   assert.equal('duration' in payload, false)
+})
+
+test('accepts untimed dialogue performance without adding timing to the API payload', () => {
+  const payload = buildSeedAudioRequest({
+    mode: 'dialogue-performance',
+    language: 'en',
+    durationMs: 1,
+    prompt: 'Amy is @音频1. "I trusted you."',
+    references: [{ speaker: 'voice-amy', audio: { data: 'YQ==', format: 'wav' } }],
+  })
+  assert.equal(payload.text_prompt, 'Amy is @音频1. "I trusted you."')
+  assert.equal('durationMs' in payload, false)
 })
 
 test('rejects more than three references and references on a base voice', () => {
@@ -36,7 +54,10 @@ test('rejects more than three references and references on a base voice', () => 
         language: 'zh',
         durationMs: 1000,
         prompt: '内容',
-        references: [{ speaker: 'a' }, { speaker: 'b' }, { speaker: 'c' }, { speaker: 'd' }],
+        references: ['a', 'b', 'c', 'd'].map((speaker) => ({
+          speaker,
+          audio: { data: 'YQ==', format: 'wav' },
+        })),
       }),
     /最多支持 3 个参考音/,
   )
@@ -47,7 +68,7 @@ test('rejects more than three references and references on a base voice', () => 
         language: 'zh',
         durationMs: 1000,
         prompt: '内容',
-        references: [{ speaker: 'a' }],
+        references: [{ speaker: 'a', audio: { data: 'YQ==', format: 'wav' } }],
       }),
     /基准音不能携带参考音/,
   )

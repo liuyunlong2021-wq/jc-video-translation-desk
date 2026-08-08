@@ -1,6 +1,6 @@
 {
   "name": "short-video-factory",
-  "description": "点一点：分阶段生成文稿、统一配音、资产、分镜图、单镜头视频和最终成片",
+  "description": "视频翻译工作台：将已有视频制作成目标语言配音与字幕成片",
   "version": "1.2.2",
   "author": {
     "name": "YILS",

@@ -108,6 +108,17 @@ contextBridge.exposeInMainWorld('electron', {
     ) => ipcRenderer.invoke('media-select-seed-reference', runId, episodeId, speakerId, workflow),
     selectVideoTranslationSource: (runId: string, episodeId: string) =>
       ipcRenderer.invoke('video-translation-select-source', runId, episodeId),
+    selectVideoTranslationFinalMaster: (
+      runId: string,
+      episodeId: string,
+      sourceVideoPath: string,
+    ) =>
+      ipcRenderer.invoke(
+        'video-translation-select-final-master',
+        runId,
+        episodeId,
+        sourceVideoPath,
+      ),
     identifyVideoTranslationSpeakers: (
       params: import('./types').IdentifyVideoTranslationSpeakersParams,
     ) => ipcRenderer.invoke('video-translation-identify-speakers', params),
@@ -155,18 +166,12 @@ contextBridge.exposeInMainWorld('electron', {
       roleId: string,
       remainingRoles: import('../src/runtime/videoTranslation').TranslationRole[],
     ) =>
-      ipcRenderer.invoke(
-        'video-translation-delete-role',
-        runId,
-        episodeId,
-        roleId,
-        remainingRoles,
-      ),
+      ipcRenderer.invoke('video-translation-delete-role', runId, episodeId, roleId, remainingRoles),
     writeVideoTranslationSeedPlan: (
       runId: string,
       episodeId: string,
       targetLanguage: string,
-      arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement,
+      arrangement: import('../src/runtime/videoTranslation').VideoTranslationDialogueArrangement,
       promptMarkdown: string,
     ) =>
       ipcRenderer.invoke(
@@ -181,7 +186,17 @@ contextBridge.exposeInMainWorld('electron', {
       runId: string,
       episodeId: string,
       targetLanguage: string,
-    ) => ipcRenderer.invoke('video-translation-generate-voice', runId, episodeId, targetLanguage),
+      options?: { forceNewVersion?: boolean },
+    ) =>
+      ipcRenderer.invoke(
+        'video-translation-generate-voice',
+        runId,
+        episodeId,
+        targetLanguage,
+        options,
+      ),
+    listVideoTranslationVoiceVersions: (runId: string, episodeId: string, targetLanguage: string) =>
+      ipcRenderer.invoke('video-translation-list-voice-versions', runId, episodeId, targetLanguage),
     composeVideoTranslation: (params: import('./ffmpeg/types').ComposeVideoTranslationParams) =>
       ipcRenderer.invoke('video-translation-compose', params),
     composePictureMaster: (params: import('./ffmpeg/types').ComposePictureMasterParams) =>

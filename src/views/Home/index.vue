@@ -265,6 +265,8 @@
             translation-mode
             @upload-seed-reference="uploadTranslationSeedReference"
             @generate-seed-reference="generateTranslationSeedReference"
+            @edit-seed-role-prompt="editTranslationSeedRolePrompt"
+            @select-translation-voice-version="selectTranslationVoiceVersion"
           />
           <div class="inspector-column min-w-0 min-h-0 open">
             <VideoRender
@@ -274,6 +276,7 @@
               @generate-global-seed-prompt="arrangeTranslationVoice"
               @generate-global-seed-audio="generateTranslationVoice"
               @open-translation-subtitles="openTranslationSubtitleWorkspace"
+              @request-revision="requestRevision"
               @cancel="cancelWorkflow"
             />
           </div>
@@ -284,14 +287,18 @@
             @delete-role="deleteTranslationRole"
           />
           <VideoTranslationWorkspace
+            ref="translationWorkspaceRef"
             :selected-cue-id="selectedTranslationCueId"
             :show-roles="!isTranslationSubtitleWorkspace"
             @select-cue="selectedTranslationCueId = $event"
+            @playhead="translationPlayheadMs = $event"
           />
           <VideoTranslationInspector
             :selected-cue-id="selectedTranslationCueId"
+            :playhead-ms="translationPlayheadMs"
             @action="runTranslationAction"
             @select-cue="selectedTranslationCueId = $event"
+            @focus-cue="translationWorkspaceRef?.focusSourceCue($event)"
             @cancel="cancelWorkflow"
           />
         </template>
@@ -431,8 +438,10 @@ import {
 import {
   createVideoTranslationState,
   invalidateVideoTranslation,
-  planVideoTranslationSeed,
+  planVideoTranslationDialogueBlocks,
+  validateVideoTranslationDialoguePrompt,
   type VideoTranslationAction,
+  type VideoTranslationVoiceVersion,
   type TranslationRole,
 } from '@/runtime/videoTranslation'
 import type {
@@ -452,7 +461,9 @@ const inspectorOpen = ref(false)
 const dubbingRightOpen = ref(true)
 const taskDrawerOpen = ref(false)
 const textGenerateRef = ref<InstanceType<typeof TextGenerate> | null>(null)
+const translationWorkspaceRef = ref<InstanceType<typeof VideoTranslationWorkspace> | null>(null)
 const selectedTranslationCueId = ref('')
+const translationPlayheadMs = ref(0)
 const projects = ref<ProjectManifest[]>([])
 const projectSwitching = ref(false)
 const renameOpen = ref(false)
@@ -479,6 +490,13 @@ watch(
     if (translationEdition && !state) mediaStore.selectWorkspaceEntry('video-translate')
   },
   { immediate: true, flush: 'sync' },
+)
+watch(
+  () => [isTranslationVoiceWorkspace.value, mediaStore.runId, mediaStore.episodeId],
+  ([active]) => {
+    if (active) void loadTranslationVoiceVersions()
+  },
+  { immediate: true },
 )
 const leftPanelVisible = computed(() => mediaStore.workspaceView === 'script')
 const rightPanelVisible = computed(
@@ -1103,25 +1121,16 @@ async function generateSeedReferenceCore(speakerId: string) {
     `---\nentityType: seed-voice-prompt\nspeakerId: ${speakerId}\nlanguage: ${seedScriptLanguage()}\nstatus: ready\n---\n\n# ${asset.label} 音色提示词\n\n${prompt}\n`,
     promptDocument?.revision,
   )
-  let profile
-  try {
-    profile = await registerSeedReference(
-      speakerId,
-      `episodes/${mediaStore.episodeId}/seed-audio/voice-${speakerId}.wav`,
-    )
-  } catch (error) {
-    if (!/ENOENT|no such file/i.test(String(error))) throw error
-    const audio = await window.electron.cloud.generateSeedAudio({
-      runId: mediaStore.runId,
-      episodeId: mediaStore.episodeId,
-      mode: 'voice-profile',
-      durationMs: 10000,
-      prompt,
-      language: seedScriptLanguage(),
-      outputName: `voice-${speakerId}`,
-    })
-    profile = await registerSeedReference(speakerId, audio.path)
-  }
+  const audio = await window.electron.cloud.generateSeedAudio({
+    runId: mediaStore.runId,
+    episodeId: mediaStore.episodeId,
+    mode: 'voice-profile',
+    durationMs: 10000,
+    prompt,
+    language: seedScriptLanguage(),
+    outputName: `voice-${speakerId}-${Date.now()}`,
+  })
+  const profile = await registerSeedReference(speakerId, audio.path)
   clearSeedDownstream()
   mediaStore.seedAudioVoicePath = profile.referenceAudioPath
   return asset.label
@@ -1198,7 +1207,7 @@ async function currentSeedArrangement() {
           item.speakerId,
           {
             voiceProfileId: item.voiceProfileId,
-            referenceIndex: item.apiSpeakerId ? index + 1 : null,
+            referenceIndex: index + 1,
           },
         ]),
       ),
@@ -1251,7 +1260,6 @@ async function generateSeedVoiceScript() {
     const { arrangement } = await currentSeedArrangement()
     const prompts: string[] = []
     for (const task of arrangement.tasks) {
-      const apiReferences = task.references.filter((reference) => reference.apiSpeakerId)
       const result = await window.electron.cloud.runSkill(
         'jc-doubao-seed-audio',
         JSON.stringify({
@@ -1260,7 +1268,7 @@ async function generateSeedVoiceScript() {
           durationMs: task.endMs - task.startMs,
           globalVoicePlan: mediaStore.seedAudioGlobalPrompt,
           arrangement: task,
-          references: apiReferences.map((reference, index) => ({
+          references: task.references.map((reference, index) => ({
             speakerId: reference.speakerId,
             referenceIndex: index + 1,
             label: reference.label,
@@ -1325,7 +1333,6 @@ async function generateSeedTrack() {
     if (!savedPrompt) throw new Error('声音导演稿正文为空')
     const generated: Array<{ path: string; duration: number }> = []
     for (const task of arrangement.tasks) {
-      const apiReferences = task.references.filter((reference) => reference.apiSpeakerId)
       generated.push(
         await window.electron.cloud.generateSeedAudio({
           runId: mediaStore.runId,
@@ -1334,7 +1341,7 @@ async function generateSeedTrack() {
           durationMs: task.endMs - task.startMs,
           prompt: savedPrompt,
           language: seedScriptLanguage(),
-          references: apiReferences,
+          references: task.references,
           outputName: task.taskId,
         }),
       )
@@ -1478,6 +1485,7 @@ async function runTranslationAction(action: VideoTranslationAction) {
     return
   }
   if (action === 'upload-video') return uploadTranslationVideo()
+  if (action === 'upload-final-master') return uploadTranslationFinalMaster()
   if (action === 'reverse-video') return reverseTranslationVideo()
   if (action === 'translate-all-subtitles') return translateVideoSubtitles()
   if (action === 'open-voice-workspace') return openTranslationVoiceWorkspace()
@@ -1515,6 +1523,28 @@ async function uploadTranslationVideo() {
   })
 }
 
+async function uploadTranslationFinalMaster() {
+  const state = translationState()
+  if (!state.sourceVideoPath) throw new Error('请先上传识别视频')
+  if (
+    state.finalMasterVideoPath &&
+    !window.confirm('更换无字幕成片母版会使分离、混音和成片失效，是否继续？')
+  )
+    return
+  await runAction('upload-final-master', async () => {
+    const result = await window.electron.cloud.selectVideoTranslationFinalMaster(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      state.sourceVideoPath!,
+    )
+    if (!result) return
+    state.finalMasterVideoPath = result.finalMasterVideoPath
+    state.finalMasterFingerprint = result.finalMasterFingerprint
+    Object.assign(state, invalidateVideoTranslation(state, 'final-master-video'))
+    toast.success('无字幕成片母版已归档，字幕和配音保持不变')
+  })
+}
+
 async function reverseTranslationVideo() {
   await runAction('reverse-video', async () => {
     const state = translationState()
@@ -1547,7 +1577,10 @@ async function reverseTranslationVideo() {
         evidence: speaker.evidence,
         ocrText: speaker.ocrText,
         needsReview: speaker.needsReview,
+        suspectedMissing: speaker.suspectedMissing,
       }))
+      state.sourceTranscriptPath = result.sourceTranscriptPath
+      state.sourceSrtPath = result.sourceSrtPath
       Object.assign(state, invalidateVideoTranslation(state, 'source-dialogue'))
       state.transcriptStatus = 'ready'
       state.speakerStatus = 'ready'
@@ -1624,8 +1657,8 @@ async function openTranslationVoiceWorkspace() {
   await confirmTranslationDialogue()
   const state = translationState()
   if (state.reviewStatus !== 'ready') return
-  mediaStore.seedAudioGlobalPrompt = state.seedPromptText || ''
-  mediaStore.seedAudioTrackPath = state.targetVoicePath || ''
+  mediaStore.seedAudioGlobalPrompt ||= state.seedPromptText || ''
+  await loadTranslationVoiceVersions()
   mediaStore.seedVoiceTab = 'roles'
   mediaStore.selectedAssetId = mediaStore.videoTranslationRoles[0]?.translationRoleId
   mediaStore.selectView('seed-voice')
@@ -1634,7 +1667,7 @@ async function openTranslationVoiceWorkspace() {
 function openTranslationSubtitleWorkspace() {
   const state = translationState()
   mediaStore.seedAudioGlobalPrompt = state.seedPromptText || mediaStore.seedAudioGlobalPrompt
-  mediaStore.seedAudioTrackPath = state.targetVoicePath || ''
+  mediaStore.seedAudioTrackPath = activeTranslationVoiceVersion(state)?.previewPath || ''
   mediaStore.selectView('dubbing')
 }
 
@@ -1643,11 +1676,54 @@ function selectTranslationWorkspace(view: WorkspaceView) {
   if (view === 'dubbing') return openTranslationSubtitleWorkspace()
   if (view === 'seed-voice') {
     const state = translationState()
-    mediaStore.seedAudioGlobalPrompt = state.seedPromptText || ''
-    mediaStore.seedAudioTrackPath = state.targetVoicePath || ''
+    mediaStore.seedAudioGlobalPrompt ||= state.seedPromptText || ''
+    void loadTranslationVoiceVersions()
     mediaStore.selectedAssetId ||= mediaStore.videoTranslationRoles[0]?.translationRoleId
   }
   mediaStore.selectView(view)
+}
+
+function activeTranslationVoiceVersion(state: NonNullable<typeof mediaStore.videoTranslation>) {
+  return state.voiceVersions.find((version) => version.versionId === state.activeVoiceVersionId)
+}
+
+function applyTranslationVoiceVersion(
+  state: NonNullable<typeof mediaStore.videoTranslation>,
+  version: VideoTranslationVoiceVersion,
+) {
+  const changed = Boolean(
+    state.activeVoiceVersionId && state.activeVoiceVersionId !== version.versionId,
+  )
+  state.activeVoiceVersionId = version.versionId
+  state.targetVoicePath = version.targetVoicePath
+  state.voiceStatus = 'ready'
+  mediaStore.seedAudioTrackPath = version.previewPath
+  if (!changed) return
+  if (state.mixStatus === 'ready') state.mixStatus = 'stale'
+  if (state.finalStatus === 'ready') state.finalStatus = 'stale'
+  state.mixedPath = undefined
+  state.finalVideoPath = undefined
+}
+
+async function loadTranslationVoiceVersions() {
+  if (!mediaStore.runId || !mediaStore.videoTranslation) return
+  const state = mediaStore.videoTranslation
+  const versions = await window.electron.cloud.listVideoTranslationVoiceVersions(
+    mediaStore.runId,
+    mediaStore.episodeId,
+    state.targetLanguage,
+  )
+  state.voiceVersions = versions
+  const active =
+    versions.find((version) => version.versionId === state.activeVoiceVersionId) || versions.at(-1)
+  if (active) applyTranslationVoiceVersion(state, active)
+  else mediaStore.seedAudioTrackPath = ''
+}
+
+function selectTranslationVoiceVersion(versionId: string) {
+  const state = translationState()
+  const version = state.voiceVersions.find((item) => item.versionId === versionId)
+  if (version) applyTranslationVoiceVersion(state, version)
 }
 
 function translationRole(speakerId: string) {
@@ -1688,6 +1764,21 @@ function translationVoiceLanguage() {
   return translationState().targetLanguage === 'zh' ? 'zh' : 'en'
 }
 
+function invalidateTranslationSeedPrompt() {
+  const state = translationState()
+  state.seedPromptPath = undefined
+  state.seedPromptText = undefined
+  state.seedPromptGeneratedBySkill = false
+  mediaStore.seedAudioArrangementPath = ''
+  mediaStore.seedAudioGlobalPrompt = ''
+  mediaStore.invalidateTranslation('voice-prompt')
+}
+
+function editTranslationSeedRolePrompt(speakerId: string, prompt: string) {
+  mediaStore.seedAudioRolePrompts[speakerId] = prompt
+  invalidateTranslationSeedPrompt()
+}
+
 async function saveTranslationSeedRolePrompt(speakerId: string, prompt: string) {
   const role = translationRole(speakerId)
   mediaStore.seedAudioRolePrompts[speakerId] = prompt
@@ -1701,7 +1792,7 @@ async function saveTranslationSeedRolePrompt(speakerId: string, prompt: string) 
     `---\nentityType: seed-voice-prompt\ntranslationRoleId: ${speakerId}\nlanguage: ${translationVoiceLanguage()}\nstatus: ready\n---\n\n# ${role.displayName} 音色提示词\n\n${prompt}\n`,
     current?.revision,
   )
-  mediaStore.invalidateTranslation('voice-prompt')
+  invalidateTranslationSeedPrompt()
 }
 
 async function generateTranslationSeedRolePromptCore(speakerId: string) {
@@ -1729,7 +1820,14 @@ async function generateTranslationSeedRolePromptCore(speakerId: string) {
       text: approvedScript || sample,
       character,
       language: translationVoiceLanguage(),
-      requirement: '只设计该角色唯一稳定基准音；保持目标语言口音和人物身份一致',
+      storyContext: state.cues.map((cue) => ({
+        speakerId: cue.translationRoleId,
+        sourceText: cue.sourceText,
+        translatedText: cue.translatedText,
+        evidence: cue.evidence || '',
+      })),
+      requirement:
+        '根据整集剧情上下文和该角色已确认英文台词，设计该角色唯一基准声音特征；目标语言为英文时使用自然美式英语口音，不把单句情绪固化成角色音色',
     }),
     mediaStore.runId,
     mediaStore.textModel,
@@ -1798,7 +1896,7 @@ async function generateTranslationSeedReferenceCore(speakerId: string) {
     durationMs: 10000,
     prompt,
     language: translationVoiceLanguage(),
-    outputName: `voice-${speakerId}`,
+    outputName: `voice-${speakerId}-${Date.now()}`,
   })
   await registerTranslationSeedReference(speakerId, audio.path, `${role.displayName} Seed 音色`)
 }
@@ -1845,13 +1943,22 @@ async function currentTranslationSeedPlan() {
   const roles = mediaStore.videoTranslationRoles.filter((role) =>
     roleIds.has(role.translationRoleId),
   )
-  const references = await window.electron.cloud.resolveSeedVoiceProfiles(
+  const resolvedReferences = await window.electron.cloud.resolveSeedVoiceProfiles(
     roles.map((role) => ({
       speakerId: role.translationRoleId,
       voiceProfileId: role.voiceProfileId || '',
     })),
   )
-  return planVideoTranslationSeed(
+  const roleById = new Map(roles.map((role) => [role.translationRoleId, role]))
+  const references = resolvedReferences.map((reference) => ({
+    ...reference,
+    label: roleById.get(reference.speakerId)?.displayName || reference.speakerId,
+    voiceDesignPrompt:
+      mediaStore.seedAudioRolePrompts[reference.speakerId]?.trim() ||
+      reference.voiceDesignPrompt ||
+      '',
+  }))
+  return planVideoTranslationDialogueBlocks(
     mediaStore.episodeId,
     state.durationMs,
     state.targetLanguage,
@@ -1861,65 +1968,104 @@ async function currentTranslationSeedPlan() {
   )
 }
 
+async function saveTranslationSeedGlobalPrompt(prompt: string) {
+  if (!prompt) throw new Error('全局配音提示词不能为空')
+  const state = translationState()
+  const plan = await currentTranslationSeedPlan()
+  const saved = await window.electron.cloud.writeVideoTranslationSeedPlan(
+    mediaStore.runId,
+    mediaStore.episodeId,
+    state.targetLanguage,
+    plan.arrangement,
+    prompt,
+  )
+  const next = invalidateVideoTranslation(state, 'voice-prompt')
+  next.arrangementStatus = state.arrangementStatus
+  next.seedArrangementPath = saved.arrangementPath
+  next.seedPromptPath = saved.promptPath
+  next.seedPromptText = prompt
+  next.seedPromptGeneratedBySkill = true
+  mediaStore.videoTranslation = next
+  mediaStore.seedAudioArrangementPath = saved.arrangementPath
+  mediaStore.seedAudioGlobalPrompt = prompt
+}
+
 async function generateTranslationSeedPrompt(
   state: NonNullable<typeof mediaStore.videoTranslation>,
-  plan: ReturnType<typeof planVideoTranslationSeed>,
+  plan: ReturnType<typeof planVideoTranslationDialogueBlocks>,
 ) {
   const roleById = new Map(
     mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role]),
   )
   const sections: string[] = []
-  for (const task of plan.arrangement.tasks) {
-    const references = task.references.map((reference, index) => ({
+  for (const block of plan.arrangement.blocks) {
+    const references = block.references.map((reference, index) => ({
       speakerId: reference.speakerId,
       referenceIndex: index + 1,
       label:
         reference.label || roleById.get(reference.speakerId)?.displayName || reference.speakerId,
     }))
     const skillInput = {
-      mode: task.mode,
+      mode: 'dialogue-performance',
       language: state.targetLanguage === 'zh' ? 'zh' : 'en',
-      durationMs: task.endMs - task.startMs,
       arrangement: {
-        segmentId: task.taskId,
-        mode: task.mode,
-        speakerIds: task.speakerIds,
+        segmentId: block.blockId,
+        mode: 'dialogue-performance',
+        speakerIds: block.speakerIds,
         referenceMap: Object.fromEntries(
           references.map((item) => [item.speakerId, item.referenceIndex]),
         ),
       },
       references,
-      segments: task.lines.map((line) => ({
-        startMs: line.startMs,
-        endMs: line.endMs,
+      segments: block.lines.map((line) => ({
+        cueId: line.cueId,
         speakerId: line.speakerId,
         text: line.text,
-        emotion: line.emotion || '根据原片语义、角色关系和标点自然表演，禁止中性朗读',
+        emotion: line.performanceEvidence || '根据原片语义、角色关系和标点设计具体自然表演',
       })),
-      voiceDesign: task.references.map((reference) => ({
+      storyContext: state.cues.map((cue) => ({
+        speakerId: cue.translationRoleId,
+        sourceText: cue.sourceText,
+        translatedText: cue.translatedText,
+        evidence: cue.evidence || '',
+      })),
+      voiceDesign: block.references.map((reference) => ({
         speakerId: reference.speakerId,
         label:
           reference.label || roleById.get(reference.speakerId)?.displayName || reference.speakerId,
         prompt: reference.voiceDesignPrompt || roleById.get(reference.speakerId)?.description || '',
       })),
       requirement:
-        '这是翻译后的正式剧本。视频翻译语言规则：目标语言为英文时，所有导演说明、角色说明、情绪、强度、语速、停顿、重音、时间说明、禁止项和参考音映射说明必须使用中文；只有正式英文台词保留英文原文。不得翻译、改写、删减或补写英文台词。目标语言为中文时，说明和台词均使用中文。严格逐字朗读每句目标语言台词；参考音只锁定角色音色身份，情绪、强度、语速、停顿、重音必须依据原片语义、角色关系、标点和时间窗设计，禁止中性平读。只生成纯对白人声，禁止音乐、环境声和音效。',
+        '这是产品已经确定分段的无时间戳连续对白。目标语言为英文时，正式英文台词逐字保留，所有角色、关系、潜台词、情绪过程、语速、停顿、重音、气息、接话和参考音说明使用中文。角色声音特征只能来自 voiceDesign.prompt：有内容时提取年龄、性别、身份或职业、口音、音高、声线与音色质感；没有内容时不得根据剧情猜测或补写人设，只写“角色名饰演者为@音频N”。每个角色单独一行。随后按照给定顺序逐句导演具体表演，让音量、音高、语速、呼吸、停顿和重音随剧情自然变化。不要输出绝对时间、目标总时长、cue ID、low、medium、high 或高中低强度档位。只生成干净对白，禁止音乐、环境声、动作音效、解释和额外台词。',
     }
-    const result = await window.electron.cloud.runSkill(
-      'jc-doubao-seed-audio',
-      JSON.stringify(skillInput),
-      mediaStore.runId,
-      mediaStore.textModel,
-    )
-    const prompt = String(result?.text_prompt || '').trim()
-    if (!prompt) throw new Error(`${task.taskId} 的豆包语音提示词为空`)
-    if (references.some((reference) => !prompt.includes(`@音频${reference.referenceIndex}`)))
-      throw new Error(`${task.taskId} 未正确引用角色参考音，请重新生成提示词`)
-    if (task.lines.some((line) => !prompt.includes(line.text)))
-      throw new Error(`${task.taskId} 未逐字保留翻译台词，请重新生成提示词`)
-    sections.push(`## ${task.taskId}\n\n${prompt}`)
+    let prompt = ''
+    let correction = ''
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await window.electron.cloud.runSkill(
+        'jc-doubao-seed-audio',
+        JSON.stringify({
+          ...skillInput,
+          ...(correction
+            ? { correction: `上次输出未通过产品校验：${correction}。请只重写合格的最终提示词。` }
+            : {}),
+        }),
+        mediaStore.runId,
+        mediaStore.textModel,
+      )
+      prompt = String(result?.text_prompt || '').trim()
+      try {
+        if (!prompt) throw new Error(`${block.blockId} 的连续对白导演稿为空`)
+        validateVideoTranslationDialoguePrompt(prompt, block)
+        correction = ''
+        break
+      } catch (error) {
+        correction = error instanceof Error ? error.message : String(error)
+      }
+    }
+    if (correction) throw new Error(correction)
+    sections.push(`## ${block.blockId}\n\n${prompt}`)
   }
-  return ['# 豆包语音稿', '', ...sections].join('\n\n').trim()
+  return ['# 连续对白导演稿', '', ...sections].join('\n\n').trim()
 }
 
 async function arrangeTranslationVoice() {
@@ -1939,12 +2085,13 @@ async function arrangeTranslationVoice() {
     state.seedPromptGeneratedBySkill = true
     mediaStore.seedAudioArrangementPath = saved.arrangementPath
     mediaStore.seedAudioGlobalPrompt = plan.promptMarkdown
-    mediaStore.seedAudioTrackPath = ''
-    toast.success(`豆包纯人声安排已生成，共 ${plan.arrangement.tasks.length} 个任务`)
+    toast.success(`连续对白导演稿已生成，共 ${plan.arrangement.blocks.length} 段`)
   })
 }
 
 async function generateTranslationVoice() {
+  const forceNewVersion =
+    translationState().voiceStatus === 'ready' && Boolean(translationState().voiceVersions.length)
   await runTranslationStep('generate-target-voice', 'voiceStatus', async (state) => {
     const plan = await currentTranslationSeedPlan()
     const saved = await window.electron.cloud.writeVideoTranslationSeedPlan(
@@ -1957,14 +2104,19 @@ async function generateTranslationVoice() {
     state.seedArrangementPath = saved.arrangementPath
     state.seedPromptPath = saved.promptPath
     state.seedPromptText = mediaStore.seedAudioGlobalPrompt || plan.promptMarkdown
-    state.targetVoicePath = await window.electron.cloud.generateVideoTranslationTargetVoice(
+    const version = await window.electron.cloud.generateVideoTranslationTargetVoice(
       mediaStore.runId,
       mediaStore.episodeId,
       state.targetLanguage,
+      { forceNewVersion },
     )
+    state.voiceVersions = [
+      ...state.voiceVersions.filter((item) => item.versionId !== version.versionId),
+      version,
+    ]
+    applyTranslationVoiceVersion(state, version)
     mediaStore.seedAudioArrangementPath = saved.arrangementPath
-    mediaStore.seedAudioTrackPath = state.targetVoicePath
-    toast.success('目标语言纯人声已生成')
+    toast.success('新的连续对白版本已生成并设为当前使用版本')
   })
 }
 
@@ -1986,7 +2138,7 @@ async function separateTranslationAudio() {
       await window.electron.cloud.separateSourceAudio({
         runId: mediaStore.runId,
         episodeId: mediaStore.episodeId,
-        pictureMasterPath: state.sourceVideoPath!,
+        pictureMasterPath: state.finalMasterVideoPath || state.sourceVideoPath!,
         workflow: 'video-translation',
         targetLanguage: state.targetLanguage,
       }),
@@ -2036,7 +2188,7 @@ async function burnTranslationVideo() {
     state.finalVideoPath = await window.electron.cloud.composeVideoTranslation({
       runId: mediaStore.runId,
       episodeId: mediaStore.episodeId,
-      sourceVideoPath: state.sourceVideoPath!,
+      sourceVideoPath: state.finalMasterVideoPath || state.sourceVideoPath!,
       mixedAudioPath: state.mixedPath!,
       targetLanguage: state.targetLanguage,
       subtitleCues: state.cues.map((cue) => ({
@@ -3353,6 +3505,7 @@ async function requestRevision(
     | 'project-director'
     | 'voice-plan'
     | 'seed-role-prompt'
+    | 'seed-global-prompt'
     | 'asset-prompt'
     | 'shot'
     | 'image'
@@ -3418,6 +3571,10 @@ async function requestRevision(
       return
     }
     const segment = mediaStore.segments.find((item) => item.index === Number(targetId))
+    const translationGlobalPlan =
+      targetType === 'seed-global-prompt' && isVideoTranslation.value
+        ? await currentTranslationSeedPlan()
+        : undefined
     const current =
       targetType === 'script'
         ? mediaStore.script
@@ -3425,12 +3582,35 @@ async function requestRevision(
           ? mediaStore.voicePlan?.voicePrompt
           : targetType === 'seed-role-prompt'
             ? mediaStore.seedAudioRolePrompts[targetId]
-            : targetType === 'shot'
-              ? segment && stripMedia(segment)
-              : targetType === 'image'
-                ? segment?.storyboardImagePrompt
-                : segment?.videoPrompt
+            : targetType === 'seed-global-prompt'
+              ? mediaStore.seedAudioGlobalPrompt
+              : targetType === 'shot'
+                ? segment && stripMedia(segment)
+                : targetType === 'image'
+                  ? segment?.storyboardImagePrompt
+                  : segment?.videoPrompt
     if (current == null) throw new Error('当前对象不存在')
+    const translationSeedRole =
+      targetType === 'seed-role-prompt' && isVideoTranslation.value
+        ? translationRole(targetId)
+        : undefined
+    const seedRoleScript = translationSeedRole
+      ? translationState()
+          .cues.filter((cue) => cue.translationRoleId === targetId)
+          .map((cue) => cue.translatedText.trim())
+          .filter(Boolean)
+          .join('\n')
+      : mediaStore.approvedScript
+    const revisionCharacter = translationSeedRole
+      ? {
+          id: translationSeedRole.translationRoleId,
+          label: translationSeedRole.displayName,
+          aliases: translationSeedRole.aliases,
+          description: translationSeedRole.description || '',
+        }
+      : targetType === 'seed-role-prompt'
+        ? seedRoleAsset(targetId)
+        : undefined
     const request = {
       targetType,
       targetId,
@@ -3447,30 +3627,60 @@ async function requestRevision(
             : targetType === 'seed-role-prompt'
               ? {
                   speakerId: targetId,
-                  language: seedScriptLanguage(),
-                  approvedScript: mediaStore.approvedScript,
+                  language: translationSeedRole ? translationVoiceLanguage() : seedScriptLanguage(),
+                  approvedScript: seedRoleScript,
                 }
-              : {
-                  index: segment?.index,
-                  script: segment?.script,
-                  playDuration: segment?.playDuration,
-                  generationDuration: segment?.generationDuration,
-                  finalShotCount: mediaStore.finalShotCount,
-                  styleId: mediaStore.styleId,
-                  referenceAssetIds: segment?.referenceAssetIds,
-                },
+              : targetType === 'seed-global-prompt'
+                ? {
+                    targetLanguage: translationState().targetLanguage,
+                    preserveConfirmedDialogueExactly: true,
+                    preserveDialogueOrder: true,
+                    preserveReferenceMappings: true,
+                    noTimestamps: true,
+                    noExtraDialogueOrAudioEvents: true,
+                  }
+                : {
+                    index: segment?.index,
+                    script: segment?.script,
+                    playDuration: segment?.playDuration,
+                    generationDuration: segment?.generationDuration,
+                    finalShotCount: mediaStore.finalShotCount,
+                    styleId: mediaStore.styleId,
+                    referenceAssetIds: segment?.referenceAssetIds,
+                  },
       context:
         targetType === 'seed-role-prompt'
-          ? { character: seedRoleAsset(targetId), approvedScript: mediaStore.approvedScript }
-          : segment
+          ? { character: revisionCharacter, approvedScript: seedRoleScript }
+          : targetType === 'seed-global-prompt'
             ? {
-                creativeIdentity: mediaStore.creativeIdentity,
-                sceneReference: mediaStore.sceneReference,
-                visualAnchor: mediaStore.visualAnchor,
-                previous: stripMedia(mediaStore.segments[segment.index - 2]),
-                next: stripMedia(mediaStore.segments[segment.index]),
+                targetLanguage: translationState().targetLanguage,
+                confirmedTranslationCues: translationState().cues.map((cue) => ({
+                  speakerId: cue.translationRoleId,
+                  text: cue.translatedText,
+                })),
+                rolePrompts: mediaStore.videoTranslationRoles.map((role) => ({
+                  speakerId: role.translationRoleId,
+                  label: role.displayName,
+                  prompt: mediaStore.seedAudioRolePrompts[role.translationRoleId] || '',
+                })),
+                referenceMappings: translationGlobalPlan!.arrangement.blocks.map((block) => ({
+                  blockId: block.blockId,
+                  references: block.references.map((reference, index) => ({
+                    speakerId: reference.speakerId,
+                    label: reference.label,
+                    reference: `@音频${index + 1}`,
+                  })),
+                })),
               }
-            : { request: mediaStore.request },
+            : segment
+              ? {
+                  creativeIdentity: mediaStore.creativeIdentity,
+                  sceneReference: mediaStore.sceneReference,
+                  visualAnchor: mediaStore.visualAnchor,
+                  previous: stripMedia(mediaStore.segments[segment.index - 2]),
+                  next: stripMedia(mediaStore.segments[segment.index]),
+                }
+              : { request: mediaStore.request },
     }
     const raw = await window.electron.cloud.runSkill(
       'jc-context-revision',
@@ -3491,6 +3701,20 @@ async function requestRevision(
         { text: mediaStore.approvedScript, voicePrompt: proposal.revised },
         mediaStore.approvedScript,
       )
+    if (targetType === 'seed-global-prompt') {
+      const revised = String(proposal.revised).trim()
+      for (const block of translationGlobalPlan!.arrangement.blocks) {
+        const heading = `## ${block.blockId}`
+        const start = revised.indexOf(heading)
+        if (start < 0) throw new Error(`AI 修改结果缺少 ${block.blockId}`)
+        const bodyStart = start + heading.length
+        const next = revised.indexOf('\n## ', bodyStart)
+        validateVideoTranslationDialoguePrompt(
+          revised.slice(bodyStart, next < 0 ? undefined : next).trim(),
+          block,
+        )
+      }
+    }
     if (
       targetType === 'video' &&
       !['单一连续镜头', '无切镜'].every((rule) => String(proposal.revised).includes(rule))
@@ -3681,7 +3905,12 @@ async function applyRevision() {
     mediaStore.setVoicePrompt(String(proposal.revised))
   } else if (proposal.targetType === 'seed-role-prompt') {
     captureUndo('seed-role-prompt')
-    await saveSeedRolePrompt(proposal.targetId, String(proposal.revised).trim())
+    if (isVideoTranslation.value)
+      await saveTranslationSeedRolePrompt(proposal.targetId, String(proposal.revised).trim())
+    else await saveSeedRolePrompt(proposal.targetId, String(proposal.revised).trim())
+  } else if (proposal.targetType === 'seed-global-prompt') {
+    captureUndo('seed-global-prompt')
+    await saveTranslationSeedGlobalPrompt(String(proposal.revised).trim())
   } else if (proposal.targetType === 'shot' && segment) {
     captureUndo('shot')
     Object.assign(segment, proposal.revised, {
@@ -3727,6 +3956,7 @@ function captureUndo(
     | 'project-director'
     | 'voice-plan'
     | 'seed-role-prompt'
+    | 'seed-global-prompt'
     | 'asset-prompt'
     | 'shot',
 ) {
@@ -3744,6 +3974,20 @@ async function undoRevision() {
   if (undo.targetType === 'asset-prompt') {
     const asset = mediaStore.referenceAssets.find((item) => item.id === mediaStore.selectedAssetId)
     if (asset) await writeAssetDocuments([asset])
+  } else if (undo.targetType === 'seed-global-prompt') {
+    const state = translationState()
+    const plan = await currentTranslationSeedPlan()
+    const saved = await window.electron.cloud.writeVideoTranslationSeedPlan(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      state.targetLanguage,
+      plan.arrangement,
+      mediaStore.seedAudioGlobalPrompt,
+    )
+    state.seedArrangementPath = saved.arrangementPath
+    state.seedPromptPath = saved.promptPath
+    state.seedPromptText = mediaStore.seedAudioGlobalPrompt
+    mediaStore.seedAudioArrangementPath = saved.arrangementPath
   } else if (undo.targetType === 'project-director' && mediaStore.projectDirectorPlan) {
     const path = `wiki/项目总监/${mediaStore.episodeId}.md`
     const current = await window.electron.cloud

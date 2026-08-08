@@ -434,7 +434,7 @@ test('uses a separated instrument stem for the selectable final sound policy', (
   assert.match(ffmpeg, /subtitleCues/)
   assert.match(
     ffmpeg,
-    /generateUniqueFileName\(getRunAssetPath\(params\.runId, params\.episodeId, 'final'\)\)/,
+    /generateUniqueFileName\(\s*getRunAssetPath\(params\.runId, params\.episodeId, 'final'\),?\s*\)/,
   )
   assert.match(cloud, /generateUniqueFileName\(getRunAssetPath/)
 })

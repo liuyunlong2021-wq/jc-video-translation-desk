@@ -36,7 +36,10 @@ import {
   writeDataUrl,
 } from './media-workspace.ts'
 import { validateMaterialTranscript } from '../src/runtime/productionContract.ts'
-import { splitTimedSubtitleText } from '../src/runtime/videoTranslation.ts'
+import {
+  findUncoveredSpeechIntervals,
+  splitTimedSubtitleText,
+} from '../src/runtime/videoTranslation.ts'
 import {
   prepareVideoTranslationModelInput,
   prepareVideoTranslationReviewSlices,
@@ -46,6 +49,7 @@ import {
   readVideoTranslationStage,
   writeVideoTranslationStage,
 } from './video-translation-trace.ts'
+import { prepareVideoTranslationSpeechEvidence } from './video-translation-speech.ts'
 
 export const API_ORIGIN = 'https://api.jiucaihezi.studio'
 export const OPENAI_BASE_URL = `${API_ORIGIN}/v1`
@@ -481,6 +485,8 @@ export async function identifyVideoTranslationSpeakers(
 ): Promise<{
   speakers: VideoTranslationSpeakerDraft[]
   contextPaths: Array<{ path: string; hash: string }>
+  sourceTranscriptPath: string
+  sourceSrtPath: string
 }> {
   if (!params?.runId || !params.episodeId || !params.videoPath)
     throw new Error('说话角色识别参数无效')
@@ -489,6 +495,11 @@ export async function identifyVideoTranslationSpeakers(
     params.episodeId,
     params.videoPath,
   )
+  reportProgress('第 1/5 步：正在分离人声并生成 Whisper 漏句证据')
+  const speech = await withRunAbort(params.runId, (signal) =>
+    prepareVideoTranslationSpeechEvidence(params.runId, params.episodeId, params.videoPath, signal),
+  )
+  reportProgress('第 1/5 步完成：已生成 00-人声识别与漏句证据.md')
   reportProgress('正在压缩并准备模型视频')
   const videoPath = await prepareVideoTranslationModelInput(
     params.runId,
@@ -498,10 +509,14 @@ export async function identifyVideoTranslationSpeakers(
   const video = await fs.promises.readFile(videoPath)
   const durationMs = Math.round((await mediaDuration(sourceVideoPath)) * 1000)
   const context = await collectVideoTranslationContext(params.runId, params.episodeId)
-  reportProgress('第 1/4 步：Gemini 正在完整分析视频，最长等待 15 分钟')
+  reportProgress('第 2/5 步：Gemini 正在完整分析视频，最长等待 15 分钟')
   const output = await withRunAbort(params.runId, async (signal) => {
     const videoHash = createHash('sha256').update(video).digest('hex')
     const commonInputs = [
+      {
+        label: '人声识别与漏句证据',
+        target: speech.evidencePath,
+      },
       {
         label: '模型分析视频',
         target: relativeRunAsset(params.runId, videoPath),
@@ -522,7 +537,7 @@ export async function identifyVideoTranslationSpeakers(
       try {
         globalOutput = savedGlobal.result
         splitPlan = parseVideoTranslationSplitPlan(globalOutput, durationMs)
-        reportProgress('第 1/4 步：发现有效断点，复用 01-整体分析与切片方案.md')
+        reportProgress('第 2/5 步：发现有效断点，复用 01-整体分析与切片方案.md')
       } catch {
         savedGlobal = null
         globalOutput = ''
@@ -552,6 +567,8 @@ export async function identifyVideoTranslationSpeakers(
 - slice-002 | 12000 | ${durationMs} | 切点理由
 
 已有翻译角色：${JSON.stringify(params.roles)}
+
+分离人声后的 Whisper 语音区间（只作时间与漏句证据，文字可能不准确）：${JSON.stringify(speech.transcript.cues)}
 
 项目资料：${JSON.stringify(context)}${splitReason ? `\n\n上次切片方案无效：${splitReason}。请修复后完整重发。` : ''}`,
             },
@@ -592,8 +609,8 @@ export async function identifyVideoTranslationSpeakers(
         `[[${globalPath}|整体分析与切片方案]]`,
       )
     }
-    reportProgress('第 1/4 步完成：已生成 01-整体分析与切片方案.md')
-    reportProgress('第 2/4 步：FFmpeg 正在按方案切片')
+    reportProgress('第 2/5 步完成：已生成 01-整体分析与切片方案.md')
+    reportProgress('第 3/5 步：FFmpeg 正在按方案切片')
     const slices = await prepareVideoTranslationReviewSlices(
       params.runId,
       params.episodeId,
@@ -624,7 +641,7 @@ export async function identifyVideoTranslationSpeakers(
       [{ label: '整体分析与切片方案', target: globalPath }],
       `[[${sliceManifestPath}|FFmpeg 切片清单]]`,
     )
-    reportProgress(`第 2/4 步完成：已生成 ${slices.length} 个切片和 02-FFmpeg切片.md`)
+    reportProgress(`第 3/5 步完成：已生成 ${slices.length} 个切片和 02-FFmpeg切片.md`)
     const sliceOutputs: string[] = []
     const speakers: VideoTranslationSpeakerDraft[] = []
     for (let index = 0; index < slices.length; index++) {
@@ -643,13 +660,13 @@ export async function identifyVideoTranslationSpeakers(
           sliceOutputs.push(
             `## 片段 ${sliceNumber}（原片 ${slice.startMs}-${slice.endMs}ms）\n\n${savedSlice.result}`,
           )
-          reportProgress(`第 3/4 步：复用已完成片段 ${index + 1}/${slices.length}，继续检查下一片`)
+          reportProgress(`第 4/5 步：复用已完成片段 ${index + 1}/${slices.length}，继续检查下一片`)
           continue
         } catch {
           // Invalid checkpoints are regenerated below.
         }
       }
-      reportProgress(`第 3/4 步：Gemini 正在扒取片段 ${index + 1}/${slices.length}`)
+      reportProgress(`第 4/5 步：Gemini 正在扒取片段 ${index + 1}/${slices.length}`)
       const sliceVideo = await fs.promises.readFile(slice.path)
       let reason = ''
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -686,6 +703,19 @@ export async function identifyVideoTranslationSpeakers(
 对应画面字幕，无则写“无”
 
 已有翻译角色：${JSON.stringify(params.roles)}
+
+本片分离人声后的 Whisper 语音区间（只作时间与漏句证据，文字可能不准确）：${JSON.stringify(
+                speech.transcript.cues
+                  .filter(
+                    (cue: { startMs: number; endMs: number }) =>
+                      cue.startMs < slice.endMs && cue.endMs > slice.startMs,
+                  )
+                  .map((cue: { startMs: number; endMs: number; recognizedText: string }) => ({
+                    startMs: Math.max(0, cue.startMs - slice.startMs),
+                    endMs: Math.min(slice.endMs, cue.endMs) - slice.startMs,
+                    recognizedText: cue.recognizedText,
+                  })),
+              )}
 
 整体剧情文档：
 ${globalOutput}${reason ? `\n\n上次结果无效：${reason}。请修复后完整重发本片结果。` : ''}`,
@@ -730,7 +760,7 @@ ${globalOutput}${reason ? `\n\n上次结果无效：${reason}。请修复后完�
             `[[${sliceStagePath}|片段 ${sliceNumber} 台词]]`,
           )
           reportProgress(
-            `第 3/4 步：已完成片段 ${index + 1}/${slices.length}，已生成 03-片段${sliceNumber}台词.md`,
+            `第 4/5 步：已完成片段 ${index + 1}/${slices.length}，已生成 03-片段${sliceNumber}台词.md`,
           )
           reason = ''
           break
@@ -747,6 +777,7 @@ ${globalOutput}${reason ? `\n\n上次结果无效：${reason}。请修复后完�
       'Gemini逐片台词',
       'gemini-3.6-flash',
       [
+        { label: '人声识别与漏句证据', target: speech.evidencePath },
         { label: '整体分析与切片方案', target: globalPath },
         { label: 'FFmpeg 切片清单', target: sliceManifestPath },
       ],
@@ -760,30 +791,48 @@ ${globalOutput}${reason ? `\n\n上次结果无效：${reason}。请修复后完�
       [{ label: 'FFmpeg 切片清单', target: sliceManifestPath }],
       `[[${sliceDialoguePath}|逐片台词结果]]`,
     )
-    reportProgress('第 3/4 步完成：已生成 03-Gemini逐片台词.md')
+    reportProgress('第 4/5 步完成：已生成 03-Gemini逐片台词.md')
     speakers.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
     for (let index = 1; index < speakers.length; index++)
       if (speakers[index].startMs < speakers[index - 1].endMs)
         throw new Error('逐片台词合并后发生时间重叠')
-    const finalSpeakers = speakers
+    const calibratedSpeakers = speakers
       .flatMap((speaker) =>
-        splitTimedSubtitleText(
-          speaker.correctedText,
-          speaker.startMs,
-          speaker.endMs,
-          'auto',
-        ).map((part) => ({
-          ...speaker,
-          startMs: part.startMs,
-          endMs: part.endMs,
-          correctedText: part.text,
-        })),
+        splitTimedSubtitleText(speaker.correctedText, speaker.startMs, speaker.endMs, 'auto').map(
+          (part) => ({
+            ...speaker,
+            startMs: part.startMs,
+            endMs: part.endMs,
+            correctedText: part.text,
+          }),
+        ),
       )
       .map((speaker, index) => ({
         ...speaker,
         cueId: `translation-cue-${String(index + 1).padStart(3, '0')}`,
       }))
-    reportProgress('第 4/4 步：正在合并时间轴并生成最终稿')
+    const suspectedMissing = findUncoveredSpeechIntervals(
+      calibratedSpeakers,
+      speech.transcript.cues,
+    ).map(
+      (gap, index): VideoTranslationSpeakerDraft => ({
+        cueId: `suspected-missing-${String(index + 1).padStart(3, '0')}`,
+        startMs: gap.startMs,
+        endMs: gap.endMs,
+        recognizedText: gap.recognizedText,
+        correctedText: '',
+        proposedName: '待确认',
+        confidence: 0,
+        evidence: '疑似漏句：分离人声后的 Whisper 检测到未被 Gemini 字幕覆盖的语音区间',
+        ocrText: '',
+        needsReview: true,
+        suspectedMissing: true,
+      }),
+    )
+    const finalSpeakers = [...calibratedSpeakers, ...suspectedMissing].sort(
+      (left, right) => left.startMs - right.startMs || left.endMs - right.endMs,
+    )
+    reportProgress('第 5/5 步：正在合并时间轴并检查疑似漏句')
     const finalPath = await writeVideoTranslationStage(
       params.runId,
       params.episodeId,
@@ -791,6 +840,7 @@ ${globalOutput}${reason ? `\n\n上次结果无效：${reason}。请修复后完�
       '最终稿',
       '程序直接合并',
       [
+        { label: '人声识别与漏句证据', target: speech.evidencePath },
         { label: '整体分析与切片方案', target: globalPath },
         { label: 'FFmpeg 切片清单', target: sliceManifestPath },
         { label: 'Gemini 逐片台词', target: sliceDialoguePath },
@@ -805,7 +855,7 @@ ${globalOutput}${reason ? `\n\n上次结果无效：${reason}。请修复后完�
       [{ label: 'Gemini 逐片台词', target: sliceDialoguePath }],
       `[[${finalPath}|最终稿]]`,
     )
-    reportProgress('第 4/4 步完成：已生成 04-最终稿.md')
+    reportProgress('第 5/5 步完成：已生成 04-最终稿.md')
     return {
       speakers: finalSpeakers,
       finalPath,
@@ -814,6 +864,8 @@ ${globalOutput}${reason ? `\n\n上次结果无效：${reason}。请修复后完�
   return {
     speakers: output.speakers,
     contextPaths: context.map(({ path, hash }) => ({ path, hash })),
+    sourceTranscriptPath: speech.transcriptPath,
+    sourceSrtPath: speech.srtPath,
   }
 }
 
@@ -1358,7 +1410,7 @@ function renderVideoTranslationFinalDialogue(speakers: VideoTranslationSpeakerDr
 - 需要复核：${speaker.needsReview ? '是' : '否'}
 
 ### 校准原文
-${speaker.correctedText}
+${speaker.suspectedMissing ? '疑似漏句，待人工补充' : speaker.correctedText}
 
 ### 证据
 ${speaker.evidence || '无'}

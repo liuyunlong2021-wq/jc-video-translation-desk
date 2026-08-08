@@ -43,11 +43,12 @@ items = [{
     "text": item.text,
     "start": item.start,
     "end": item.end,
-    "words": [{"word": word.word, "start": word.start, "end": word.end} for word in item.words],
+    "words": [{"word": word.word, "start": word.start, "end": word.end} for word in (item.words or [])],
 } for item in segments]
 resegmented = _resegment(items, info.language, 6000, os.devnull) if items else []
 print(json.dumps({
     "duration": info.duration,
+    "words": [word for item in items for word in item["words"]],
     "segments": [{
         "start": item["start_time"] / 1000,
         "end": item["end_time"] / 1000,

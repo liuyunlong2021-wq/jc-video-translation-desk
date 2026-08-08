@@ -9,6 +9,9 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'video-translation-backend-')
 let selectedFile = ''
 let seedCalls = 0
 let ffmpegCalls = 0
+let whisperCalls = 0
+let seedDuration = 1
+let whisperWordEnd = 0.8
 
 mock.module('electron', {
   namedExports: {
@@ -42,10 +45,19 @@ mock.module('node:child_process', {
         callback(null, { stdout: '' })
         return
       }
+      const probePath = args.at(-1) || ''
       callback(null, {
         stdout: JSON.stringify({
           format: { duration: '2' },
-          streams: [{ codec_type: 'video' }, { codec_type: 'audio' }],
+          streams: [
+            {
+              codec_type: 'video',
+              width: probePath.includes('mismatch') ? 1280 : 1920,
+              height: 1080,
+              avg_frame_rate: '25/1',
+            },
+            { codec_type: 'audio' },
+          ],
         }),
       })
     },
@@ -61,32 +73,40 @@ mock.module('../../electron/seed-audio.ts', {
         params.episodeId,
         'video-translate',
         params.targetLanguage,
-        'seed-audio',
+        '连续对白块',
         `${params.outputName}.wav`,
       )
       fs.mkdirSync(path.dirname(target), { recursive: true })
       fs.writeFileSync(target, 'seed-audio')
-      return { path: target, duration: 1 }
+      return { path: target, duration: seedDuration }
     },
-    mixSeedAudioTracks: async (
-      _runId: string,
-      episode: string,
-      _paths: string[],
-      _duration: number,
-      _workflow: string,
-      language: string,
-    ) => {
-      const target = path.join(
-        projectRoot,
-        'episodes',
-        episode,
-        'video-translate',
-        language,
-        '目标人声.wav',
-      )
+  },
+})
+mock.module('../../electron/material-transcript.ts', {
+  namedExports: {
+    runFasterWhisper: async () => {
+      whisperCalls++
+      return {
+        duration: 1,
+        segments: [{ start: 0.1, end: 0.8, text: 'Hello' }],
+        words: [{ word: 'Hello', start: 0.1, end: whisperWordEnd }],
+      }
+    },
+  },
+})
+mock.module('../../electron/ffmpeg/index.ts', {
+  namedExports: {
+    executeFFmpeg: async (args: string[]) => {
+      ffmpegCalls++
+      const target = args.at(-1)!
       fs.mkdirSync(path.dirname(target), { recursive: true })
-      fs.writeFileSync(target, 'mixed')
-      return path.relative(projectRoot, target)
+      fs.writeFileSync(target, 'ffmpeg-audio')
+      return { stdout: '', stderr: '', progress: 100 }
+    },
+    separateAudioStems: async (_source: string, vocal: string, instrument: string) => {
+      fs.mkdirSync(path.dirname(vocal), { recursive: true })
+      fs.writeFileSync(vocal, 'vocal')
+      fs.writeFileSync(instrument, 'instrument')
     },
   },
 })
@@ -94,6 +114,7 @@ const workspace = await import('../../electron/media-workspace.ts')
 const translation = await import('../../electron/video-translation.ts')
 const trace = await import('../../electron/video-translation-trace.ts')
 const translationInput = await import('../../electron/video-translation-input.ts')
+const translationSpeech = await import('../../electron/video-translation-speech.ts')
 const projectId = 'translation-backend'
 const episodeId = 'episode-001'
 const projectRoot = path.join(root, 'project')
@@ -121,6 +142,55 @@ test('upload cancellation changes nothing and upload preserves the original sour
     fs.readFileSync(path.join(projectRoot, result!.rawSnapshotPath), 'utf8'),
     'original-video-bytes',
   )
+})
+
+test('archives a matching clean final master and rejects a different edit', async () => {
+  const sourcePath = 'episodes/episode-001/video-translate/source.mp4'
+  selectedFile = path.join(root, 'clean-master.mp4')
+  fs.writeFileSync(selectedFile, 'clean-video')
+  const result = await translation.selectVideoTranslationFinalMaster(
+    projectId,
+    episodeId,
+    sourcePath,
+  )
+  assert.match(result!.finalMasterVideoPath, /video-translate\/final-master\.mp4$/)
+  const saved = fs.readFileSync(path.join(projectRoot, result!.finalMasterVideoPath), 'utf8')
+  assert.equal(saved, 'clean-video')
+
+  selectedFile = path.join(root, 'mismatch-master.mp4')
+  fs.writeFileSync(selectedFile, 'different-video')
+  await assert.rejects(
+    translation.selectVideoTranslationFinalMaster(projectId, episodeId, sourcePath),
+    /不是同一剪辑/,
+  )
+  assert.equal(fs.readFileSync(path.join(projectRoot, result!.finalMasterVideoPath), 'utf8'), saved)
+})
+
+test('separates source speech once and reuses Whisper evidence for the same video', async () => {
+  const controlledSource = path.join(
+    projectRoot,
+    'episodes',
+    episodeId,
+    'video-translate',
+    'source.mp4',
+  )
+  fs.mkdirSync(path.dirname(controlledSource), { recursive: true })
+  fs.writeFileSync(controlledSource, 'source-video')
+  const before = whisperCalls
+  const first = await translationSpeech.prepareVideoTranslationSpeechEvidence(
+    projectId,
+    episodeId,
+    'episodes/episode-001/video-translate/source.mp4',
+  )
+  const second = await translationSpeech.prepareVideoTranslationSpeechEvidence(
+    projectId,
+    episodeId,
+    'episodes/episode-001/video-translate/source.mp4',
+  )
+  assert.equal(whisperCalls, before + 1)
+  assert.equal(second.transcriptPath, first.transcriptPath)
+  assert.ok(fs.existsSync(path.join(projectRoot, first.srtPath)))
+  assert.ok(fs.existsSync(path.join(projectRoot, first.evidencePath)))
 })
 
 test('stores uploaded translation reference audio inside the translation sandbox', async () => {
@@ -366,44 +436,201 @@ test('translation confirmation restores every Wiki file after a partial replace 
   assert.deepEqual(fs.readFileSync(markdownPath), before)
 })
 
-test('target voice generation reuses Seed task audio without Whisper', async () => {
-  const taskId = 'video-translation-episode-001:full-track'
+test('continuous dialogue generation reuses Seed and Whisper checkpoints', async () => {
+  const seedBefore = seedCalls
+  const whisperBefore = whisperCalls
+  const blockId = 'dialogue-block-001'
   await translation.writeVideoTranslationSeedPlan(
     projectId,
     episodeId,
     'en',
     {
       schemaVersion: 1,
-      segmentId: 'video-translation-episode-001',
-      speakerIds: ['role-1'],
-      references: [],
-      tasks: [
+      episodeId,
+      targetLanguage: 'en',
+      durationMs: 2_000,
+      blocks: [
         {
-          taskId,
-          segmentId: 'video-translation-episode-001',
-          mode: 'timeline-voice',
-          startMs: 0,
-          endMs: 1000,
+          blockId,
+          cueIds: ['cue-1'],
           speakerIds: ['role-1'],
           references: [],
-          lines: [{ speakerId: 'role-1', text: 'Hello', startMs: 0, endMs: 1000 }],
-          includeMusicAndEffects: false,
+          lines: [
+            {
+              cueId: 'cue-1',
+              speakerId: 'role-1',
+              text: 'Hello',
+              expectedStartMs: 500,
+              expectedEndMs: 1_500,
+            },
+          ],
         },
       ],
     },
-    `## ${taskId}\n\nHello`,
+    `## ${blockId}\n\nHello`,
   )
 
-  const target = await translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en')
-  assert.equal(seedCalls, 1)
-  assert.equal(target, path.join('episodes', episodeId, 'video-translate', 'en', '目标人声.wav'))
-  await translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en')
-  assert.equal(seedCalls, 1)
+  const version = await translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en')
+  assert.equal(seedCalls, seedBefore + 1)
+  assert.equal(whisperCalls, whisperBefore + 1)
+  assert.match(version.previewPath, /连续对白块\/voice-.*-dialogue-block-001\.wav$/)
+  assert.match(version.targetVoicePath, /连续对白版本\/voice-.*\/对齐目标人声\.wav$/)
+  const reused = await translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en')
+  assert.equal(reused.versionId, version.versionId)
+  assert.equal(seedCalls, seedBefore + 1)
+  assert.equal(whisperCalls, whisperBefore + 1)
   const timeline = JSON.parse(
     fs.readFileSync(
-      path.join(projectRoot, 'wiki', '翻译', episodeId, 'en', '目标人声时间轴.json'),
+      path.join(
+        projectRoot,
+        'wiki',
+        '翻译',
+        episodeId,
+        'en',
+        '连续对白版本',
+        version.versionId,
+        '时间轴.json',
+      ),
       'utf8',
     ),
   )
-  assert.equal('whisperText' in timeline.tasks[0].cues[0], false)
+  assert.equal(timeline.cues[0].cueId, 'cue-1')
+  assert.equal(timeline.cues[0].observedStartMs, 20)
+  assert.equal(timeline.cues[0].observedEndMs, 920)
+  const regenerated = await translation.generateVideoTranslationTargetVoice(
+    projectId,
+    episodeId,
+    'en',
+    { forceNewVersion: true },
+  )
+  assert.notEqual(regenerated.versionId, version.versionId)
+  assert.notEqual(regenerated.previewPath, version.previewPath)
+  assert.equal(seedCalls, seedBefore + 2)
+  assert.ok(fs.existsSync(path.join(projectRoot, version.previewPath)))
+  assert.equal(
+    (await translation.listVideoTranslationVoiceVersions(projectId, episodeId, 'en')).length,
+    2,
+  )
+})
+
+test('loads legacy timeline and continuous audio as selectable versions', async () => {
+  const legacyEpisode = 'episode-legacy'
+  const wiki = path.join(projectRoot, 'wiki', '翻译', legacyEpisode, 'en')
+  const media = path.join(projectRoot, 'episodes', legacyEpisode, 'video-translate', 'en')
+  fs.mkdirSync(path.join(media, '连续对白块'), { recursive: true })
+  fs.mkdirSync(path.join(media, 'seed-audio'), { recursive: true })
+  fs.mkdirSync(wiki, { recursive: true })
+  const timelinePreview = path.join(media, 'seed-audio', 'timeline.wav')
+  const timelineTarget = path.join(media, '目标人声.wav')
+  const continuousPreview = path.join(media, '连续对白块', 'dialogue-block-001.wav')
+  const continuousTarget = path.join(media, '连续对白目标人声.wav')
+  for (const file of [timelinePreview, timelineTarget, continuousPreview, continuousTarget])
+    fs.writeFileSync(file, 'audio')
+  fs.writeFileSync(
+    path.join(wiki, '声音生成记录.json'),
+    JSON.stringify({
+      generations: [
+        {
+          wavPath: path.relative(projectRoot, timelinePreview),
+          duration: 88,
+          createdAt: '2026-08-07T05:00:00.000Z',
+        },
+      ],
+    }),
+  )
+  fs.writeFileSync(
+    path.join(wiki, '目标人声时间轴.json'),
+    JSON.stringify({ targetVoicePath: path.relative(projectRoot, timelineTarget) }),
+  )
+  fs.writeFileSync(
+    path.join(wiki, '连续对白生成记录.json'),
+    JSON.stringify({
+      generations: [
+        {
+          wavPath: path.relative(projectRoot, continuousPreview),
+          duration: 48,
+          createdAt: '2026-08-07T07:00:00.000Z',
+        },
+      ],
+    }),
+  )
+  fs.writeFileSync(
+    path.join(wiki, '连续对白时间轴.json'),
+    JSON.stringify({ targetVoicePath: path.relative(projectRoot, continuousTarget) }),
+  )
+  const versions = await translation.listVideoTranslationVoiceVersions(
+    projectId,
+    legacyEpisode,
+    'en',
+  )
+  assert.deepEqual(
+    versions.map((version) => [version.kind, version.durationMs]),
+    [
+      ['timeline', 88_000],
+      ['continuous', 48_000],
+    ],
+  )
+})
+
+test('records an overrun warning across dialogue blocks', async () => {
+  seedDuration = 2
+  whisperWordEnd = 1.8
+  const blocks = [
+    {
+      blockId: 'dialogue-block-001',
+      cueIds: ['cue-1'],
+      speakerIds: ['role-1'],
+      references: [],
+      lines: [
+        {
+          cueId: 'cue-1',
+          speakerId: 'role-1',
+          text: 'Hello',
+          expectedStartMs: 0,
+          expectedEndMs: 100,
+        },
+      ],
+    },
+    {
+      blockId: 'dialogue-block-002',
+      cueIds: ['cue-2'],
+      speakerIds: ['role-1'],
+      references: [],
+      lines: [
+        {
+          cueId: 'cue-2',
+          speakerId: 'role-1',
+          text: 'Hello',
+          expectedStartMs: 800,
+          expectedEndMs: 900,
+        },
+      ],
+    },
+  ]
+  await translation.writeVideoTranslationSeedPlan(
+    projectId,
+    episodeId,
+    'en',
+    { schemaVersion: 1, episodeId, targetLanguage: 'en', durationMs: 2_000, blocks },
+    blocks.map((block) => `## ${block.blockId}\n\nHello`).join('\n\n'),
+  )
+  const version = await translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en')
+  const alignment = JSON.parse(
+    fs.readFileSync(
+      path.join(
+        projectRoot,
+        'wiki',
+        '翻译',
+        episodeId,
+        'en',
+        '连续对白版本',
+        version.versionId,
+        '对齐.json',
+      ),
+      'utf8',
+    ),
+  )
+  assert.match(alignment.cues[0].warning, /超过下一句起点/)
+  seedDuration = 1
+  whisperWordEnd = 0.8
 })

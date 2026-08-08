@@ -98,8 +98,10 @@ import {
 } from './seed-audio'
 import {
   deleteVideoTranslationRole,
+  selectVideoTranslationFinalMaster,
   selectVideoTranslationSource,
   generateVideoTranslationTargetVoice,
+  listVideoTranslationVoiceVersions,
   writeConfirmedVideoTranslation,
   writeVideoTranslationSeedPlan,
   writeTranslationVoiceBinding,
@@ -322,6 +324,9 @@ export default function initIPC() {
   ipcMain.handle('video-translation-select-source', (_event, runId, episodeId) =>
     selectVideoTranslationSource(runId, episodeId),
   )
+  ipcMain.handle('video-translation-select-final-master', (_event, runId, episodeId, sourcePath) =>
+    selectVideoTranslationFinalMaster(runId, episodeId, sourcePath),
+  )
   ipcMain.handle('video-translation-identify-speakers', (event, params) =>
     identifyVideoTranslationSpeakers(params, (message) =>
       event.sender.send('video-translation-progress', {
@@ -353,10 +358,25 @@ export default function initIPC() {
     (_event, runId, episodeId, targetLanguage, arrangement, promptMarkdown) =>
       writeVideoTranslationSeedPlan(runId, episodeId, targetLanguage, arrangement, promptMarkdown),
   )
-  ipcMain.handle('video-translation-generate-voice', (_event, runId, episodeId, targetLanguage) =>
-    withRunAbort(runId, (signal) =>
-      generateVideoTranslationTargetVoice(runId, episodeId, targetLanguage, signal),
-    ),
+  ipcMain.handle(
+    'video-translation-list-voice-versions',
+    (_event, runId, episodeId, targetLanguage) =>
+      listVideoTranslationVoiceVersions(runId, episodeId, targetLanguage),
+  )
+  ipcMain.handle(
+    'video-translation-generate-voice',
+    (event, runId, episodeId, targetLanguage, options) =>
+      withRunAbort(runId, (signal) =>
+        generateVideoTranslationTargetVoice(
+          runId,
+          episodeId,
+          targetLanguage,
+          options,
+          signal,
+          (message) =>
+            event.sender.send('video-translation-progress', { runId, episodeId, message }),
+        ),
+      ),
   )
   ipcMain.handle('video-translation-compose', (_event, params) =>
     withRunAbort(params.runId, (signal) =>

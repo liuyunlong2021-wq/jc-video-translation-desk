@@ -59,6 +59,7 @@ function relativizeRun(run: any) {
   if (run.videoTranslation) {
     for (const key of [
       'sourceVideoPath',
+      'finalMasterVideoPath',
       'sourceTranscriptPath',
       'sourceSrtPath',
       'contextPath',
@@ -72,6 +73,13 @@ function relativizeRun(run: any) {
       'finalVideoPath',
     ])
       run.videoTranslation[key] = relativeAsset(run.runId, run.videoTranslation[key])
+    run.videoTranslation.voiceVersions?.forEach((version: any) => {
+      version.previewPath = relativeAsset(run.runId, version.previewPath)
+      version.targetVoicePath = relativeAsset(run.runId, version.targetVoicePath)
+      version.blockAudioPaths = (version.blockAudioPaths || []).map((value: string) =>
+        relativeAsset(run.runId, value),
+      )
+    })
     run.videoTranslation.cues?.forEach((cue: any) => {
       cue.voicePath = relativeAsset(run.runId, cue.voicePath)
     })
@@ -172,6 +180,7 @@ function migrateRun(run: any) {
       : 0
     run.videoTranslation.hasAudio = Boolean(run.videoTranslation.hasAudio)
     if (!Array.isArray(run.videoTranslation.cues)) run.videoTranslation.cues = []
+    if (!Array.isArray(run.videoTranslation.voiceVersions)) run.videoTranslation.voiceVersions = []
     for (const key of [
       'transcriptStatus',
       'speakerStatus',

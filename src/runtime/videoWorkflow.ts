@@ -365,7 +365,7 @@ export interface StoryboardPlan {
   segments: StoryboardSegment[]
 }
 
-export type RevisionTargetType = 'script' | 'project-director' | 'voice-plan' | 'seed-role-prompt' | 'asset-prompt' | 'shot' | 'image' | 'video'
+export type RevisionTargetType = 'script' | 'project-director' | 'voice-plan' | 'seed-role-prompt' | 'seed-global-prompt' | 'asset-prompt' | 'shot' | 'image' | 'video'
 
 export interface RevisionProposal {
   targetType: RevisionTargetType

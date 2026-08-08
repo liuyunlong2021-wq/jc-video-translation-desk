@@ -136,11 +136,18 @@ interface Window {
         runId: string,
         episodeId: string,
       ) => Promise<import('./types').VideoTranslationUploadResult | null>
+      selectVideoTranslationFinalMaster: (
+        runId: string,
+        episodeId: string,
+        sourceVideoPath: string,
+      ) => Promise<import('./types').VideoTranslationMasterUploadResult | null>
       identifyVideoTranslationSpeakers: (
         params: import('./types').IdentifyVideoTranslationSpeakersParams,
       ) => Promise<{
         speakers: import('./types').VideoTranslationSpeakerDraft[]
         contextPaths: Array<{ path: string; hash: string }>
+        sourceTranscriptPath: string
+        sourceSrtPath: string
       }>
       onVideoTranslationProgress: (
         listener: (progress: import('./types').VideoTranslationProgressEvent) => void,
@@ -178,14 +185,20 @@ interface Window {
         runId: string,
         episodeId: string,
         targetLanguage: string,
-        arrangement: import('../src/runtime/seedAudio').SeedAudioArrangement,
+        arrangement: import('../src/runtime/videoTranslation').VideoTranslationDialogueArrangement,
         promptMarkdown: string,
       ) => Promise<{ arrangementPath: string; promptPath: string }>
       generateVideoTranslationTargetVoice: (
         runId: string,
         episodeId: string,
         targetLanguage: string,
-      ) => Promise<string>
+        options?: { forceNewVersion?: boolean },
+      ) => Promise<import('../src/runtime/videoTranslation').VideoTranslationVoiceVersion>
+      listVideoTranslationVoiceVersions: (
+        runId: string,
+        episodeId: string,
+        targetLanguage: string,
+      ) => Promise<import('../src/runtime/videoTranslation').VideoTranslationVoiceVersion[]>
       composeVideoTranslation: (
         params: import('./ffmpeg/types').ComposeVideoTranslationParams,
       ) => Promise<string>
