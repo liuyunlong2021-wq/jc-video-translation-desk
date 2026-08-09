@@ -6,6 +6,7 @@ export type WorkspaceEntry = 'content-create' | 'video-translate'
 export interface TranslationRole {
   translationRoleId: string
   displayName: string
+  visualPersonId?: string
   aliases: string[]
   description?: string
   screenshotId?: string
@@ -37,6 +38,8 @@ export interface VideoTranslationCue {
   emotion?: string
   audioEvent?: string
   frameSuggestion?: string
+  framePath?: string
+  visiblePersonIds?: string[]
   frameCalibrationBackupText?: string
   calibrationSuggestion?: string
   calibrationBackupText?: string
@@ -148,7 +151,7 @@ export function insertVideoTranslationCueAt(
   const previous = sorted.filter((cue) => cue.startMs <= at).at(-1)
   const next = sorted.find((cue) => cue.startMs > at)
   const overlapsExisting = sorted.some((cue) => cue.startMs < at && at < cue.endMs)
-  const endMs = Math.min(durationMs, overlapsExisting ? at + 2000 : next?.startMs ?? at + 2000)
+  const endMs = Math.min(durationMs, overlapsExisting ? at + 2000 : (next?.startMs ?? at + 2000))
   if (endMs <= at) throw new Error('当前位置已到视频结尾')
   const neighbor = previous
   const created: VideoTranslationCue = {
@@ -422,6 +425,29 @@ export function availableVideoTranslationActions(
   return actions
 }
 
+export function videoTranslationRoleBindingTargets(
+  cues: VideoTranslationCue[],
+  cueId: string,
+  batchSameSpeaker: boolean,
+  batchSameVisualPerson: boolean,
+) {
+  const selected = cues.find((cue) => cue.cueId === cueId)
+  if (!selected) return []
+  const speaker = batchSameSpeaker ? selected.speakerCluster?.trim() : undefined
+  const visualPerson =
+    batchSameVisualPerson && selected.visiblePersonIds?.length === 1
+      ? selected.visiblePersonIds[0]
+      : undefined
+  return cues.filter(
+    (cue) =>
+      cue === selected ||
+      (speaker && cue.speakerCluster?.trim() === speaker) ||
+      (visualPerson &&
+        cue.visiblePersonIds?.length === 1 &&
+        cue.visiblePersonIds[0] === visualPerson),
+  )
+}
+
 export function invalidateVideoTranslation(
   state: VideoTranslationState,
   change: VideoTranslationChange,
@@ -455,14 +481,13 @@ export function invalidateVideoTranslation(
   } else if (change === 'role-binding') {
     next.translationStatus = invalidate(next.translationStatus)
     next.reviewStatus = invalidate(next.reviewStatus)
-    next.cues.forEach((cue) => {
-      cue.translatedText = ''
-    })
   } else if (change === 'timing') {
     next.reviewStatus = invalidate(next.reviewStatus)
     next.frameCalibrationStatus = invalidate(next.frameCalibrationStatus)
     next.cues.forEach((cue) => {
       cue.frameSuggestion = undefined
+      cue.framePath = undefined
+      cue.visiblePersonIds = undefined
       cue.frameCalibrationBackupText = undefined
     })
   } else if (change === 'language') {

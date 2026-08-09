@@ -36,7 +36,28 @@
           <tr>
             <th class="timeline-column">时间轴</th>
             <th class="preview-column">视频片段预览</th>
-            <th v-if="showRoles" class="role-column">说话角色</th>
+            <th v-if="showRoles" class="role-column">
+              <span>说话角色</span>
+              <label class="batch-role-toggle">
+                <input
+                  v-model="batchSameSpeaker"
+                  type="checkbox"
+                  @change="batchSameSpeaker && (batchSameVisualPerson = false)"
+                />
+                相同声音
+              </label>
+              <label class="batch-role-toggle">
+                <input
+                  v-model="batchSameVisualPerson"
+                  type="checkbox"
+                  @change="batchSameVisualPerson && (batchSameSpeaker = false)"
+                />
+                相同画面人物
+              </label>
+              <small v-if="batchTargetCount > 1" class="batch-target-count">
+                将修改 {{ batchTargetCount }} 条字幕
+              </small>
+            </th>
             <th>FunASR 原文</th>
             <th>人工确认稿</th>
             <th>{{ languageLabel(state.targetLanguage) }}字幕</th>
@@ -62,7 +83,15 @@
               </v-chip>
             </td>
             <td>
+              <img
+                v-if="cue.framePath"
+                class="frame-preview"
+                :src="fileUrl(cue.framePath)"
+                alt="抽帧校准画面"
+                @error="cue.framePath = undefined"
+              />
               <video
+                v-if="!cue.framePath"
                 :src="`${fileUrl(previewVideoPath)}#t=${cue.startMs / 1000},${cue.endMs / 1000}`"
                 muted
                 preload="metadata"
@@ -74,15 +103,20 @@
                 :items="roleItems(cue)"
                 density="compact"
                 hide-details
-                :label="cue.proposedName ? `候选：${cue.proposedName}` : '选择角色'"
+                :label="roleCandidateName(cue) ? `候选：${roleCandidateName(cue)}` : '选择角色'"
                 @update:model-value="bindRole(cue, $event)"
               />
-              <small v-if="cue.speakerCluster || cue.emotion" :title="cue.evidence">
-                {{ [cue.speakerCluster, cue.emotion].filter(Boolean).join(' · ') }}
+              <small v-if="cue.speakerCluster"
+                >声音识别：{{ speakerLabel(cue.speakerCluster) }}</small
+              >
+              <small v-if="cue.visiblePersonIds?.length">
+                画面出现：{{ cue.visiblePersonIds.map(visualPersonLabel).join('、') }}
               </small>
             </td>
             <td @click.stop="selectCue(cue.cueId)">
-              <div class="recognized-text">{{ cue.recognizedText || '人工新增，无 FunASR 原文' }}</div>
+              <div class="recognized-text">
+                {{ cue.recognizedText || '人工新增，无 FunASR 原文' }}
+              </div>
             </td>
             <td @click.stop="selectCue(cue.cueId)">
               <textarea
@@ -98,11 +132,13 @@
               <small
                 v-if="cue.calibrationSuggestion && cue.calibrationSuggestion !== cue.sourceText"
                 class="calibration-suggestion"
-              >建议：{{ cue.calibrationSuggestion }}</small>
+                >建议：{{ cue.calibrationSuggestion }}</small
+              >
               <small
                 v-if="cue.frameSuggestion && cue.frameSuggestion !== cue.sourceText"
                 class="calibration-suggestion"
-              >画面建议：{{ cue.frameSuggestion }}</small>
+                >画面建议：{{ cue.frameSuggestion }}</small
+              >
             </td>
             <td @click.stop="selectCue(cue.cueId)">
               <textarea
@@ -134,7 +170,9 @@
             class="dialog-action primary"
             :disabled="!roleNameDraft.trim()"
             @click="confirmNewRole"
-          >确认</button>
+          >
+            确认
+          </button>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -145,7 +183,10 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useMediaTaskStore } from '@/store'
 import { managedMediaUrl } from '@/runtime/managedMediaUrl'
-import type { VideoTranslationCue } from '@/runtime/videoTranslation'
+import {
+  videoTranslationRoleBindingTargets,
+  type VideoTranslationCue,
+} from '@/runtime/videoTranslation'
 
 const props = withDefaults(defineProps<{ selectedCueId: string; showRoles?: boolean }>(), {
   showRoles: true,
@@ -164,9 +205,29 @@ const selectedEndMs = ref<number>()
 const roleDialogOpen = ref(false)
 const roleNameDraft = ref('')
 const pendingRoleCue = ref<VideoTranslationCue>()
+const batchSameSpeaker = ref(false)
+const batchSameVisualPerson = ref(false)
+watch(
+  () => [mediaStore.runId, mediaStore.episodeId, state.value.speakerStatus],
+  () => {
+    batchSameSpeaker.value = false
+    batchSameVisualPerson.value = false
+  },
+)
 const selectedCue = computed(() =>
   state.value.cues.find((cue) => cue.cueId === props.selectedCueId),
 )
+const batchTargetCount = computed(() => {
+  const selected = selectedCue.value
+  return selected
+    ? videoTranslationRoleBindingTargets(
+        state.value.cues,
+        selected.cueId,
+        batchSameSpeaker.value,
+        batchSameVisualPerson.value,
+      ).length
+    : 0
+})
 const previewCaption = computed(() =>
   state.value.sourceVideoPath
     ? `${Math.round(state.value.durationMs / 1000)} 秒 · ${state.value.cues.length} 条字幕`
@@ -201,35 +262,46 @@ function languageLabel(value: string) {
     )[value] || value
   )
 }
+function speakerLabel(speakerId: string) {
+  return `声音人物 ${Number(speakerId.match(/\d+$/)?.[0] || 0) + 1}`
+}
+function visualPersonLabel(personId: string) {
+  return `画面人物 ${Number(personId.match(/\d+$/)?.[0] || 0)}`
+}
+function roleCandidateName(cue: VideoTranslationCue) {
+  if (state.value.frameCalibrationStatus === 'ready')
+    return cue.visiblePersonIds?.length === 1 ? visualPersonLabel(cue.visiblePersonIds[0]) : ''
+  return cue.proposedName || ''
+}
 function roleItems(cue: VideoTranslationCue) {
+  const candidateName = roleCandidateName(cue)
   return [
     ...mediaStore.videoTranslationRoles.map((role) => ({
       title: role.displayName,
       value: role.translationRoleId,
     })),
-    ...(cue.proposedName ? [{ title: `新建角色：${cue.proposedName}`, value: '__new__' }] : []),
+    ...(candidateName ? [{ title: `新建角色：${candidateName}`, value: '__new__' }] : []),
   ]
 }
 function bindRole(cue: VideoTranslationCue, value: string) {
   if (value === '__new__') {
     pendingRoleCue.value = cue
-    roleNameDraft.value = cue.proposedName || ''
+    roleNameDraft.value = roleCandidateName(cue)
     roleDialogOpen.value = true
     return
   }
   applyRole(cue, value)
 }
 function applyRole(cue: VideoTranslationCue, roleId: string) {
-  const sameCandidate = cue.speakerCluster?.trim()
-  const canBatchBind = Boolean(sameCandidate)
-  state.value.cues
-    .filter(
-      (item) => item === cue || (canBatchBind && item.speakerCluster?.trim() === sameCandidate),
-    )
-    .forEach((item) => {
-      item.translationRoleId = roleId
-      item.needsReview = false
-    })
+  videoTranslationRoleBindingTargets(
+    state.value.cues,
+    cue.cueId,
+    batchSameSpeaker.value,
+    batchSameVisualPerson.value,
+  ).forEach((item) => {
+    item.translationRoleId = roleId
+    item.needsReview = false
+  })
   mediaStore.invalidateTranslation('role-binding')
 }
 function confirmNewRole() {
@@ -249,11 +321,7 @@ function confirmNewRole() {
   roleDialogOpen.value = false
   pendingRoleCue.value = undefined
 }
-function updateText(
-  cue: VideoTranslationCue,
-  key: 'sourceText' | 'translatedText',
-  event: Event,
-) {
+function updateText(cue: VideoTranslationCue, key: 'sourceText' | 'translatedText', event: Event) {
   cue[key] = (event.target as HTMLTextAreaElement).value
   if (key === 'sourceText') rememberTextCursor(cue, event)
   mediaStore.invalidateTranslation(key === 'translatedText' ? 'translation' : 'source-dialogue')
@@ -381,6 +449,22 @@ p {
 .role-column {
   width: 190px;
 }
+.batch-role-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  font-size: 11px;
+  font-weight: 400;
+  color: rgba(0, 0, 0, 0.6);
+}
+.batch-target-count {
+  display: block;
+  margin-top: 5px;
+  color: rgb(var(--v-theme-primary));
+  font-size: 11px;
+  font-weight: 500;
+}
 .audio-column {
   width: 122px;
 }
@@ -407,12 +491,16 @@ td small {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-td video {
+td video,
+.frame-preview {
   width: 96px;
   aspect-ratio: 16 / 9;
   object-fit: cover;
   background: #111;
   border-radius: 4px;
+}
+.frame-preview {
+  object-fit: contain;
 }
 textarea {
   width: 100%;

@@ -223,7 +223,11 @@ mock.module('../../electron/ffmpeg/index.ts', {
 mock.module('../../electron/video-translation-asr.ts', {
   namedExports: {
     funAsrCuesToSrt: (cues: Array<{ startMs: number; endMs: number; recognizedText: string }>) =>
-      cues.map((cue, index) => `${index + 1}\n${cue.startMs} --> ${cue.endMs}\n${cue.recognizedText}\n`).join('\n'),
+      cues
+        .map(
+          (cue, index) => `${index + 1}\n${cue.startMs} --> ${cue.endMs}\n${cue.recognizedText}\n`,
+        )
+        .join('\n'),
     transcribeVideoTranslationAudio: async (
       runId: string,
       currentEpisodeId: string,
@@ -1554,10 +1558,7 @@ test('FunASR recognition returns raw cues without calling the text model', async
 })
 
 test('semantic calibration retries invalid output and returns text only', async () => {
-  chatOutputs.push(
-    '## cue-001\n你好。',
-    '## cue-001\n你好。\n\n## cue-002\n开始吧。',
-  )
+  chatOutputs.push('## cue-001\n你好。', '## cue-001\n你好。\n\n## cue-002\n开始吧。')
   const requestStart = requests.length
   const result = await cloud.calibrateVideoTranslationSubtitles({
     runId: 'translation-context-run',
@@ -1579,6 +1580,26 @@ test('semantic calibration retries invalid output and returns text only', async 
     .filter((request) => request.url.endsWith('/v1/chat/completions'))
   assert.equal(calls.length, 2)
   assert.doesNotMatch(JSON.stringify(calls), /file_data|video_url|startMs|endMs/)
+})
+
+test('frame calibration rejects oversized cue sets early', async () => {
+  const cue = { cueId: 'cue-001', startMs: 0, endMs: 1000, text: '你好' }
+  await assert.rejects(
+    cloud.calibrateVideoTranslationFrames(
+      {
+        runId: 'translation-context-run',
+        episodeId,
+        videoPath: 'unused.mp4',
+        textModel: 'gemini-3.6-flash',
+        cues: Array.from({ length: 31 }, (_, index) => ({
+          ...cue,
+          cueId: `cue-${String(index + 1).padStart(3, '0')}`,
+        })),
+      },
+      () => {},
+    ),
+    /最多处理 30 条/,
+  )
 })
 
 test('merges one dubbed cue across adjacent audio slices and verifies the block hash', async () => {

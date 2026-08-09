@@ -151,7 +151,15 @@ interface Window {
       ) => Promise<{ subtitles: Array<{ cueId: string; text: string }> }>
       calibrateVideoTranslationFrames: (
         params: import('./types').CalibrateVideoTranslationFramesParams,
-      ) => Promise<{ subtitles: Array<{ cueId: string; text: string }> }>
+      ) => Promise<{
+        persons: Array<{ visualPersonId: string; features: string }>
+        subtitles: Array<{
+          cueId: string
+          text: string
+          framePath?: string
+          visiblePersonIds?: string[]
+        }>
+      }>
       onVideoTranslationProgress: (
         listener: (progress: import('./types').VideoTranslationProgressEvent) => void,
       ) => () => void

@@ -9,6 +9,7 @@ import {
   planVideoTranslationDialogueBlocks,
   splitVideoTranslationCueAt,
   setVideoTranslationCueBoundary,
+  videoTranslationRoleBindingTargets,
   validateConfirmedTranslation,
   validateVideoTranslationDialoguePrompt,
   type TranslationRole,
@@ -196,7 +197,7 @@ test('clears stale translation when calibrated source dialogue changes', () => {
   assert.equal(next.cues[0].translatedText, '')
 })
 
-test('invalidates translated text when the role binding changes', () => {
+test('keeps translated text for review when the role binding changes', () => {
   const state = createVideoTranslationState()
   state.translationStatus = 'ready'
   state.reviewStatus = 'ready'
@@ -216,7 +217,28 @@ test('invalidates translated text when the role binding changes', () => {
   const next = invalidateVideoTranslation(state, 'role-binding')
   assert.equal(next.translationStatus, 'stale')
   assert.equal(next.reviewStatus, 'stale')
-  assert.equal(next.cues[0].translatedText, '')
+  assert.equal(next.cues[0].translatedText, 'Hello')
+})
+
+test('binds one cue or one explicit speaker evidence group', () => {
+  const cues = [
+    { cueId: 'a', speakerCluster: 'speaker-1', visiblePersonIds: ['visual-person-1'] },
+    { cueId: 'b', speakerCluster: 'speaker-1', visiblePersonIds: ['visual-person-2'] },
+    { cueId: 'c', speakerCluster: 'speaker-2', visiblePersonIds: ['visual-person-1'] },
+  ].map((cue, index) => ({
+    ...cue,
+    startMs: index * 1000,
+    endMs: (index + 1) * 1000,
+    recognizedText: cue.cueId,
+    sourceText: cue.cueId,
+    translatedText: '',
+    needsReview: true,
+  }))
+  const ids = (sameSpeaker: boolean, sameVisual: boolean) =>
+    videoTranslationRoleBindingTargets(cues, 'a', sameSpeaker, sameVisual).map((cue) => cue.cueId)
+  assert.deepEqual(ids(false, false), ['a'])
+  assert.deepEqual(ids(true, false), ['a', 'b'])
+  assert.deepEqual(ids(false, true), ['a', 'c'])
 })
 
 test('adds overlapping dialogue and adjusts subtitles from the video playhead', () => {
@@ -266,7 +288,10 @@ test('adds overlapping dialogue and adjusts subtitles from the video playhead', 
   const split = splitVideoTranslationCueAt(cues, 'cue-2', 3500, 1, 'manual-split')
   assert.deepEqual(
     split.cues.slice(1).map((cue) => [cue.startMs, cue.endMs, cue.sourceText]),
-    [[3000, 3500, 't'], [3500, 4000, 'wo']],
+    [
+      [3000, 3500, 't'],
+      [3500, 4000, 'wo'],
+    ],
   )
 })
 
@@ -425,7 +450,7 @@ test('routes translation review through voice workbench before a role-free subti
     assert.match(workspace, new RegExp(column))
   assert.doesNotMatch(workspace, /表演/)
   assert.match(workspace, /v-if="showRoles" class="role-column"/)
-  assert.match(workspace, /item\.speakerCluster\?\.trim\(\) === sameCandidate/)
+  assert.match(workspace, /videoTranslationRoleBindingTargets/)
   assert.match(workspace, /FunASR 原文/)
   assert.match(workspace, /calibrationSuggestion/)
   assert.match(home, /:show-roles="!isTranslationSubtitleWorkspace"/)
@@ -465,6 +490,17 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(inspector, /应用校准建议/)
   assert.match(inspector, /撤销本次校准/)
   assert.match(inspector, /恢复并采用 FunASR 原文/)
+  assert.match(workspace, /相同声音/)
+  assert.match(workspace, /相同画面人物/)
+  assert.match(workspace, /batchSameSpeaker\.value/)
+  assert.match(workspace, /batchSameVisualPerson\.value/)
+  assert.match(workspace, /cue\.framePath/)
+  assert.match(workspace, /cue\.visiblePersonIds/)
+  assert.match(workspace, /声音识别：/)
+  assert.match(workspace, /画面出现：/)
+  assert.match(workspace, /frameCalibrationStatus === 'ready'/)
+  assert.match(workspace, /新建角色：\$\{candidateName\}/)
+  assert.doesNotMatch(workspace, /疑似说话：/)
   assert.doesNotMatch(inspector, /从当前位置拆分字幕/)
   assert.match(inspector, /`cue-\$\{crypto\.randomUUID\(\)\}`/)
   assert.match(sidebar, /mdi-delete-outline/)

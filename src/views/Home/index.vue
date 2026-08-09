@@ -296,9 +296,7 @@
             :show-roles="!isTranslationSubtitleWorkspace"
             @select-cue="selectedTranslationCueId = $event"
             @playhead="translationPlayheadMs = $event"
-            @text-cursor="
-              (cueId, offset) => (translationTextCursor = { cueId, offset })
-            "
+            @text-cursor="(cueId, offset) => (translationTextCursor = { cueId, offset })"
           />
           <VideoTranslationInspector
             :selected-cue-id="selectedTranslationCueId"
@@ -499,7 +497,9 @@ const translationReviewReady = computed(() => mediaStore.videoTranslation?.revie
 const translationFinalWorkspaceReady = computed(() => {
   const state = mediaStore.videoTranslation
   const version = state?.voiceVersions.find((item) => item.versionId === state.activeVoiceVersionId)
-  const roleById = new Map(mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role]))
+  const roleById = new Map(
+    mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role]),
+  )
   const cueIds = new Set(state?.cues.map((cue) => cue.cueId) || [])
   const versionCueIds = new Set(version?.blocks?.flatMap((block) => block.cueIds) || [])
   const referencesReady = version?.blocks?.every((block) =>
@@ -1657,6 +1657,7 @@ async function calibrateTranslationSubtitles() {
 async function calibrateTranslationFrames() {
   await runTranslationStep('calibrate-frames', 'frameCalibrationStatus', async (state) => {
     if (!state.sourceVideoPath) throw new Error('请先上传识别视频')
+    if (state.cues.length > 30) throw new Error('抽帧校准单次最多处理 30 条字幕')
     const result = await window.electron.cloud.calibrateVideoTranslationFrames({
       runId: mediaStore.runId,
       episodeId: mediaStore.episodeId,
@@ -1669,13 +1670,44 @@ async function calibrateTranslationFrames() {
         text: cue.recognizedText || cue.sourceText,
       })),
     })
-    const byId = new Map(result.subtitles.map((subtitle) => [subtitle.cueId, subtitle.text]))
+    const byId = new Map(result.subtitles.map((subtitle) => [subtitle.cueId, subtitle]))
+    const visualRoleByPerson = new Map(
+      result.persons.map((person) => {
+        const roleId = `visual-${mediaStore.episodeId}-${person.visualPersonId}`
+        let role = mediaStore.videoTranslationRoles.find(
+          (item) => item.translationRoleId === roleId,
+        )
+        if (!role) {
+          role = {
+            translationRoleId: roleId,
+            visualPersonId: person.visualPersonId,
+            displayName: visualPersonLabel(person.visualPersonId),
+            aliases: [],
+            sourceEpisodeIds: [mediaStore.episodeId],
+            status: 'confirmed',
+          }
+          mediaStore.videoTranslationRoles.push(role)
+        }
+        return [person.visualPersonId, role.translationRoleId] as const
+      }),
+    )
     state.cues.forEach((cue) => {
-      cue.frameSuggestion = byId.get(cue.cueId) || ''
+      const suggestion = byId.get(cue.cueId)
+      cue.frameSuggestion = suggestion?.text || ''
+      cue.framePath = suggestion?.framePath
+      cue.visiblePersonIds = suggestion?.visiblePersonIds
+      cue.translationRoleId =
+        suggestion?.visiblePersonIds?.length === 1
+          ? visualRoleByPerson.get(suggestion.visiblePersonIds[0])
+          : undefined
       cue.frameCalibrationBackupText = undefined
     })
     toast.success('抽帧校准建议已生成，请对照后应用')
   })
+}
+
+function visualPersonLabel(personId: string) {
+  return `画面人物 ${Number(personId.match(/\d+$/)?.[0] || 0)}`
 }
 
 async function translateVideoSubtitles() {
@@ -1823,7 +1855,11 @@ function translationRole(speakerId: string) {
 }
 
 function speakingTranslationRoles() {
-  const ids = new Set(translationState().cues.map((cue) => cue.translationRoleId).filter(Boolean))
+  const ids = new Set(
+    translationState()
+      .cues.map((cue) => cue.translationRoleId)
+      .filter(Boolean),
+  )
   return mediaStore.videoTranslationRoles.filter((role) => ids.has(role.translationRoleId))
 }
 
