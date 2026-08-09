@@ -1488,6 +1488,7 @@ function translationState() {
 
 type TranslationStatusKey =
   | 'speakerStatus'
+  | 'frameCalibrationStatus'
   | 'calibrationStatus'
   | 'translationStatus'
   | 'reviewStatus'
@@ -1523,6 +1524,7 @@ async function runTranslationAction(action: VideoTranslationAction) {
   if (action === 'upload-video') return uploadTranslationVideo()
   if (action === 'upload-final-master') return uploadTranslationFinalMaster()
   if (action === 'reverse-video') return reverseTranslationVideo()
+  if (action === 'calibrate-frames') return calibrateTranslationFrames()
   if (action === 'calibrate-subtitles') return calibrateTranslationSubtitles()
   if (action === 'translate-all-subtitles') return translateVideoSubtitles()
   if (action === 'open-voice-workspace') return openTranslationVoiceWorkspace()
@@ -1615,6 +1617,7 @@ async function reverseTranslationVideo() {
       }))
       Object.assign(state, invalidateVideoTranslation(state, 'source-dialogue'))
       state.speakerStatus = 'ready'
+      state.frameCalibrationStatus = 'idle'
       state.calibrationStatus = 'idle'
       state.calibrationApplied = false
       selectedTranslationCueId.value = state.cues[0]?.cueId || ''
@@ -1635,7 +1638,8 @@ async function calibrateTranslationSubtitles() {
       textModel: mediaStore.textModel,
       cues: state.cues.map((cue) => ({
         cueId: cue.cueId,
-        text: cue.sourceText,
+        text: cue.recognizedText || cue.sourceText,
+        frameSuggestion: cue.frameSuggestion,
         speakerCluster: cue.speakerCluster,
         emotion: cue.emotion,
       })),
@@ -1647,6 +1651,30 @@ async function calibrateTranslationSubtitles() {
     })
     state.calibrationApplied = false
     toast.success('语义校准建议已生成，请对照后应用')
+  })
+}
+
+async function calibrateTranslationFrames() {
+  await runTranslationStep('calibrate-frames', 'frameCalibrationStatus', async (state) => {
+    if (!state.sourceVideoPath) throw new Error('请先上传识别视频')
+    const result = await window.electron.cloud.calibrateVideoTranslationFrames({
+      runId: mediaStore.runId,
+      episodeId: mediaStore.episodeId,
+      videoPath: state.sourceVideoPath,
+      textModel: mediaStore.textModel,
+      cues: state.cues.map((cue) => ({
+        cueId: cue.cueId,
+        startMs: cue.startMs,
+        endMs: cue.endMs,
+        text: cue.recognizedText || cue.sourceText,
+      })),
+    })
+    const byId = new Map(result.subtitles.map((subtitle) => [subtitle.cueId, subtitle.text]))
+    state.cues.forEach((cue) => {
+      cue.frameSuggestion = byId.get(cue.cueId) || ''
+      cue.frameCalibrationBackupText = undefined
+    })
+    toast.success('抽帧校准建议已生成，请对照后应用')
   })
 }
 
@@ -1668,7 +1696,7 @@ async function translateVideoSubtitles() {
         translationRoleId: cue.translationRoleId || '',
         roleName: cue.translationRoleId
           ? roleById.get(cue.translationRoleId) || ''
-          : cue.proposedName || '',
+          : cue.proposedName || cue.speakerCluster || '',
         performanceDirection: cue.performanceDirection || '',
         text: cue.sourceText,
       })),

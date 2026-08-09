@@ -38,7 +38,7 @@
             <th class="preview-column">视频片段预览</th>
             <th v-if="showRoles" class="role-column">说话角色</th>
             <th>FunASR 原文</th>
-            <th>{{ languageLabel(state.sourceLanguage) }}工作稿</th>
+            <th>人工确认稿</th>
             <th>{{ languageLabel(state.targetLanguage) }}字幕</th>
           </tr>
         </thead>
@@ -99,6 +99,10 @@
                 v-if="cue.calibrationSuggestion && cue.calibrationSuggestion !== cue.sourceText"
                 class="calibration-suggestion"
               >建议：{{ cue.calibrationSuggestion }}</small>
+              <small
+                v-if="cue.frameSuggestion && cue.frameSuggestion !== cue.sourceText"
+                class="calibration-suggestion"
+              >画面建议：{{ cue.frameSuggestion }}</small>
             </td>
             <td @click.stop="selectCue(cue.cueId)">
               <textarea

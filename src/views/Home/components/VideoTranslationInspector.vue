@@ -41,8 +41,32 @@
         v-if="mediaStore.workspaceView === 'script' && state.speakerStatus === 'ready'"
         class="semantic-calibration"
       >
+        <strong>抽帧校准确认</strong>
+        <small>画面字幕只是辅助建议，最终以人工确认稿为准。</small>
+        <v-btn
+          block
+          color="primary"
+          variant="tonal"
+          prepend-icon="mdi-check"
+          :disabled="!hasFrameSuggestion"
+          @click="applyFrameCalibration"
+          >应用抽帧建议</v-btn
+        >
+        <v-btn
+          block
+          variant="text"
+          prepend-icon="mdi-undo"
+          :disabled="!hasFrameBackup"
+          @click="undoFrameCalibration"
+          >撤销本次抽帧校准</v-btn
+        >
+      </section>
+      <section
+        v-if="mediaStore.workspaceView === 'script' && state.speakerStatus === 'ready'"
+        class="semantic-calibration"
+      >
         <strong>语义校准确认</strong>
-        <small>FunASR 原文永久保留；校准只修改工作稿。</small>
+        <small>FunASR 原文永久保留；校准只提供人工确认稿建议。</small>
         <v-btn
           block
           color="primary"
@@ -193,6 +217,13 @@ const actions = computed(() =>
         done: state.value.speakerStatus === 'ready',
       },
       {
+        key: 'calibrate-frames',
+        label: '抽帧校准',
+        icon: 'mdi-image-search-outline',
+        color: 'primary',
+        done: state.value.frameCalibrationStatus === 'ready',
+      },
+      {
         key: 'calibrate-subtitles',
         label: '大模型语义校准',
         icon: 'mdi-text-recognition',
@@ -268,6 +299,7 @@ const actions = computed(() =>
           'upload-video',
           'upload-final-master',
           'reverse-video',
+          'calibrate-frames',
           'calibrate-subtitles',
           'translate-all-subtitles',
           'open-voice-workspace',
@@ -279,6 +311,10 @@ const hasCalibrationSuggestion = computed(() =>
 )
 const hasCalibrationBackup = computed(() =>
   state.value.cues.some((cue) => cue.calibrationBackupText !== undefined),
+)
+const hasFrameSuggestion = computed(() => state.value.cues.some((cue) => cue.frameSuggestion?.trim()))
+const hasFrameBackup = computed(() =>
+  state.value.cues.some((cue) => cue.frameCalibrationBackupText !== undefined),
 )
 
 function formatTime(ms: number) {
@@ -364,6 +400,24 @@ function applyCalibration() {
     cue.sourceText = cue.calibrationSuggestion
   })
   state.value.calibrationApplied = true
+  mediaStore.invalidateTranslation('source-dialogue')
+}
+
+function applyFrameCalibration() {
+  state.value.cues.forEach((cue) => {
+    if (!cue.frameSuggestion?.trim()) return
+    cue.frameCalibrationBackupText = cue.sourceText
+    cue.sourceText = cue.frameSuggestion
+  })
+  mediaStore.invalidateTranslation('source-dialogue')
+}
+
+function undoFrameCalibration() {
+  state.value.cues.forEach((cue) => {
+    if (cue.frameCalibrationBackupText === undefined) return
+    cue.sourceText = cue.frameCalibrationBackupText
+    cue.frameCalibrationBackupText = undefined
+  })
   mediaStore.invalidateTranslation('source-dialogue')
 }
 

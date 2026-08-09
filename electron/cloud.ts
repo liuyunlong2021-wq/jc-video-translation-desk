@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
@@ -26,6 +27,7 @@ import type {
 import {
   assertEpisodeAsset,
   assertVideoTranslationAsset,
+  assertVideoTranslationSource,
   assertRunAsset,
   downloadMedia,
   ensureRunDir,
@@ -534,8 +536,6 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
     if (
       !item.cueId?.trim() ||
       ids.has(item.cueId) ||
-      !item.translationRoleId?.trim() ||
-      !item.roleName?.trim() ||
       !Number.isFinite(item.startMs) ||
       !Number.isFinite(item.endMs) ||
       item.startMs < 0 ||
@@ -1081,11 +1081,11 @@ export async function calibrateVideoTranslationSubtitles(
     throw new Error('语义校准字幕无效')
   return withRunAbort(params.runId, async (signal) => {
     const context = await collectVideoTranslationContext(params.runId, params.episodeId)
-    const prompt = `根据整集上下文校正下面 FunASR 原文中的同音字、错别字、标点、人名、地名和专有名词。不得翻译、概括、补写、合并、拆分或改变顺序。只返回 Markdown，每条严格使用：\n## cue-001\n校准后的原文\n\n项目上下文：${JSON.stringify(context)}\n\n完整原文：${JSON.stringify(params.cues)}`
+    const prompt = `你是影视对白语义重建与校准导演。你的任务不是普通错别字校对，也不是逐句机械润色，而是根据整集故事、当前场景、人物关系、问答因果和情绪推进，在每条固定 cue 时间区间内重建最可能真正说出的中文对白。FunASR 原文是嘈杂音频的听觉线索，frameSuggestion 是可选的画面字幕证据。证据优先级为：已确认剧情资料和专有名词 > 画面中清晰可读的字幕 > 全文语义推理 > FunASR 原文；画面字幕模糊、遮挡或明显不是对白时不得盲目照抄。只允许在声音、画面、剧情资料和上下文共同支持的范围内补回漏字、修正同音字和重建残句，不得编造原剧情没有证据支持的新事实。必须保持人物说话风格、口语感、态度和信息，不得把跨 cue 的对白合并或拆分。不得改变 cueId、顺序、时间戳、说话人或情绪。内部完成全局理解、逐条重建和全局一致性检查，但不要输出分析过程。只返回 Markdown，每条严格使用：\\n## cue-001\\n校准后的原文\\n\\n项目上下文：${JSON.stringify(context)}\\n\\n完整输入：${JSON.stringify(params.cues)}`
     let reason = ''
     for (let attempt = 0; attempt < 2; attempt++) {
       const output = await generateMarkdownResponse(
-        '你是影视字幕语义校准员。只改文字，不输出时间戳或角色结论。',
+        '你是影视对白语义重建与校准导演。只输出逐条文字建议，不输出时间戳、角色结论、情绪结论、解释或推理过程。',
         `${prompt}${reason ? `\n\n上次结果无效：${reason}。请按原 cueId、原顺序和原数量重新输出。` : ''}`,
         params.textModel,
         signal,
@@ -1105,6 +1105,67 @@ export async function calibrateVideoTranslationSubtitles(
       }
     }
     throw new Error(reason || '语义校准失败')
+  })
+}
+
+export async function calibrateVideoTranslationFrames(
+  params: import('./types.ts').CalibrateVideoTranslationFramesParams,
+  reportProgress: (message: string) => void,
+): Promise<{ subtitles: Array<{ cueId: string; text: string }> }> {
+  if (!params?.runId || !params.episodeId || !TEXT_MODELS.includes(params.textModel) || !params.cues?.length)
+    throw new Error('抽帧校准参数无效')
+  const expectedIds = params.cues.map((cue) => cue.cueId)
+  if (
+    new Set(expectedIds).size !== expectedIds.length ||
+    params.cues.some((cue) => !cue.cueId?.trim() || cue.endMs <= cue.startMs)
+  )
+    throw new Error('抽帧校准字幕无效')
+  const source = assertVideoTranslationSource(params.runId, params.episodeId, params.videoPath)
+  return withRunAbort(params.runId, async (signal) => {
+    const { executeFFmpeg } = await import('./ffmpeg/index.ts')
+    const frames: Record<string, unknown>[] = []
+    const temporary: string[] = []
+    try {
+      for (const cue of params.cues) {
+        const framePath = path.join(os.tmpdir(), `video-translation-frame-${randomUUID()}.jpg`)
+        temporary.push(framePath)
+        const midpoint = ((cue.startMs + cue.endMs) / 2) / 1000
+        await executeFFmpeg(
+          ['-ss', midpoint.toFixed(3), '-i', source, '-frames:v', '1', '-vf', 'scale=768:-2', '-q:v', '3', '-y', framePath],
+          { abortSignal: signal },
+        )
+        const image = await fs.promises.readFile(framePath)
+        frames.push({
+          cueId: cue.cueId,
+          funasrText: cue.text,
+          image: `data:image/jpeg;base64,${image.toString('base64')}`,
+        })
+        reportProgress(`抽帧校准：已处理 ${frames.length}/${params.cues.length} 条字幕`)
+      }
+      const prompt = `你是影视对白画面字幕校准员。请读取每条 cue 的视频画面，识别画面中明确可读的对白字幕，并结合 FunASR 原文提出文字建议。画面文字模糊、遮挡、无字幕或明显不是对白时，保留 FunASR 原文。不得改动 cueId、时间戳、数量或顺序，不得输出解释。只返回 Markdown，每条严格使用：\n## cue-001\n建议文字\n\n输入：${JSON.stringify(frames.map(({ image, ...cue }) => cue))}`
+      const content: Record<string, unknown>[] = [{ type: 'text', text: prompt }]
+      frames.forEach((frame) => {
+        content.push({ type: 'text', text: `\n画面 ${frame.cueId}：` })
+        content.push({ type: 'image_url', image_url: { url: frame.image } })
+      })
+      const output = await generateMarkdownResponse(
+        '你只输出逐条字幕文字建议，不输出时间戳、角色结论或分析过程。',
+        content,
+        params.textModel,
+        signal,
+        16_000,
+        VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
+      )
+      const calibrated = parseCueMarkdown(output)
+      if (
+        calibrated.length !== expectedIds.length ||
+        calibrated.some((item, index) => item.cueId !== expectedIds[index] || !item.body.trim())
+      )
+        throw new Error('抽帧校准结果的 cueId、顺序、数量或正文不一致')
+      return { subtitles: calibrated.map((item) => ({ cueId: item.cueId, text: item.body.trim() })) }
+    } finally {
+      await Promise.all(temporary.map((file) => fs.promises.rm(file, { force: true })))
+    }
   })
 }
 

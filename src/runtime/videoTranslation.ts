@@ -36,6 +36,8 @@ export interface VideoTranslationCue {
   speakerCluster?: string
   emotion?: string
   audioEvent?: string
+  frameSuggestion?: string
+  frameCalibrationBackupText?: string
   calibrationSuggestion?: string
   calibrationBackupText?: string
 }
@@ -67,6 +69,7 @@ export interface VideoTranslationState {
   finalVideoPath?: string
   cues: VideoTranslationCue[]
   speakerStatus: ArtifactStatus
+  frameCalibrationStatus: ArtifactStatus
   calibrationStatus: ArtifactStatus
   calibrationApplied: boolean
   translationStatus: ArtifactStatus
@@ -261,6 +264,7 @@ export type VideoTranslationAction =
   | 'upload-final-master'
   | 'reverse-video'
   | 'calibrate-subtitles'
+  | 'calibrate-frames'
   | 'translate-all-subtitles'
   | 'open-voice-workspace'
   | 'arrange-doubao-voice'
@@ -292,6 +296,7 @@ export function createVideoTranslationState(): VideoTranslationState {
     cues: [],
     voiceVersions: [],
     speakerStatus: 'idle',
+    frameCalibrationStatus: 'idle',
     calibrationStatus: 'idle',
     calibrationApplied: false,
     translationStatus: 'idle',
@@ -365,16 +370,11 @@ export function availableVideoTranslationActions(
   if (!state.hasAudio) return actions
   actions.push('reverse-video')
   if (state.speakerStatus !== 'ready') return actions
-  if (state.cues.length) actions.push('calibrate-subtitles')
+  if (state.cues.length) actions.push('calibrate-frames', 'calibrate-subtitles')
   if (
     state.speakerStatus === 'ready' &&
-    state.calibrationApplied &&
-    state.cues.every(
-      (cue) =>
-        cue.sourceText.trim() &&
-        cue.translationRoleId &&
-        roles.some((role) => role.translationRoleId === cue.translationRoleId),
-    ) &&
+    state.cues.length > 0 &&
+    state.cues.every((cue) => cue.sourceText.trim()) &&
     actionable(state.translationStatus)
   )
     actions.push('translate-all-subtitles')
@@ -460,6 +460,11 @@ export function invalidateVideoTranslation(
     })
   } else if (change === 'timing') {
     next.reviewStatus = invalidate(next.reviewStatus)
+    next.frameCalibrationStatus = invalidate(next.frameCalibrationStatus)
+    next.cues.forEach((cue) => {
+      cue.frameSuggestion = undefined
+      cue.frameCalibrationBackupText = undefined
+    })
   } else if (change === 'language') {
     next.translationStatus = invalidate(next.translationStatus)
     next.reviewStatus = invalidate(next.reviewStatus)

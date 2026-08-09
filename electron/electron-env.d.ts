@@ -149,6 +149,9 @@ interface Window {
       calibrateVideoTranslationSubtitles: (
         params: import('./types').CalibrateVideoTranslationSubtitlesParams,
       ) => Promise<{ subtitles: Array<{ cueId: string; text: string }> }>
+      calibrateVideoTranslationFrames: (
+        params: import('./types').CalibrateVideoTranslationFramesParams,
+      ) => Promise<{ subtitles: Array<{ cueId: string; text: string }> }>
       onVideoTranslationProgress: (
         listener: (progress: import('./types').VideoTranslationProgressEvent) => void,
       ) => () => void

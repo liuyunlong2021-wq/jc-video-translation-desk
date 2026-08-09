@@ -125,6 +125,9 @@ contextBridge.exposeInMainWorld('electron', {
     calibrateVideoTranslationSubtitles: (
       params: import('./types').CalibrateVideoTranslationSubtitlesParams,
     ) => ipcRenderer.invoke('video-translation-calibrate-subtitles', params),
+    calibrateVideoTranslationFrames: (
+      params: import('./types').CalibrateVideoTranslationFramesParams,
+    ) => ipcRenderer.invoke('video-translation-calibrate-frames', params),
     onVideoTranslationProgress: (
       listener: (progress: import('./types').VideoTranslationProgressEvent) => void,
     ) => {

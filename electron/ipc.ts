@@ -36,6 +36,7 @@ import {
   translateVideoSubtitles,
   identifyVideoTranslationSpeakers,
   calibrateVideoTranslationSubtitles,
+  calibrateVideoTranslationFrames,
   generateVideoTranslationDialogueTimestamps,
   withRunAbort,
 } from './cloud'
@@ -339,6 +340,15 @@ export default function initIPC() {
   )
   ipcMain.handle('video-translation-calibrate-subtitles', (_event, params) =>
     calibrateVideoTranslationSubtitles(params),
+  )
+  ipcMain.handle('video-translation-calibrate-frames', (event, params) =>
+    calibrateVideoTranslationFrames(params, (message) =>
+      event.sender.send('video-translation-progress', {
+        runId: params.runId,
+        episodeId: params.episodeId,
+        message,
+      }),
+    ),
   )
   ipcMain.handle('video-translation-translate', (_event, params) => translateVideoSubtitles(params))
   ipcMain.handle(

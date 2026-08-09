@@ -366,6 +366,19 @@ export interface IdentifyVideoTranslationSpeakersParams {
   durationMs: number
 }
 
+export interface CalibrateVideoTranslationFramesParams {
+  runId: string
+  episodeId: string
+  videoPath: string
+  textModel: TextModel
+  cues: Array<{
+    cueId: string
+    startMs: number
+    endMs: number
+    text: string
+  }>
+}
+
 export interface CalibrateVideoTranslationSubtitlesParams {
   runId: string
   episodeId: string
@@ -373,6 +386,7 @@ export interface CalibrateVideoTranslationSubtitlesParams {
   cues: Array<{
     cueId: string
     text: string
+    frameSuggestion?: string
     speakerCluster?: string
     emotion?: string
   }>

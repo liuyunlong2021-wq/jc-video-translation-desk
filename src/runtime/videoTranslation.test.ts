@@ -49,10 +49,13 @@ test('opens only the translation action whose dependencies are ready', () => {
     },
   ]
   assert.ok(availableVideoTranslationActions(state, [role]).includes('calibrate-subtitles'))
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('calibrate-frames'))
   state.translationStatus = 'idle'
-  assert.ok(!availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
-  state.calibrationApplied = true
   assert.ok(availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
+  state.cues[0].sourceText = ''
+  assert.ok(!availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
+  state.cues[0].sourceText = '你好'
+  state.calibrationApplied = true
   state.translationStatus = 'ready'
   assert.ok(availableVideoTranslationActions(state, [role]).includes('arrange-doubao-voice'))
   assert.ok(

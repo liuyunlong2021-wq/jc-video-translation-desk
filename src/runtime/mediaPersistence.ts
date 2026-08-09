@@ -178,6 +178,7 @@ function migrateRun(run: any) {
     for (const key of [
       'transcriptStatus',
       'speakerStatus',
+      'frameCalibrationStatus',
       'calibrationStatus',
       'translationStatus',
       'reviewStatus',
