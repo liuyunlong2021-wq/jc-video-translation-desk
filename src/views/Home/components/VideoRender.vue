@@ -35,11 +35,7 @@
           <v-progress-circular indeterminate size="16" width="2" />
           <span>AI 正在修改当前内容，请稍候…</span>
         </div>
-        <div
-          v-else-if="revisionFeedback"
-          class="revision-feedback"
-          :class="revisionFeedback.type"
-        >
+        <div v-else-if="revisionFeedback" class="revision-feedback" :class="revisionFeedback.type">
           {{ revisionFeedback.text }}
         </div>
         <div class="revision-actions">
@@ -82,7 +78,6 @@
         </template>
         <template v-else>
           <strong>全局配音</strong>
-          <small>按确认字幕生成无时间戳连续对白，再识别裁剪并贴回原时间轴。</small>
           <small v-if="globalSeedDisabledReason" class="text-warning">{{
             globalSeedDisabledReason
           }}</small>
@@ -90,10 +85,14 @@
             color="success"
             prepend-icon="mdi-text-box-edit-outline"
             :loading="mediaStore.busyAction === 'arrange-doubao-voice'"
-            :disabled="Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured"
+            :disabled="
+              Boolean(mediaStore.busyAction) ||
+              !mediaStore.apiConfigured ||
+              !allTranslationVoicesConfirmed
+            "
             block
             @click="$emit('generateGlobalSeedPrompt')"
-            >生成连续对白导演稿</v-btn
+            >生成全局配音提示词</v-btn
           >
           <v-btn
             color="success"
@@ -106,9 +105,7 @@
             "
             block
             @click="$emit('generateGlobalSeedAudio')"
-            >{{
-              mediaStore.seedAudioTrackPath ? '重新生成并对齐连续对白' : '生成并对齐连续对白'
-            }}</v-btn
+            >生成全局配音</v-btn
           >
           <v-alert
             v-if="
@@ -125,7 +122,7 @@
             v-if="translationMode"
             color="success"
             prepend-icon="mdi-subtitles-outline"
-            :disabled="Boolean(mediaStore.busyAction)"
+            :disabled="Boolean(mediaStore.busyAction) || !activeTranslationVoiceComplete"
             block
             @click="$emit('openTranslationSubtitles')"
             >进入成片工作台</v-btn
@@ -316,10 +313,16 @@ const selectedReferenceAsset = computed(() =>
 )
 const seedCharacters = computed(() =>
   translationMode
-    ? mediaStore.videoTranslationRoles.map((role) => ({
-        id: role.translationRoleId,
-        label: role.displayName,
-      }))
+    ? mediaStore.videoTranslationRoles
+        .filter((role) =>
+          mediaStore.videoTranslation?.cues.some(
+            (cue) => cue.translationRoleId === role.translationRoleId,
+          ),
+        )
+        .map((role) => ({
+          id: role.translationRoleId,
+          label: role.displayName,
+        }))
     : mediaStore.referenceAssets.filter((asset) => asset.role === 'character'),
 )
 const selectedSeedCharacter = computed(() =>
@@ -334,11 +337,32 @@ const allSeedRolePromptsReady = computed(
       Boolean(mediaStore.seedAudioRolePrompts[asset.id]?.trim()),
     ),
 )
+const allTranslationVoicesConfirmed = computed(
+  () =>
+    !translationMode ||
+    seedCharacters.value.every((asset) => {
+      const role = mediaStore.videoTranslationRoles.find(
+        (item) => item.translationRoleId === asset.id,
+      )
+      return Boolean(
+        role?.voiceProfileId && role.voiceIdentityText?.trim() && role.voiceConfirmedAt,
+      )
+    }),
+)
+const activeTranslationVoiceComplete = computed(() => {
+  if (!translationMode) return true
+  const state = mediaStore.videoTranslation
+  const version = state?.voiceVersions.find((item) => item.versionId === state.activeVoiceVersionId)
+  return Boolean(
+    version?.blocks?.length &&
+      version.finalScriptId === state?.finalScriptId &&
+      version.scriptHash === state?.scriptHash,
+  )
+})
 const globalSeedDisabledReason = computed(() => {
-  if (translationMode && mediaStore.videoTranslationRoles.some((role) => !role.voiceProfileId))
-    return '请先为全部角色绑定参考音。'
-  if (!mediaStore.seedAudioGlobalPrompt.trim()) return '下一步：生成连续对白导演稿。'
-  if (!mediaStore.seedAudioTrackPath) return '下一步：生成并对齐连续对白。'
+  if (!allTranslationVoicesConfirmed.value) return '请先确认全部角色声音。'
+  if (!mediaStore.seedAudioGlobalPrompt.trim()) return '下一步：生成全局配音提示词。'
+  if (!mediaStore.seedAudioTrackPath) return '下一步：生成全局配音。'
   return ''
 })
 

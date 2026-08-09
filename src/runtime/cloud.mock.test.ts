@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { Readable } from 'node:stream'
 import test, * as nodeTest from 'node:test'
@@ -22,6 +23,18 @@ let omitChatDone = false
 let encryptionAvailable = true
 let selectedFile = ''
 let splitUtf8 = false
+let asrCues = [
+  {
+    cueId: 'cue-001',
+    startMs: 610,
+    endMs: 1530,
+    recognizedText: '你好',
+    speakerCluster: 'speaker-0',
+    language: 'zh',
+    emotion: 'NEUTRAL',
+    audioEvent: 'Speech',
+  },
+]
 
 class MockAxiosError extends Error {}
 
@@ -51,8 +64,10 @@ const axios = {
     if (options.url.endsWith('/v1/videos')) {
       return { data: { url: 'https://media.example/video.mp4' } }
     }
-    if (options.url.endsWith('/v1/chat/completions')) {
+    if (options.url.endsWith('/chat/completions')) {
       const output = chatOutputs.shift()
+      if (options.responseType === 'json')
+        return { data: { choices: [{ message: { content: output } }] } }
       const delta = typeof output === 'string' ? { content: output } : output
       const payload = Buffer.from(
         [
@@ -72,6 +87,12 @@ const axios = {
       }
     }
     throw new Error(`unexpected request: ${options.url}`)
+  },
+  async post(url: string, data: any, options: any) {
+    requests.push({ method: 'POST', url, data, headers: options.headers })
+    if (url.endsWith('/api/v3/files'))
+      return { data: { id: `file-${requests.length}`, status: 'active' } }
+    throw new Error(`unexpected post request: ${url}`)
   },
   async get(url: string, options: any) {
     downloads.push({ url, headers: options.headers })
@@ -184,28 +205,57 @@ mock.module('node:child_process', {
     },
   },
 })
-mock.module('../../electron/video-translation-speech.ts', {
+mock.module('../../electron/ffmpeg/index.ts', {
   namedExports: {
-    prepareVideoTranslationSpeechEvidence: async () => ({
-      transcript: {
-        schemaVersion: 1,
-        mediaId: 'video-translation-source',
-        sourceMediaPath: 'wiki/翻译/episode-001/识别/vocal.wav',
-        durationMs: 12000,
-        cues: [
-          {
-            cueId: 'speech-1',
-            mediaId: 'video-translation-source',
-            startMs: 700,
-            endMs: 2400,
-            recognizedText: '你过来 我送你去',
-          },
-        ],
-      },
-      transcriptPath: 'wiki/翻译/episode-001/识别/source-whisper.json',
-      srtPath: 'wiki/翻译/episode-001/识别/source-whisper.srt',
-      evidencePath: 'wiki/翻译/episode-001/00-人声识别与漏句证据.md',
-    }),
+    executeFFmpeg: async (args: string[]) => {
+      const target = args.at(-1)!
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.writeFileSync(target, 'ffmpeg audio')
+      return { stdout: '', stderr: '', progress: 100 }
+    },
+    separateAudioStems: async (_source: string, vocal: string, instrument: string) => {
+      fs.mkdirSync(path.dirname(vocal), { recursive: true })
+      fs.writeFileSync(vocal, 'vocal')
+      fs.writeFileSync(instrument, 'instrument')
+    },
+  },
+})
+mock.module('../../electron/video-translation-asr.ts', {
+  namedExports: {
+    funAsrCuesToSrt: (cues: Array<{ startMs: number; endMs: number; recognizedText: string }>) =>
+      cues.map((cue, index) => `${index + 1}\n${cue.startMs} --> ${cue.endMs}\n${cue.recognizedText}\n`).join('\n'),
+    transcribeVideoTranslationAudio: async (
+      runId: string,
+      currentEpisodeId: string,
+      _videoPath: string,
+      _durationMs: number,
+      reportProgress: (message: string) => void,
+    ) => {
+      reportProgress('第 2/3 步：FunASR 正在识别文字、时间、说话人和情绪')
+      const srtPath = path.join(
+        userData,
+        'projects',
+        runId,
+        'wiki',
+        '翻译',
+        currentEpisodeId,
+        '原始转写.srt',
+      )
+      fs.mkdirSync(path.dirname(srtPath), { recursive: true })
+      fs.writeFileSync(srtPath, 'mock srt')
+      return {
+        transcript: {
+          schemaVersion: 1,
+          engine: 'funasr-test',
+          device: 'cpu',
+          sourceHash: 'a'.repeat(64),
+          sourceAudioPath: 'source.wav',
+          cues: asrCues,
+        },
+        jsonPath: srtPath.replace(/\.srt$/, '.json'),
+        srtPath,
+      }
+    },
   },
 })
 
@@ -239,6 +289,7 @@ for (const projectId of [
   'reference-run',
   'subtitle-wiki-run',
   'translation-context-run',
+  'translation-inline-run',
   'translation-invalid-run',
   'other-context-run',
 ])
@@ -1413,8 +1464,24 @@ test('video translation uses cue Markdown and retries an incomplete draft', asyn
     sourceLanguage: 'zh',
     targetLanguage: 'en',
     subtitles: [
-      { cueId: 'cue-001', text: '你好。' },
-      { cueId: 'cue-002', text: '开始吧。' },
+      {
+        cueId: 'cue-001',
+        startMs: 610,
+        endMs: 1530,
+        translationRoleId: 'role-1',
+        roleName: '林默',
+        performanceDirection: '平静招呼',
+        text: '你好。',
+      },
+      {
+        cueId: 'cue-002',
+        startMs: 1800,
+        endMs: 2600,
+        translationRoleId: 'role-1',
+        roleName: '林默',
+        performanceDirection: '示意众人开始',
+        text: '开始吧。',
+      },
     ],
   })
   assert.deepEqual(result.subtitles, [
@@ -1429,148 +1496,196 @@ test('video translation uses cue Markdown and retries an incomplete draft', asyn
   assert.match(calls[1].data.messages[1].content, /上次结果无效/)
 })
 
-test('Gemini plans FFmpeg slices and each slice directly becomes the final dialogue', async () => {
+test('FunASR recognition returns raw cues without calling the text model', async () => {
   const runId = 'translation-context-run'
-  const source = path.join(
-    projectRoot(runId),
-    'episodes',
-    episodeId,
-    'video-translate',
-    'source.mov',
-  )
-  fs.mkdirSync(path.dirname(source), { recursive: true })
-  fs.writeFileSync(source, Buffer.alloc(20 * 1024 * 1024 + 1))
-  const ffmpegStart = ffmpegArgs.length
-  chatOutputs.push(
-    '## 剧情概要\n\n两人准备离开。\n\n## FFmpeg切片方案\n- slice-001 | 0 | 12000 | 当前短片保持完整',
-    '## line-001\n- 开始毫秒：700\n- 结束毫秒：1300\n- 角色 ID：role-1\n- 角色名：林默\n- 置信度：0.98\n- 需要复核：否\n\n### 校准原文\n你过来\n\n### 证据\n声音、口型和字幕一致\n\n### 画面文字\n你过来\n\n## line-002\n- 开始毫秒：1500\n- 结束毫秒：2400\n- 角色 ID：role-1\n- 角色名：林默\n- 置信度：0.99\n- 需要复核：否\n\n### 校准原文\n我送你去\n\n### 证据\n画面字幕清晰可见\n\n### 画面文字\n我送你去',
-  )
+  asrCues = [
+    {
+      cueId: 'cue-001',
+      startMs: 610,
+      endMs: 1530,
+      recognizedText: '你好',
+      speakerCluster: 'speaker-0',
+      language: 'zh',
+      emotion: 'NEUTRAL',
+      audioEvent: 'Speech',
+    },
+    {
+      cueId: 'cue-002',
+      startMs: 1800,
+      endMs: 2600,
+      recognizedText: '开始把',
+      speakerCluster: 'speaker-1',
+      language: 'zh',
+      emotion: 'HAPPY',
+      audioEvent: 'Speech',
+    },
+  ]
+  const requestStart = requests.length
   const progress: string[] = []
   const result = await cloud.identifyVideoTranslationSpeakers(
     {
       runId,
       episodeId,
-      textModel: 'deepseek-v4-pro',
       videoPath: 'episodes/episode-001/video-translate/source.mov',
-      roles: [
-        {
-          translationRoleId: 'role-1',
-          displayName: '林默',
-          aliases: [],
-          linkedCreativeRoleId: 'creative-1',
-        },
-      ],
+      durationMs: 12_000,
     },
     (message) => progress.push(message),
   )
   assert.deepEqual(
-    result.speakers.map((cue) => cue.correctedText),
-    ['你过来', '我送你去'],
+    result.speakers.map((cue) => [cue.cueId, cue.startMs, cue.endMs, cue.correctedText]),
+    [
+      ['cue-001', 610, 1530, '你好'],
+      ['cue-002', 1800, 2600, '开始把'],
+    ],
   )
-  assert.equal(result.speakers[1].recognizedText, '')
-  assert.equal(result.speakers[1].ocrText, '我送你去')
-  const translationFfmpegCalls = ffmpegArgs.slice(ffmpegStart)
-  assert.equal(translationFfmpegCalls.length, 2)
-  assert.match(
-    translationFfmpegCalls[0][translationFfmpegCalls[0].indexOf('-i') + 1],
-    /source\.mov$/,
+  assert.deepEqual(
+    result.speakers.map((cue) => [cue.speakerCluster, cue.emotion, cue.proposedName]),
+    [
+      ['speaker-0', 'NEUTRAL', 'speaker-0'],
+      ['speaker-1', 'HAPPY', 'speaker-1'],
+    ],
   )
-  assert.match(
-    translationFfmpegCalls[1][translationFfmpegCalls[1].indexOf('-i') + 1],
-    /analysis\.mp4$/,
-  )
-  for (const filename of [
-    '01-整体分析与切片方案.md',
-    '02-FFmpeg切片.md',
-    '03-片段001台词.md',
-    '03-Gemini逐片台词.md',
-    '04-最终稿.md',
-  ])
-    assert.ok(fs.existsSync(path.join(projectRoot(runId), 'wiki', '翻译', episodeId, filename)))
-  const trace = fs.readFileSync(
-    path.join(projectRoot(runId), 'wiki', '翻译', episodeId, '过程记录.md'),
-    'utf8',
-  )
-  assert.match(trace, /第一步整体分析与切片方案/)
-  assert.match(trace, /第二步 FFmpeg 切片/)
-  assert.match(trace, /第三步 Gemini 逐片台词/)
-  assert.match(trace, /第四步直接确定最终稿/)
-  const calibrationRequests = requests.slice(-2)
-  assert.equal(calibrationRequests.length, 2)
-  assert.match(
-    calibrationRequests[0].data.messages[1].content.find((part: any) => part.type === 'text').text,
-    /FFmpeg 规划切片/,
-  )
-  const request = calibrationRequests[1]
-  assert.equal(request.data.model, 'gemini-3.6-flash')
-  assert.equal(request.timeout, cloud.VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS)
-  assert.equal(request.data.response_format, undefined)
-  const content = request.data.messages[1].content
-  assert.match(
-    content.find((part: any) => part.type === 'file').file.file_data,
-    /^data:video\/mp4;base64,/,
-  )
-  const prompt = content.find((part: any) => part.type === 'text').text
-  assert.match(prompt, /FFmpeg 切片/)
-  assert.match(prompt, /不得概括、跳过短句或把画面字幕忽略掉/)
-  assert.match(JSON.stringify(calibrationRequests), /Whisper/)
-  assert.match(progress.join('\n'), /片段 1\/1/)
-  assert.match(progress.at(-1) || '', /04-最终稿\.md/)
-
-  const paidRequestsBeforeResume = requests.filter((item) =>
-    item.url.endsWith('/v1/chat/completions'),
-  ).length
-  const resumeProgress: string[] = []
-  const resumed = await cloud.identifyVideoTranslationSpeakers(
-    {
-      runId,
-      episodeId,
-      textModel: 'gemini-3.6-flash',
-      videoPath: 'episodes/episode-001/video-translate/source.mov',
-      roles: [
-        {
-          translationRoleId: 'role-1',
-          displayName: '林默',
-          aliases: [],
-          linkedCreativeRoleId: 'creative-1',
-        },
-      ],
-    },
-    (message) => resumeProgress.push(message),
-  )
-  assert.deepEqual(resumed.speakers, result.speakers)
-  assert.equal(
-    requests.filter((item) => item.url.endsWith('/v1/chat/completions')).length,
-    paidRequestsBeforeResume,
-  )
-  assert.match(resumeProgress.join('\n'), /复用 01-整体分析与切片方案/)
-  assert.match(resumeProgress.join('\n'), /复用已完成片段 1\/1/)
+  const calls = requests
+    .slice(requestStart)
+    .filter((request) => request.url.endsWith('/v1/chat/completions'))
+  assert.equal(calls.length, 0)
+  assert.match(progress.join('\n'), /FunASR/)
+  assert.match(progress.at(-1) || '', /字幕识别完成/)
 })
 
-test('rejects an invalid per-slice dialogue after one retry', async () => {
-  const runId = 'translation-invalid-run'
-  const source = path.join(
+test('semantic calibration retries invalid output and returns text only', async () => {
+  chatOutputs.push(
+    '## cue-001\n你好。',
+    '## cue-001\n你好。\n\n## cue-002\n开始吧。',
+  )
+  const requestStart = requests.length
+  const result = await cloud.calibrateVideoTranslationSubtitles({
+    runId: 'translation-context-run',
+    episodeId,
+    textModel: 'deepseek-v4-pro',
+    cues: asrCues.map(({ cueId, recognizedText, speakerCluster, emotion }) => ({
+      cueId,
+      text: recognizedText,
+      speakerCluster,
+      emotion,
+    })),
+  })
+  assert.deepEqual(result.subtitles, [
+    { cueId: 'cue-001', text: '你好。' },
+    { cueId: 'cue-002', text: '开始吧。' },
+  ])
+  const calls = requests
+    .slice(requestStart)
+    .filter((request) => request.url.endsWith('/v1/chat/completions'))
+  assert.equal(calls.length, 2)
+  assert.doesNotMatch(JSON.stringify(calls), /file_data|video_url|startMs|endMs/)
+})
+
+test('merges one dubbed cue across adjacent audio slices and verifies the block hash', async () => {
+  const runId = 'translation-timestamp-run'
+  await workspace.registerProjectRoot(runId, projectRoot(runId), false)
+  const blockPath = path.join(
     projectRoot(runId),
     'episodes',
     episodeId,
     'video-translate',
-    'source.mp4',
+    'en',
+    '全局配音版本',
+    'voice-test',
+    'voice-block-001.wav',
   )
-  fs.mkdirSync(path.dirname(source), { recursive: true })
-  fs.writeFileSync(source, Buffer.from('mock mp4'))
+  fs.mkdirSync(path.dirname(blockPath), { recursive: true })
+  fs.writeFileSync(blockPath, 'raw dubbed block')
+  const audioHash = createHash('sha256').update(fs.readFileSync(blockPath)).digest('hex')
+  const canonical = {
+    sourceFingerprint: 'f'.repeat(64),
+    sourceLanguage: 'zh',
+    targetLanguage: 'en',
+    cues: [
+      {
+        cueId: 'cue-001',
+        translationRoleId: 'role-1',
+        roleName: '林默',
+        startMs: 2_000,
+        endMs: 3_000,
+        performanceDirection: '平静问候',
+        sourceText: '你好',
+        translatedText: 'Hello',
+      },
+    ],
+  }
+  const scriptHash = createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
+  const voiceVersion = {
+    versionId: 'voice-test',
+    createdAt: new Date().toISOString(),
+    previewPath: path.relative(projectRoot(runId), blockPath),
+    finalScriptId: `timestamp-script-${scriptHash.slice(0, 16)}`,
+    scriptHash,
+    blocks: [
+      {
+        voiceBlockId: 'voice-block-001',
+        cueIds: ['cue-001'],
+        audioPath: path.relative(projectRoot(runId), blockPath),
+        audioHash,
+        durationMs: 12_000,
+        prompt: 'prompt',
+        references: [],
+      },
+    ],
+    durationMs: 12_000,
+  }
+  const wikiRoot = path.join(projectRoot(runId), 'wiki', '翻译', episodeId)
+  const manifestPath = path.join(
+    wikiRoot,
+    '声音',
+    '全局配音版本',
+    voiceVersion.versionId,
+    'manifest.json',
+  )
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true })
+  fs.writeFileSync(
+    path.join(wikiRoot, '最终时间戳剧本.json'),
+    JSON.stringify({ finalScriptId: voiceVersion.finalScriptId, scriptHash, ...canonical }),
+  )
+  fs.writeFileSync(manifestPath, JSON.stringify(voiceVersion))
   chatOutputs.push(
-    '## 剧情概要\n\n测试\n\n## FFmpeg切片方案\n- slice-001 | 0 | 12000 | 保持完整',
-    '## line-001\n- 开始毫秒：0\n- 结束毫秒：1000\n- 角色 ID：无\n- 角色名：未知\n- 置信度：0\n- 需要复核：是\n\n### 校准原文\n\n### 证据\n无\n\n### 画面文字\n无',
-    '## line-001\n- 开始毫秒：0\n- 结束毫秒：1000\n- 角色 ID：无\n- 角色名：未知\n- 置信度：0\n- 需要复核：是\n\n### 校准原文\n\n### 证据\n无\n\n### 画面文字\n无',
+    '[{"cueId":"cue-001","startMs":9500,"endMs":10000}]',
+    '[{"cueId":"cue-001","startMs":0,"endMs":500}]',
+  )
+  const result = await cloud.generateVideoTranslationDialogueTimestamps({
+    runId,
+    episodeId,
+    targetLanguage: 'en',
+    finalScriptId: voiceVersion.finalScriptId,
+    scriptHash: voiceVersion.scriptHash,
+    voiceVersionId: voiceVersion.versionId,
+  })
+  const timestamp = JSON.parse(fs.readFileSync(path.join(projectRoot(runId), result.path), 'utf8'))
+  assert.deepEqual(
+    timestamp.records.map((record: any) => [
+      record.cueId,
+      record.sourceStartMs,
+      record.sourceEndMs,
+    ]),
+    [['cue-001', 9500, 10500]],
+  )
+  assert.ok(fs.existsSync(path.join(projectRoot(runId), result.targetVoicePath)))
+  fs.writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      ...voiceVersion,
+      blocks: [{ ...voiceVersion.blocks[0], audioHash: 'b'.repeat(64) }],
+    }),
   )
   await assert.rejects(
-    cloud.identifyVideoTranslationSpeakers({
+    cloud.generateVideoTranslationDialogueTimestamps({
       runId,
       episodeId,
-      textModel: 'gemini-3.6-flash',
-      videoPath: 'episodes/episode-001/video-translate/source.mp4',
-      roles: [],
+      targetLanguage: 'en',
+      finalScriptId: voiceVersion.finalScriptId,
+      scriptHash: voiceVersion.scriptHash,
+      voiceVersionId: voiceVersion.versionId,
     }),
-    /时间或校准原文无效/,
+    /音频与配音版本清单不一致/,
   )
 })

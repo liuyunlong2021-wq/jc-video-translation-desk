@@ -5,7 +5,7 @@
         <strong>{{
           mediaStore.workspaceView === 'dubbing' ? '成片工作台操作' : '字幕工作台操作'
         }}</strong>
-        <small>扒片 · 豆包语音 · FFmpeg</small>
+        <small>FunASR · 豆包语音 · FFmpeg</small>
       </header>
       <div class="actions">
         <template v-for="action in actions" :key="action.key">
@@ -24,16 +24,50 @@
             >{{ action.label }}</v-btn
           >
           <v-alert
-            v-if="action.key === 'reverse-video' && mediaStore.busyAction === 'reverse-video'"
+            v-if="
+              ['reverse-video', 'timestamp-target-dialogue'].includes(action.key) &&
+              mediaStore.busyAction === action.key
+            "
             type="info"
             density="compact"
             variant="tonal"
           >
             <v-progress-linear indeterminate class="mb-2" />
-            {{ progressText || '正在启动扒片任务' }}
+            {{ progressText || '正在启动字幕识别' }}
           </v-alert>
         </template>
       </div>
+      <section
+        v-if="mediaStore.workspaceView === 'script' && state.speakerStatus === 'ready'"
+        class="semantic-calibration"
+      >
+        <strong>语义校准确认</strong>
+        <small>FunASR 原文永久保留；校准只修改工作稿。</small>
+        <v-btn
+          block
+          color="primary"
+          variant="tonal"
+          prepend-icon="mdi-check"
+          :disabled="!hasCalibrationSuggestion"
+          @click="applyCalibration"
+          >应用校准建议</v-btn
+        >
+        <v-btn
+          block
+          variant="text"
+          prepend-icon="mdi-undo"
+          :disabled="!hasCalibrationBackup"
+          @click="undoCalibration"
+          >撤销本次校准</v-btn
+        >
+        <v-btn
+          block
+          variant="text"
+          prepend-icon="mdi-restore"
+          @click="restoreRecognizedText"
+          >恢复并采用 FunASR 原文</v-btn
+        >
+      </section>
       <section
         v-if="mediaStore.workspaceView === 'script' && state.sourceVideoPath"
         class="manual-cue"
@@ -47,9 +81,23 @@
           variant="tonal"
           prepend-icon="mdi-plus"
           @click="addManualCue"
-          >{{ cueAtPlayhead ? '从当前位置拆分字幕' : '在当前位置新增字幕' }}</v-btn
+          >在当前位置新增对白</v-btn
         >
         <div class="manual-cue-times">
+          <v-btn
+            variant="text"
+            prepend-icon="mdi-content-cut"
+            :disabled="!selectedCue"
+            @click="splitSelectedCue"
+            >在当前位置拆分所选对白</v-btn
+          >
+          <v-btn
+            variant="text"
+            prepend-icon="mdi-call-merge"
+            :disabled="!selectedCue"
+            @click="mergeWithNext"
+            >与下一条对白合并</v-btn
+          >
           <v-btn
             variant="text"
             prepend-icon="mdi-ray-start-arrow"
@@ -63,6 +111,14 @@
             :disabled="!selectedCue"
             @click="setBoundary('end')"
             >设为所选字幕结束</v-btn
+          >
+          <v-btn
+            variant="text"
+            color="error"
+            prepend-icon="mdi-delete-outline"
+            :disabled="!selectedCue"
+            @click="deleteSelectedCue"
+            >删除所选对白</v-btn
           >
         </div>
       </section>
@@ -87,12 +143,15 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useMediaTaskStore } from '@/store'
 import {
   availableVideoTranslationActions,
+  deleteVideoTranslationCue,
   insertVideoTranslationCueAt,
+  mergeVideoTranslationCueWithNext,
   setVideoTranslationCueBoundary,
+  splitVideoTranslationCueAt,
   type VideoTranslationAction,
 } from '@/runtime/videoTranslation'
 
-const props = defineProps<{ selectedCueId: string; playheadMs: number }>()
+const props = defineProps<{ selectedCueId: string; playheadMs: number; textCursorOffset: number }>()
 const emit = defineEmits<{
   action: [action: VideoTranslationAction]
   selectCue: [cueId: string]
@@ -105,9 +164,6 @@ const state = computed(() => mediaStore.videoTranslation!)
 const manualError = ref('')
 const selectedCue = computed(() =>
   state.value.cues.find((cue) => cue.cueId === props.selectedCueId),
-)
-const cueAtPlayhead = computed(() =>
-  state.value.cues.find((cue) => cue.startMs < props.playheadMs && props.playheadMs < cue.endMs),
 )
 const available = computed(
   () => new Set(availableVideoTranslationActions(state.value, mediaStore.videoTranslationRoles)),
@@ -131,10 +187,17 @@ const actions = computed(() =>
       },
       {
         key: 'reverse-video',
-        label: '扒片',
-        icon: 'mdi-movie-search-outline',
+        label: '识别字幕',
+        icon: 'mdi-subtitles-outline',
         color: 'primary',
         done: state.value.speakerStatus === 'ready',
+      },
+      {
+        key: 'calibrate-subtitles',
+        label: '大模型语义校准',
+        icon: 'mdi-text-recognition',
+        color: 'primary',
+        done: state.value.calibrationStatus === 'ready',
       },
       {
         key: 'translate-all-subtitles',
@@ -150,15 +213,21 @@ const actions = computed(() =>
       },
       {
         key: 'arrange-doubao-voice',
-        label: '生成连续对白导演稿',
+        label: '生成全局配音提示词',
         icon: 'mdi-text-box-check-outline',
         done: state.value.arrangementStatus === 'ready',
       },
       {
         key: 'generate-target-voice',
-        label: '生成并对齐连续对白',
+        label: '生成全局配音',
         icon: 'mdi-waveform',
         done: state.value.voiceStatus === 'ready',
+      },
+      {
+        key: 'timestamp-target-dialogue',
+        label: '配音对白时间戳',
+        icon: 'mdi-timeline-clock-outline',
+        done: Boolean(state.value.dubDialogueTimestampHash),
       },
       {
         key: 'separate-source-audio',
@@ -167,14 +236,8 @@ const actions = computed(() =>
         done: state.value.separationStatus === 'ready',
       },
       {
-        key: 'remove-original-vocal',
-        label: '去除原人声',
-        icon: 'mdi-account-voice-off',
-        done: state.value.originalVocalRemoved,
-      },
-      {
         key: 'mix-background-audio',
-        label: '混回背景声和目标语言配音',
+        label: '合成目标语言音轨',
         icon: 'mdi-tune-vertical',
         done: state.value.mixStatus === 'ready',
       },
@@ -196,8 +259,8 @@ const actions = computed(() =>
       ? [
           'upload-video',
           'upload-final-master',
+          'timestamp-target-dialogue',
           'separate-source-audio',
-          'remove-original-vocal',
           'mix-background-audio',
           'burn-subtitles-and-voice',
         ].includes(action.key)
@@ -205,10 +268,17 @@ const actions = computed(() =>
           'upload-video',
           'upload-final-master',
           'reverse-video',
+          'calibrate-subtitles',
           'translate-all-subtitles',
           'open-voice-workspace',
         ].includes(action.key),
   ),
+)
+const hasCalibrationSuggestion = computed(() =>
+  state.value.cues.some((cue) => cue.calibrationSuggestion?.trim()),
+)
+const hasCalibrationBackup = computed(() =>
+  state.value.cues.some((cue) => cue.calibrationBackupText !== undefined),
 )
 
 function formatTime(ms: number) {
@@ -221,13 +291,51 @@ function addManualCue() {
       state.value.cues,
       state.value.durationMs,
       props.playheadMs,
-      `manual-cue-${crypto.randomUUID()}`,
+      `cue-${crypto.randomUUID()}`,
+    )
+    state.value.cues = result.cues
+    mediaStore.invalidateTranslation('timing')
+    manualError.value = ''
+    emit('selectCue', result.cue.cueId)
+    emit('focusCue', result.cue.cueId)
+  } catch (error) {
+    manualError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function mergeWithNext() {
+  try {
+    state.value.cues = mergeVideoTranslationCueWithNext(state.value.cues, props.selectedCueId)
+    mediaStore.invalidateTranslation('source-dialogue')
+  } catch (error) {
+    manualError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function splitSelectedCue() {
+  try {
+    const result = splitVideoTranslationCueAt(
+      state.value.cues,
+      props.selectedCueId,
+      props.playheadMs,
+      props.textCursorOffset,
+      `cue-${crypto.randomUUID()}`,
     )
     state.value.cues = result.cues
     mediaStore.invalidateTranslation('source-dialogue')
     manualError.value = ''
     emit('selectCue', result.cue.cueId)
     emit('focusCue', result.cue.cueId)
+  } catch (error) {
+    manualError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function deleteSelectedCue() {
+  try {
+    state.value.cues = deleteVideoTranslationCue(state.value.cues, props.selectedCueId)
+    emit('selectCue', '')
+    mediaStore.invalidateTranslation('source-dialogue')
   } catch (error) {
     manualError.value = error instanceof Error ? error.message : String(error)
   }
@@ -247,6 +355,35 @@ function setBoundary(boundary: 'start' | 'end') {
   } catch (error) {
     manualError.value = error instanceof Error ? error.message : String(error)
   }
+}
+
+function applyCalibration() {
+  state.value.cues.forEach((cue) => {
+    if (!cue.calibrationSuggestion?.trim()) return
+    cue.calibrationBackupText = cue.sourceText
+    cue.sourceText = cue.calibrationSuggestion
+  })
+  state.value.calibrationApplied = true
+  mediaStore.invalidateTranslation('source-dialogue')
+}
+
+function undoCalibration() {
+  state.value.cues.forEach((cue) => {
+    if (cue.calibrationBackupText === undefined) return
+    cue.sourceText = cue.calibrationBackupText
+    cue.calibrationBackupText = undefined
+  })
+  state.value.calibrationApplied = false
+  mediaStore.invalidateTranslation('source-dialogue')
+}
+
+function restoreRecognizedText() {
+  state.value.cues.forEach((cue) => {
+    cue.sourceText = cue.recognizedText
+    cue.calibrationBackupText = undefined
+  })
+  state.value.calibrationApplied = true
+  mediaStore.invalidateTranslation('source-dialogue')
 }
 
 watch(
@@ -301,6 +438,15 @@ header small {
   gap: 8px;
   padding-top: 12px;
   border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+.semantic-calibration {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+.semantic-calibration small {
+  color: rgba(0, 0, 0, 0.56);
 }
 .manual-cue-times {
   display: grid;

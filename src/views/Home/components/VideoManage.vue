@@ -87,7 +87,7 @@
             <p>
               {{
                 translationMode
-                  ? '先生成无时间戳连续对白，再识别裁句并贴回原时间轴。'
+                  ? '确认角色声音后生成全局配音；试听采用的版本将在成片工作台逐片生成对白时间戳。'
                   : '先确定角色音色和整段声音，再进入分镜。Seed Audio 为默认路线。'
               }}
             </p>
@@ -153,8 +153,8 @@
                     <strong>{{ selectedCharacter.label }}</strong>
                     <small>{{
                       seedRoleReady(selectedCharacter.id)
-                        ? '角色参考音已绑定'
-                        : '请上传或生成参考音'
+                        ? '角色声音已人工确认'
+                        : '请选择参考音并确认角色声音'
                     }}</small>
                   </div>
                   <v-chip
@@ -171,8 +171,8 @@
                   no-resize
                   hide-details
                   variant="outlined"
-                  label="角色音色提示词"
-                  placeholder="角色/身份 + 年龄性别 + 口音/语言 + 声线特征 + 气质 + 情绪 + 语速音量 + 场景风格 + 示例台词"
+                  label="角色声音身份"
+                  placeholder="年龄、性别、身份或职业、口音、音高、声线、音色、吐字和气息特征"
                   @update:model-value="
                     translationMode
                       ? $emit('editSeedRolePrompt', selectedCharacter.id, $event)
@@ -213,6 +213,18 @@
                     @click="$emit('generateSeedReference', selectedCharacter.id)"
                     >按提示词生成参考音</v-btn
                   >
+                  <v-btn
+                    v-if="translationMode"
+                    color="primary"
+                    prepend-icon="mdi-check-circle-outline"
+                    :disabled="
+                      !selectedCharacter ||
+                      !selectedSeedVoiceId ||
+                      !mediaStore.seedAudioRolePrompts[selectedCharacter.id]?.trim()
+                    "
+                    @click="$emit('confirmSeedVoice', selectedCharacter.id)"
+                    >确认角色声音</v-btn
+                  >
                 </div>
               </section>
               <div v-else class="empty-state">选择左侧角色后查看和修改音色提示词。</div>
@@ -220,17 +232,17 @@
             <section v-else class="seed-role-detail">
               <div class="seed-role-title">
                 <div>
-                  <strong>{{ translationMode ? '连续对白实验' : '整集全局配音' }}</strong>
+                  <strong>全局配音</strong>
                   <small>{{
                     translationMode
-                      ? 'Seed 先连续表演对白，Faster-Whisper 再识别并对齐。'
+                      ? '当前剧集目标语言配音。'
                       : '目标语言对白和生成音频都属于当前剧集。'
                   }}</small>
                 </div>
                 <v-chip size="x-small" color="success" variant="tonal">全局</v-chip>
               </div>
               <div class="seed-role-title">
-                <strong>{{ translationMode ? '连续对白导演稿' : '声音导演稿' }}</strong>
+                <strong>{{ translationMode ? '全局配音提示词' : '声音导演稿' }}</strong>
                 <v-chip
                   size="x-small"
                   :color="mediaStore.seedAudioGlobalPrompt.trim() ? 'success' : 'warning'"
@@ -240,23 +252,24 @@
               </div>
               <v-textarea
                 v-model="mediaStore.seedAudioGlobalPrompt"
+                @update:model-value="
+                  translationMode && $emit('editSeedGlobalPrompt', String($event || ''))
+                "
                 rows="10"
                 no-resize
                 hide-details
                 variant="outlined"
                 :label="
-                  translationMode
-                    ? '无时间戳连续对白导演稿（可直接编辑）'
-                    : '全局配音提示词（可直接编辑）'
+                  translationMode ? '全局配音提示词（可直接编辑）' : '全局配音提示词（可直接编辑）'
                 "
                 :placeholder="
                   translationMode
-                    ? '按角色顺序连续表演全部目标语言对白。'
+                    ? '当前配音块的录音棚配音提示词。'
                     : '按时间轴安排全部目标语言对白。'
                 "
               />
               <div class="seed-audio-output">
-                <strong>{{ translationMode ? '连续对白版本' : '成品配音' }}</strong>
+                <strong>{{ translationMode ? '全局配音版本' : '成品配音' }}</strong>
                 <v-select
                   v-if="translationMode && translationVoiceVersions.length"
                   :model-value="activeTranslationVoiceVersion?.versionId"
@@ -272,9 +285,7 @@
                   :src="fileUrl(mediaStore.seedAudioTrackPath)"
                   class="seed-track-player"
                 />
-                <small v-else class="empty-state">{{
-                  translationMode ? '尚未生成连续对白版本。' : '尚未生成全局配音。'
-                }}</small>
+                <small v-else class="empty-state">{{ '尚未生成全局配音。' }}</small>
               </div>
             </section>
           </div>
@@ -666,8 +677,10 @@ defineEmits<{
   generateSeedVoice: [speakerId: string]
   generateSeedRolePrompt: [speakerId: string]
   generateSeedReference: [speakerId: string]
+  confirmSeedVoice: [speakerId: string]
   uploadSeedReference: [speakerId: string]
   editSeedRolePrompt: [speakerId: string, prompt: string]
+  editSeedGlobalPrompt: [prompt: string]
   generateSeedPrompt: []
   generateSeedVoiceScript: []
   saveSeedDirectorDraft: []
@@ -684,15 +697,28 @@ const voiceBindings = ref<Record<string, string>>({})
 const selectedVoiceProfileId = ref('')
 const seedCharacters = computed(() =>
   translationMode
-    ? mediaStore.videoTranslationRoles.map((role) => ({
-        id: role.translationRoleId,
-        label: role.displayName,
-        aliases: role.aliases,
-      }))
+    ? mediaStore.videoTranslationRoles
+        .filter((role) =>
+          mediaStore.videoTranslation?.cues.some(
+            (cue) => cue.translationRoleId === role.translationRoleId,
+          ),
+        )
+        .map((role) => ({
+          id: role.translationRoleId,
+          label: role.displayName,
+          aliases: role.aliases,
+        }))
     : mediaStore.referenceAssets.filter((asset) => asset.role === 'character'),
 )
 function seedRoleReady(id: string) {
-  return Boolean(voiceBindings.value[id])
+  if (!translationMode) return Boolean(voiceBindings.value[id])
+  const role = mediaStore.videoTranslationRoles.find((item) => item.translationRoleId === id)
+  return Boolean(
+    role?.voiceProfileId &&
+      role.voiceConfirmedAt &&
+      role.voiceIdentityText?.trim() &&
+      role.voiceProfileId === voiceBindings.value[id],
+  )
 }
 function translationRolePreview(id: string) {
   if (!translationMode || !mediaStore.videoTranslation?.sourceVideoPath) return ''
@@ -854,7 +880,7 @@ async function bindSeedVoice(speakerId: string, voiceProfileId: string) {
     )
     if (!role) return
     role.voiceProfileId = voiceProfileId
-    await window.electron.cloud.bindVideoTranslationVoice(mediaStore.runId, role)
+    role.voiceConfirmedAt = undefined
     mediaStore.invalidateTranslation('voice-binding')
   } else
     await window.electron.cloud.bindProjectSeedVoice(
@@ -1011,7 +1037,7 @@ const activeTranslationVoiceVersion = computed(() =>
 )
 const translationVoiceVersionItems = computed(() =>
   translationVoiceVersions.value.map((version, index) => ({
-    title: `${version.kind === 'continuous' ? '连续对白' : '时间轴旧版'} ${index + 1} · ${(version.durationMs / 1000).toFixed(1)} 秒`,
+    title: `全局配音 ${index + 1} · ${(version.durationMs / 1000).toFixed(1)} 秒`,
     value: version.versionId,
   })),
 )

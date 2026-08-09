@@ -122,6 +122,9 @@ contextBridge.exposeInMainWorld('electron', {
     identifyVideoTranslationSpeakers: (
       params: import('./types').IdentifyVideoTranslationSpeakersParams,
     ) => ipcRenderer.invoke('video-translation-identify-speakers', params),
+    calibrateVideoTranslationSubtitles: (
+      params: import('./types').CalibrateVideoTranslationSubtitlesParams,
+    ) => ipcRenderer.invoke('video-translation-calibrate-subtitles', params),
     onVideoTranslationProgress: (
       listener: (progress: import('./types').VideoTranslationProgressEvent) => void,
     ) => {
@@ -134,27 +137,26 @@ contextBridge.exposeInMainWorld('electron', {
     },
     translateVideoSubtitles: (params: import('./types').TranslateVideoSubtitlesParams) =>
       ipcRenderer.invoke('video-translation-translate', params),
-    writeVideoTranslationContext: (
-      runId: string,
-      episodeId: string,
-      contextPaths: Array<{ path: string; hash: string }>,
-    ) => ipcRenderer.invoke('video-translation-write-context', runId, episodeId, contextPaths),
     confirmVideoTranslation: (
       runId: string,
       episodeId: string,
+      sourceFingerprint: string,
       sourceLanguage: string,
       targetLanguage: string,
       cues: import('../src/runtime/videoTranslation').VideoTranslationCue[],
       roles: import('../src/runtime/videoTranslation').TranslationRole[],
+      durationMs: number,
     ) =>
       ipcRenderer.invoke(
         'video-translation-confirm',
         runId,
         episodeId,
+        sourceFingerprint,
         sourceLanguage,
         targetLanguage,
         cues,
         roles,
+        durationMs,
       ),
     bindVideoTranslationVoice: (
       runId: string,
@@ -186,17 +188,12 @@ contextBridge.exposeInMainWorld('electron', {
       runId: string,
       episodeId: string,
       targetLanguage: string,
-      options?: { forceNewVersion?: boolean },
-    ) =>
-      ipcRenderer.invoke(
-        'video-translation-generate-voice',
-        runId,
-        episodeId,
-        targetLanguage,
-        options,
-      ),
+    ) => ipcRenderer.invoke('video-translation-generate-voice', runId, episodeId, targetLanguage),
     listVideoTranslationVoiceVersions: (runId: string, episodeId: string, targetLanguage: string) =>
       ipcRenderer.invoke('video-translation-list-voice-versions', runId, episodeId, targetLanguage),
+    generateVideoTranslationDialogueTimestamps: (
+      params: import('./types').GenerateVideoTranslationDialogueTimestampsParams,
+    ) => ipcRenderer.invoke('video-translation-timestamp-dialogue', params),
     composeVideoTranslation: (params: import('./ffmpeg/types').ComposeVideoTranslationParams) =>
       ipcRenderer.invoke('video-translation-compose', params),
     composePictureMaster: (params: import('./ffmpeg/types').ComposePictureMasterParams) =>

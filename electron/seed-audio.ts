@@ -49,7 +49,7 @@ export async function saveSeedAudioApiKey(apiKey: string) {
   return true
 }
 
-async function readSeedAudioApiKey() {
+export async function readSeedAudioApiKey() {
   const environmentApiKey = process.env.SEED_AUDIO_API_KEY?.trim()
   if (environmentApiKey) return environmentApiKey
   if (sessionApiKey) return sessionApiKey
@@ -141,16 +141,10 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
   const references = params.references?.length
     ? await Promise.all(
         params.references.map(async (reference) => {
-          const speaker = reference.voiceProfileId?.trim()
-          if (!speaker) throw new Error(`${reference.speakerId} 缺少产品 voiceProfileId`)
+          if (!reference.voiceProfileId?.trim())
+            throw new Error(`${reference.speakerId} 缺少产品 voiceProfileId`)
           const audio = await fs.promises.readFile(reference.referenceAudioPath)
-          return {
-            speaker,
-            audio: {
-              data: audio.toString('base64'),
-              format: path.extname(reference.referenceAudioPath).slice(1).toLowerCase() || 'wav',
-            },
-          }
+          return { audio_data: audio.toString('base64') }
         }),
       )
     : undefined

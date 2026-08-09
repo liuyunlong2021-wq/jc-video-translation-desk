@@ -1,7 +1,9 @@
 # TDD-13：视频翻译工作流
 
 > 日期：2026-08-05
-> 状态：已实现（本地自动化与 Electron UI 验收通过；真实付费模型/Seed API 联调未执行）
+> 状态：历史设计（不再作为字幕扒片执行合同）
+>
+> 当前字幕工作台唯一流程以 [视频翻译工作台-扒片按钮执行流程.md](../视频翻译工作台-扒片按钮执行流程.md) 为准。本 TDD 中的 Whisper、Faster-Whisper、全片切点规划和旧五段证据链均已废弃，仅保留作历史记录。
 > 定位：在现有 Electron 工作台增加一个与内容创作完全隔离的视频翻译入口
 > 前置依赖：`docs/tdd/00-共享生产合同与状态机TDD.md`、`docs/tdd/02-声音引擎与角色音色绑定TDD.md`、`docs/tdd/03-素材SRTTDD.md`、`docs/tdd/05-配音字幕工作台骨架TDD.md`、`docs/tdd/06-配音与字幕TDD.md`、`docs/tdd/07-音频处理与成片TDD.md`、`docs/tdd/08-项目与剧集数据边界TDD.md`、`docs/tdd/09-项目与剧集UITDD.md`、`docs/tdd/10-Seed Audio声音设计整段配音与完整声音轨TDD.md`、`docs/tdd/12-项目存储位置与资产用途版本TDD.md`
 

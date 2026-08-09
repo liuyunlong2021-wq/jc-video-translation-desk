@@ -1,9 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import axios, { AxiosError } from 'axios'
+import FormData from 'form-data'
 import { app, safeStorage } from 'electron'
+import { readSeedAudioApiKey } from './seed-audio.ts'
 import { generateUniqueFileName } from './lib/tools.ts'
 import type { PendingCloudTask, ResumedCloudTask } from './types.ts'
 import type {
@@ -15,13 +17,15 @@ import type {
   TranslateSubtitlesParams,
   TranslateVideoSubtitlesParams,
   IdentifyVideoTranslationSpeakersParams,
+  CalibrateVideoTranslationSubtitlesParams,
+  GenerateVideoTranslationDialogueTimestampsParams,
   VideoTranslationContextSource,
   VideoTranslationSpeakerDraft,
   VideoModel,
 } from './types.ts'
 import {
   assertEpisodeAsset,
-  assertVideoTranslationSource,
+  assertVideoTranslationAsset,
   assertRunAsset,
   downloadMedia,
   ensureRunDir,
@@ -36,26 +40,21 @@ import {
   writeDataUrl,
 } from './media-workspace.ts'
 import { validateMaterialTranscript } from '../src/runtime/productionContract.ts'
+import { fixedVideoTranslationSlicePlan } from './video-translation-input.ts'
+import { appendVideoTranslationTrace } from './video-translation-trace.ts'
 import {
-  findUncoveredSpeechIntervals,
-  splitTimedSubtitleText,
-} from '../src/runtime/videoTranslation.ts'
-import {
-  prepareVideoTranslationModelInput,
-  prepareVideoTranslationReviewSlices,
-} from './video-translation-input.ts'
-import {
-  appendVideoTranslationTrace,
-  readVideoTranslationStage,
-  writeVideoTranslationStage,
-} from './video-translation-trace.ts'
-import { prepareVideoTranslationSpeechEvidence } from './video-translation-speech.ts'
+  funAsrCuesToSrt,
+  transcribeVideoTranslationAudio,
+} from './video-translation-asr.ts'
 
 export const API_ORIGIN = 'https://api.jiucaihezi.studio'
+export const ARK_API_ORIGIN = 'https://ark.cn-beijing.volces.com/api/v3'
+const DOUBAO_AUDIO_MODEL = 'doubao-seed-2-0-lite-260428' as const
 export const OPENAI_BASE_URL = `${API_ORIGIN}/v1`
 export const API_KEYS_URL = `${API_ORIGIN}/keys`
 export const TEXT_MODELS: TextModel[] = [
   'gemini-3.6-flash',
+  'doubao-seed-evolving',
   'claude-fable-5',
   'claude-opus-5',
   'gpt-5.6-sol',
@@ -64,6 +63,11 @@ export const TEXT_MODELS: TextModel[] = [
 
 const KEY_FILE = 'jiucai-api-key.bin'
 export const VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
+
+function safeTranslationId(value: string, label: string) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error(`${label}无效`)
+  return value
+}
 
 function videoMimeType(filePath: string) {
   const extension = path.extname(filePath).toLowerCase()
@@ -92,6 +96,7 @@ const SKILLS = new Set([
   'jc-prop-prompt',
   'jc-asset-reference-search',
   'jc-doubao-seed-audio',
+  'jc-luyinpeng',
 ])
 const runControllers = new Map<string, Set<AbortController>>()
 const taskControllers = new Map<string, { controller: AbortController; finished: Promise<void> }>()
@@ -140,6 +145,100 @@ async function readApiKey() {
   return safeStorage.decryptString(encrypted).trim()
 }
 
+type CloudRequestModel = TextModel | typeof DOUBAO_AUDIO_MODEL
+
+async function textRequestConfig(model: CloudRequestModel) {
+  if (
+    model === 'doubao-seed-evolving' ||
+    model === DOUBAO_AUDIO_MODEL
+  ) {
+    const apiKey = await readSeedAudioApiKey()
+    return {
+      officialArk: true,
+      url: `${ARK_API_ORIGIN}/chat/completions`,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+    }
+  }
+  const apiKey = await readApiKey()
+  return {
+    officialArk: false,
+    url: `${API_ORIGIN}/v1/chat/completions`,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'x-api-key': apiKey,
+      'Content-Type': 'application/json',
+    },
+  }
+}
+
+async function uploadArkMedia(
+  file: { filename: string; file_data: string },
+  headers: Record<string, string>,
+) {
+  const match = file.file_data.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) throw new Error('方舟媒体文件格式无效')
+  const form = new FormData()
+  form.append('purpose', 'user_data')
+  form.append('file', Buffer.from(match[2], 'base64'), {
+    filename: file.filename,
+    contentType: match[1],
+  })
+  const uploaded = await axios.post(`${ARK_API_ORIGIN}/files`, form, {
+    headers: { ...headers, ...form.getHeaders() },
+    timeout: 300_000,
+  })
+  let record = uploaded.data
+  for (let attempt = 0; record?.status !== 'active' && attempt < 180; attempt++) {
+    if (record?.status === 'failed' || record?.error?.message)
+      throw new Error(`方舟媒体文件处理失败：${record.error?.message || '未知错误'}`)
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+    record = (
+      await axios.request({ method: 'GET', url: `${ARK_API_ORIGIN}/files/${record?.id}`, headers, timeout: 30_000 })
+    ).data
+  }
+  if (record?.status !== 'active') throw new Error('方舟媒体文件预处理超时（已等待 180 秒）')
+  return { fileId: String(record.id), mimeType: match[1] }
+}
+
+async function prepareArkMultimodalContent(
+  content: Record<string, unknown>[],
+  headers: Record<string, string | undefined>,
+  model: CloudRequestModel,
+) {
+  const result: Record<string, unknown>[] = []
+  for (const item of content) {
+    if (item.type !== 'file') {
+      result.push(item)
+      continue
+    }
+    const sourceFile = item.file as { filename: string; file_data: string }
+    const isAudio = sourceFile.file_data.startsWith('data:audio/')
+    // 视频和人声分别交给各自的方舟模型。
+    if (model === 'doubao-seed-evolving' && isAudio) continue
+    if (model === DOUBAO_AUDIO_MODEL && !isAudio) continue
+    if (isAudio) {
+      const match = sourceFile.file_data.match(/^data:audio\/([^;]+);base64,(.+)$/)
+      if (!match) throw new Error('方舟音频文件格式无效')
+      result.push({
+        type: 'input_audio',
+        input_audio: { data: match[2], format: match[1] === 'mpeg' ? 'mp3' : match[1] },
+      })
+      continue
+    }
+    const uploaded = await uploadArkMedia(
+      sourceFile,
+      Object.fromEntries(Object.entries(headers).filter(([, value]) => value)) as Record<string, string>,
+    )
+    if (uploaded.mimeType.startsWith('video/'))
+      result.push({ type: 'video_url', video_url: { file_id: uploaded.fileId }, fps: 2 })
+    else throw new Error(`方舟不支持该媒体类型：${uploaded.mimeType}`)
+  }
+  return result
+}
+
 function friendlyError(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error)
   if (/system cpu overloaded|cpu.*threshold/i.test(message))
@@ -155,7 +254,7 @@ function friendlyError(error: unknown): Error {
   if (['ECONNABORTED', 'ETIMEDOUT'].includes(String(error.code || '')))
     return new Error('云端模型长时间未响应，任务已停止，请重试。')
   if (!error.response && ['ECONNRESET', 'EPIPE', 'ERR_NETWORK'].includes(String(error.code || '')))
-    return new Error('云端连接被中断，请检查网络后重试。再次点击扒片会从已完成文档继续。')
+    return new Error('云端连接被中断，请检查网络后重试。FunASR 原始转写会保留。')
   const detail =
     typeof error.response?.data === 'string'
       ? error.response.data
@@ -165,6 +264,22 @@ function friendlyError(error: unknown): Error {
       ? `云端请求失败：${String(detail).slice(0, 180)}`
       : `云端请求失败 (${error.response?.status || '网络错误'})`,
   )
+}
+
+async function throwStreamHttpError(response: any) {
+  if (!response || typeof response.status !== 'number' || response.status < 400) return
+  let body = ''
+  if (response.data && typeof response.data[Symbol.asyncIterator] === 'function') {
+    for await (const chunk of response.data) body += Buffer.from(chunk).toString('utf8')
+  } else body = String(response.data || '')
+  let detail = body.trim()
+  try {
+    const parsed = JSON.parse(detail)
+    detail = parsed?.error?.message || parsed?.message || detail
+  } catch {
+    // Keep the raw gateway response when it is not JSON.
+  }
+  throw new Error(detail ? `云端请求失败 (${response.status})：${detail.slice(0, 240)}` : `云端请求失败 (${response.status})`)
 }
 
 async function request<T = any>(
@@ -306,7 +421,7 @@ export async function runSkill(
     for (const file of ['reference-selector.md', 'prompt-standard.md', 'prompt-examples.md'])
       system += `\n\n${await fs.promises.readFile(path.join(path.dirname(skillPath), 'references', file), 'utf8')}`
   }
-  const plainText = skillName === 'jc-doubao-seed-audio'
+  const plainText = ['jc-doubao-seed-audio', 'jc-luyinpeng'].includes(skillName)
   const prompt = plainText
     ? `${input}\n\n只输出可直接提交给 Seed Audio 的 text_prompt 正文，不要使用 Markdown 代码块。`
     : `${input}\n\n只输出合法 JSON，不要使用 Markdown 代码块。`
@@ -416,10 +531,32 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
     throw new Error('视频字幕翻译参数无效')
   const ids = new Set<string>()
   for (const item of params.subtitles) {
-    if (!item.cueId?.trim() || ids.has(item.cueId) || !item.text?.trim())
+    if (
+      !item.cueId?.trim() ||
+      ids.has(item.cueId) ||
+      !item.translationRoleId?.trim() ||
+      !item.roleName?.trim() ||
+      !Number.isFinite(item.startMs) ||
+      !Number.isFinite(item.endMs) ||
+      item.startMs < 0 ||
+      item.endMs <= item.startMs ||
+      !item.text?.trim()
+    )
       throw new Error('视频字幕条目无效')
     ids.add(item.cueId)
   }
+  await atomicWriteTranslationFile(
+    path.join(getRunDir(params.runId), 'wiki', '翻译', params.episodeId, '润色字幕.srt'),
+    funAsrCuesToSrt(
+      params.subtitles.map((item) => ({
+        cueId: item.cueId,
+        startMs: item.startMs,
+        endMs: item.endMs,
+        recognizedText: item.text,
+      })),
+      (cue) => cue.recognizedText,
+    ),
+  )
   const context = await collectVideoTranslationContext(params.runId, params.episodeId)
   const locale =
     params.targetLanguage === 'en'
@@ -438,7 +575,6 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
       )
       let result: {
         subtitles: Array<{ cueId: string; text: string }>
-        contextPaths: Array<{ path: string; hash: string }>
       }
       try {
         const translated = parseCueMarkdown(output)
@@ -451,7 +587,6 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
             cueId: item.cueId,
             text: String(byId.get(item.cueId) || ''),
           })),
-          contextPaths: context.map(({ path, hash }) => ({ path, hash })),
         }
       } catch (error) {
         reason = error instanceof Error ? error.message : String(error)
@@ -463,13 +598,7 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
         '目标语言翻译草稿',
         params.textModel,
         [
-          { label: '扒片最终稿', target: '04-最终稿.md' },
-          { label: '来源上下文', target: '来源上下文.md' },
-          ...result.contextPaths.map((item) => ({
-            label: item.path,
-            target: item.path,
-            hash: item.hash,
-          })),
+          { label: '润色字幕', target: '润色字幕.srt' },
         ],
         output,
       )
@@ -479,394 +608,504 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
   })
 }
 
+async function hashTranslationFile(filePath: string) {
+  const hash = createHash('sha256')
+  for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk)
+  return hash.digest('hex')
+}
+
+async function atomicWriteTranslationFile(filePath: string, content: string) {
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
+  const temporary = `${filePath}.${randomUUID()}.tmp`
+  await fs.promises.writeFile(temporary, content)
+  await fs.promises.rename(temporary, filePath)
+}
+
+export async function generateVideoTranslationDialogueTimestamps(
+  params: GenerateVideoTranslationDialogueTimestampsParams,
+  reportProgress: (message: string) => void = () => {},
+  abortSignal?: AbortSignal,
+) {
+  const { executeFFmpeg, separateAudioStems } = await import('./ffmpeg/index.ts')
+  safeTranslationId(params.episodeId, '剧集 ID')
+  safeTranslationId(params.targetLanguage, '目标语言')
+  safeTranslationId(params.voiceVersionId, '配音版本 ID')
+  if (!params.finalScriptId || !/^[a-f0-9]{64}$/i.test(params.scriptHash))
+    throw new Error('最终时间戳剧本 ID 或哈希无效')
+  const translationRoot = path.join(getRunDir(params.runId), 'wiki', '翻译', params.episodeId)
+  const contract = JSON.parse(
+    await fs.promises.readFile(path.join(translationRoot, '最终时间戳剧本.json'), 'utf8'),
+  ) as {
+    finalScriptId: string
+    scriptHash: string
+    sourceFingerprint: string
+    sourceLanguage: string
+    targetLanguage: string
+    cues: Array<{
+      cueId: string
+      translationRoleId: string
+      roleName: string
+      startMs: number
+      endMs: number
+      performanceDirection: string
+      sourceText: string
+      translatedText: string
+    }>
+  }
+  const canonicalHash = createHash('sha256')
+    .update(
+      JSON.stringify({
+        sourceFingerprint: contract.sourceFingerprint,
+        sourceLanguage: contract.sourceLanguage,
+        targetLanguage: contract.targetLanguage,
+        cues: contract.cues,
+      }),
+    )
+    .digest('hex')
+  if (
+    contract.finalScriptId !== params.finalScriptId ||
+    contract.scriptHash !== params.scriptHash ||
+    canonicalHash !== params.scriptHash ||
+    contract.targetLanguage !== params.targetLanguage
+  )
+    throw new Error('最终时间戳剧本权威文件与请求不一致')
+  const scriptCues = contract.cues
+    .slice()
+    .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
+  const cuesById = new Map(scriptCues.map((cue) => [cue.cueId, cue]))
+  if (cuesById.size !== contract.cues.length) throw new Error('最终时间戳剧本含重复 cueId')
+  const roleNames = new Map(scriptCues.map((cue) => [cue.translationRoleId, cue.roleName]))
+  scriptCues.forEach((cue) => safeTranslationId(cue.cueId, '对白 ID'))
+  const version = JSON.parse(
+    await fs.promises.readFile(
+      path.join(
+        translationRoot,
+        '声音',
+        '全局配音版本',
+        params.voiceVersionId,
+        'manifest.json',
+      ),
+      'utf8',
+    ),
+  ) as import('../src/runtime/videoTranslation.ts').VideoTranslationVoiceVersion
+  if (version.versionId !== params.voiceVersionId) throw new Error('配音版本清单 ID 不一致')
+  if (version.finalScriptId !== params.finalScriptId || version.scriptHash !== params.scriptHash)
+    throw new Error('当前配音版本与最终时间戳剧本不一致')
+  if (!version.blocks?.length) throw new Error('当前配音版本没有完整配音块')
+  const versionBlocks = version.blocks
+  versionBlocks.forEach((block) => {
+    safeTranslationId(block.voiceBlockId, '配音块 ID')
+    block.cueIds.forEach((cueId) => safeTranslationId(cueId, '对白 ID'))
+  })
+  const expected = versionBlocks.flatMap((block) => block.cueIds)
+  if (
+    !expected.length ||
+    expected.length !== scriptCues.length ||
+    new Set(expected).size !== expected.length ||
+    expected.some((cueId, index) => !cuesById.has(cueId) || scriptCues[index]?.cueId !== cueId)
+  )
+    throw new Error('当前配音版本的 cueId 与最终时间戳剧本不一致')
+  const language = params.targetLanguage
+  const base = path.join(
+    getRunDir(params.runId),
+    'episodes',
+    params.episodeId,
+    'video-translate',
+    language,
+    '配音对白时间戳',
+    version.versionId,
+  )
+  const records: Array<{
+    voiceVersionId: string
+    voiceBlockId: string
+    cueId: string
+    sourceStartMs: number
+    sourceEndMs: number
+    targetStartMs: number
+    targetEndMs: number
+    clipPath: string
+  }> = []
+  const lastCueSlice = new Map<string, { blockId: string; sliceIndex: number }>()
+  const checkpointPathsByBlock = new Map<string, string[]>()
+  for (const [blockIndex, block] of versionBlocks.entries()) {
+    const blockSource = assertVideoTranslationAsset(params.runId, params.episodeId, block.audioPath)
+    if ((await hashTranslationFile(blockSource)) !== block.audioHash)
+      throw new Error(`${block.voiceBlockId} 的音频与配音版本清单不一致`)
+    const blockRoot = path.join(base, block.voiceBlockId)
+    const vocalPath = path.join(blockRoot, 'vocal.wav')
+    await fs.promises.mkdir(path.join(blockRoot, 'slices'), { recursive: true })
+    if (!(await fs.promises.stat(vocalPath).catch(() => null))?.size) {
+      const instrumentPath = path.join(blockRoot, 'instrument.wav')
+      await separateAudioStems(blockSource, vocalPath, instrumentPath, abortSignal)
+      await fs.promises.rm(instrumentPath, { force: true })
+    }
+    const durationMs = Math.round((await mediaDuration(vocalPath)) * 1000)
+    const slices = fixedVideoTranslationSlicePlan(durationMs)
+    const blockCues = block.cueIds.map((cueId) => cuesById.get(cueId)).filter(Boolean)
+    for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex++) {
+      const slice = slices[sliceIndex]
+      const slicePath = path.join(
+        blockRoot,
+        'slices',
+        `slice-${String(sliceIndex + 1).padStart(3, '0')}-${slice.startMs}-${slice.endMs}.wav`,
+      )
+      if (!(await fs.promises.stat(slicePath).catch(() => null))?.size)
+        await executeFFmpeg(
+          [
+            '-ss',
+            String(slice.startMs / 1000),
+            '-i',
+            vocalPath,
+            '-t',
+            String((slice.endMs - slice.startMs) / 1000),
+            '-ar',
+            '48000',
+            '-ac',
+            '1',
+            '-c:a',
+            'pcm_s16le',
+            '-y',
+            slicePath,
+          ],
+          { abortSignal },
+        )
+      const inputHash = await hashTranslationFile(slicePath)
+      const checkpointPath = `${slicePath}.json`
+      const blockCheckpointPaths = checkpointPathsByBlock.get(block.voiceBlockId) || []
+      blockCheckpointPaths.push(checkpointPath)
+      checkpointPathsByBlock.set(block.voiceBlockId, blockCheckpointPaths)
+      let detected: Array<{ cueId: string; startMs: number; endMs: number }> | undefined
+      const checkpoint = await fs.promises
+        .readFile(checkpointPath, 'utf8')
+        .then((value) => JSON.parse(value))
+        .catch(() => null)
+      const validateDetected = (value: unknown) => {
+        if (!Array.isArray(value)) throw new Error('返回格式不是数组')
+        const parsed = value.map((item: any) => ({
+          cueId: String(item.cueId || ''),
+          startMs: Number(item.startMs),
+          endMs: Number(item.endMs),
+        }))
+        const allowed = new Set(block.cueIds)
+        if (
+          new Set(parsed.map((item) => item.cueId)).size !== parsed.length ||
+          parsed.some(
+            (item, index) =>
+              index > 0 &&
+              (item.startMs < parsed[index - 1].startMs ||
+                block.cueIds.indexOf(item.cueId) < block.cueIds.indexOf(parsed[index - 1].cueId)),
+          ) ||
+          parsed.some(
+            (item) =>
+              !allowed.has(item.cueId) ||
+              !Number.isFinite(item.startMs) ||
+              !Number.isFinite(item.endMs) ||
+              item.startMs < 0 ||
+              item.endMs <= item.startMs ||
+              item.endMs > slice.endMs - slice.startMs,
+          )
+        )
+          throw new Error('返回了重复或未知 cueId，或非法片内时间')
+        return parsed
+      }
+      if (checkpoint?.inputHash === inputHash) {
+        try {
+          detected = validateDetected(checkpoint.detected)
+        } catch {
+          // Regenerate an invalid checkpoint.
+        }
+      }
+      if (!detected) {
+        const audio = await fs.promises.readFile(slicePath)
+        let reason = ''
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const response = await generateMarkdownResponse(
+            '你是配音对白时间戳导演，只匹配已知台词，不重新转写。只返回 JSON 数组。',
+            [
+              {
+                type: 'file',
+                file: {
+                  filename: path.basename(slicePath),
+                  file_data: `data:audio/wav;base64,${audio.toString('base64')}`,
+                },
+              },
+              {
+                type: 'text',
+                text: `这是配音块 ${block.voiceBlockId} 的音频片段，片内范围 ${slice.startMs}-${slice.endMs}ms。只从以下已知对白中判断实际听到的 cueId：${JSON.stringify(
+                  blockCues.map((cue) => ({
+                    cueId: cue!.cueId,
+                    roleName: roleNames.get(cue!.translationRoleId || '') || '',
+                    translatedText: cue!.translatedText,
+                  })),
+                )}。返回每句片内相对开始和结束毫秒：[{"cueId":"cue-...","startMs":0,"endMs":900}]。未听到的句子不要编造。${reason ? `\n上次错误：${reason}，请重发完整数组。` : ''}`,
+              },
+            ],
+            'gemini-3.6-flash',
+            abortSignal,
+            8_000,
+            VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
+          )
+          try {
+            detected = validateDetected(parseJson(response))
+            reason = ''
+            break
+          } catch (error) {
+            reason = error instanceof Error ? error.message : String(error)
+          }
+        }
+        if (reason || !detected) throw new Error(reason || '配音对白时间戳生成失败')
+        await fs.promises.writeFile(
+          checkpointPath,
+          `${JSON.stringify({ inputHash, detected }, null, 2)}\n`,
+        )
+      }
+      for (const item of detected) {
+        const cue = cuesById.get(item.cueId)
+        if (!cue) continue
+        const sourceStartMs = slice.startMs + item.startMs
+        const sourceEndMs = slice.startMs + item.endMs
+        const existing = records.find((record) => record.cueId === item.cueId)
+        const last = lastCueSlice.get(item.cueId)
+        if (existing) {
+          const crossesBoundary =
+            last?.blockId === block.voiceBlockId &&
+            last.sliceIndex === sliceIndex - 1 &&
+            existing.sourceEndMs >= slice.startMs - 250 &&
+            sourceStartMs <= slice.startMs + 250
+          if (!crossesBoundary) {
+            await Promise.all(blockCheckpointPaths.map((value) => fs.promises.rm(value, { force: true })))
+            throw new Error(`${item.cueId} 在非相邻切片中重复出现`)
+          }
+          existing.sourceEndMs = Math.max(existing.sourceEndMs, sourceEndMs)
+        } else {
+          records.push({
+            voiceVersionId: version.versionId,
+            voiceBlockId: block.voiceBlockId,
+            cueId: item.cueId,
+            sourceStartMs,
+            sourceEndMs,
+            targetStartMs: cue.startMs,
+            targetEndMs: cue.endMs,
+            clipPath: '',
+          })
+        }
+        lastCueSlice.set(item.cueId, { blockId: block.voiceBlockId, sliceIndex })
+      }
+    }
+    reportProgress(`配音对白时间戳：已完成配音块 ${blockIndex + 1}/${versionBlocks.length}`)
+  }
+  const missingCueIds = expected.filter((cueId) => !records.some((record) => record.cueId === cueId))
+  if (records.length !== expected.length || missingCueIds.length) {
+    const affectedBlocks = versionBlocks.filter((block) =>
+      block.cueIds.some((cueId) => missingCueIds.includes(cueId)),
+    )
+    await Promise.all(
+      affectedBlocks.flatMap((block) =>
+        (checkpointPathsByBlock.get(block.voiceBlockId) || []).map((value) =>
+          fs.promises.rm(value, { force: true }),
+        ),
+      ),
+    )
+    throw new Error('配音对白时间戳缺少已知 cueId，请重试失败切片')
+  }
+  records.sort((left, right) => expected.indexOf(left.cueId) - expected.indexOf(right.cueId))
+  for (const block of versionBlocks) {
+    const starts = block.cueIds.map(
+      (cueId) => records.find((record) => record.cueId === cueId)!.sourceStartMs,
+    )
+    if (starts.some((start, index) => index > 0 && start < starts[index - 1]))
+      throw new Error(`${block.voiceBlockId} 的 cueId 发音顺序与最终剧本不一致`)
+  }
+  const cueRoot = path.join(base, 'cues')
+  await fs.promises.mkdir(cueRoot, { recursive: true })
+  for (const record of records) {
+    const vocal = path.join(base, record.voiceBlockId, 'vocal.wav')
+    const clip = path.join(cueRoot, `${record.cueId}.wav`)
+    await executeFFmpeg(
+      [
+        '-ss',
+        String(record.sourceStartMs / 1000),
+        '-i',
+        vocal,
+        '-t',
+        String((record.sourceEndMs - record.sourceStartMs) / 1000),
+        '-ar',
+        '48000',
+        '-ac',
+        '2',
+        '-c:a',
+        'pcm_s16le',
+        '-y',
+        clip,
+      ],
+      { abortSignal },
+    )
+    record.clipPath = relativeRunAsset(params.runId, clip)
+  }
+  const mixedTarget = path.join(base, '目标语言人声.wav')
+  const clips = records.map((record) =>
+    assertVideoTranslationAsset(params.runId, params.episodeId, record.clipPath),
+  )
+  await executeFFmpeg(
+    [
+      ...clips.flatMap((clip) => ['-i', clip]),
+      '-filter_complex',
+      `${clips
+        .map(
+          (_, index) =>
+            `[${index}:a]adelay=${records[index].targetStartMs}|${records[index].targetStartMs}[a${index}]`,
+        )
+        .join(
+          ';',
+        )};${clips.map((_, index) => `[a${index}]`).join('')}amix=inputs=${clips.length}:duration=longest:dropout_transition=0:normalize=0[out]`,
+      '-map',
+      '[out]',
+      '-ar',
+      '48000',
+      '-ac',
+      '2',
+      '-c:a',
+      'pcm_s16le',
+      '-y',
+      mixedTarget,
+    ],
+    { abortSignal },
+  )
+  const canonical = records.map((record) => ({
+    voiceVersionId: record.voiceVersionId,
+    voiceBlockId: record.voiceBlockId,
+    cueId: record.cueId,
+    sourceStartMs: record.sourceStartMs,
+    sourceEndMs: record.sourceEndMs,
+    targetStartMs: record.targetStartMs,
+    targetEndMs: record.targetEndMs,
+  }))
+  const dubDialogueTimestampHash = createHash('sha256')
+    .update(
+      JSON.stringify({
+        scriptHash: params.scriptHash,
+        voiceVersionId: version.versionId,
+        records: canonical,
+      }),
+    )
+    .digest('hex')
+  const wikiPath = path.join(
+    getRunDir(params.runId),
+    'wiki',
+    '翻译',
+    params.episodeId,
+    '成片',
+    '配音对白时间戳.json',
+  )
+  await atomicWriteTranslationFile(
+    wikiPath,
+    `${JSON.stringify({ finalScriptId: params.finalScriptId, scriptHash: params.scriptHash, voiceVersionId: version.versionId, dubDialogueTimestampHash, records }, null, 2)}\n`,
+  )
+  return {
+    path: relativeRunAsset(params.runId, wikiPath),
+    hash: dubDialogueTimestampHash,
+    targetVoicePath: relativeRunAsset(params.runId, mixedTarget),
+  }
+}
+
 export async function identifyVideoTranslationSpeakers(
   params: IdentifyVideoTranslationSpeakersParams,
   reportProgress: (message: string) => void = () => {},
 ): Promise<{
   speakers: VideoTranslationSpeakerDraft[]
-  contextPaths: Array<{ path: string; hash: string }>
-  sourceTranscriptPath: string
-  sourceSrtPath: string
 }> {
-  if (!params?.runId || !params.episodeId || !params.videoPath)
-    throw new Error('说话角色识别参数无效')
-  const sourceVideoPath = assertVideoTranslationSource(
-    params.runId,
-    params.episodeId,
-    params.videoPath,
+  if (
+    !params?.runId ||
+    !params.episodeId ||
+    !params.videoPath ||
+    !Number.isFinite(params.durationMs) ||
+    params.durationMs <= 0
   )
-  reportProgress('第 1/5 步：正在分离人声并生成 Whisper 漏句证据')
-  const speech = await withRunAbort(params.runId, (signal) =>
-    prepareVideoTranslationSpeechEvidence(params.runId, params.episodeId, params.videoPath, signal),
-  )
-  reportProgress('第 1/5 步完成：已生成 00-人声识别与漏句证据.md')
-  reportProgress('正在压缩并准备模型视频')
-  const videoPath = await prepareVideoTranslationModelInput(
-    params.runId,
-    params.episodeId,
-    sourceVideoPath,
-  )
-  const video = await fs.promises.readFile(videoPath)
-  const durationMs = Math.round((await mediaDuration(sourceVideoPath)) * 1000)
-  const context = await collectVideoTranslationContext(params.runId, params.episodeId)
-  reportProgress('第 2/5 步：Gemini 正在完整分析视频，最长等待 15 分钟')
-  const output = await withRunAbort(params.runId, async (signal) => {
-    const videoHash = createHash('sha256').update(video).digest('hex')
-    const commonInputs = [
-      {
-        label: '人声识别与漏句证据',
-        target: speech.evidencePath,
-      },
-      {
-        label: '模型分析视频',
-        target: relativeRunAsset(params.runId, videoPath),
-        hash: videoHash,
-      },
-      ...context.map((item) => ({ label: item.path, target: item.path, hash: item.hash })),
-    ]
-    let globalOutput = ''
-    let splitPlan: Array<{ startMs: number; endMs: number }> = []
-    let splitReason = ''
-    let savedGlobal = await readVideoTranslationStage(
+    throw new Error('字幕识别参数无效')
+  return withRunAbort(params.runId, async (signal) => {
+    const { transcript, srtPath } = await transcribeVideoTranslationAudio(
       params.runId,
       params.episodeId,
-      '01-整体分析与切片方案.md',
-      videoHash,
-    )
-    if (savedGlobal) {
-      try {
-        globalOutput = savedGlobal.result
-        splitPlan = parseVideoTranslationSplitPlan(globalOutput, durationMs)
-        reportProgress('第 2/5 步：发现有效断点，复用 01-整体分析与切片方案.md')
-      } catch {
-        savedGlobal = null
-        globalOutput = ''
-        splitPlan = []
-      }
-    }
-    if (!splitPlan.length) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        globalOutput = await generateMarkdownResponse(
-          '你是影视全片导演分析器。完整理解剧情并规划连续 FFmpeg 切片，只输出 Markdown。',
-          [
-            {
-              type: 'file',
-              file: {
-                filename: path.basename(videoPath),
-                file_data: `data:${videoMimeType(videoPath)};base64,${video.toString('base64')}`,
-              },
-            },
-            {
-              type: 'text',
-              text: `完整观看视频，理解剧情、人物、关系、称谓、场景和节奏，并为 FFmpeg 规划切片。视频真实总时长为 ${durationMs} 毫秒。切点必须选择自然的剧情、镜头或对白间隙，避免从一句台词中间切开；每片尽量 10-30 秒，任何一片不得超过 45 秒。
-
-切片必须从 0 开始、首尾严格相接，上一片结束毫秒必须等于下一片开始毫秒，最后一片必须结束于 ${durationMs}。只返回 Markdown，包含剧情文档和以下固定格式：
-
-## FFmpeg切片方案
-- slice-001 | 0 | 12000 | 切点理由
-- slice-002 | 12000 | ${durationMs} | 切点理由
-
-已有翻译角色：${JSON.stringify(params.roles)}
-
-分离人声后的 Whisper 语音区间（只作时间与漏句证据，文字可能不准确）：${JSON.stringify(speech.transcript.cues)}
-
-项目资料：${JSON.stringify(context)}${splitReason ? `\n\n上次切片方案无效：${splitReason}。请修复后完整重发。` : ''}`,
-            },
-          ],
-          'gemini-3.6-flash',
-          signal,
-          4_000,
-          VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
-        )
-        try {
-          splitPlan = parseVideoTranslationSplitPlan(globalOutput, durationMs)
-          splitReason = ''
-          break
-        } catch (error) {
-          splitReason = error instanceof Error ? error.message : String(error)
-        }
-      }
-    }
-    if (splitReason) throw new Error(splitReason)
-    const globalPath =
-      savedGlobal?.path ||
-      (await writeVideoTranslationStage(
-        params.runId,
-        params.episodeId,
-        '01-整体分析与切片方案.md',
-        '整体分析与切片方案',
-        'gemini-3.6-flash',
-        commonInputs,
-        globalOutput,
-      ))
-    if (!savedGlobal) {
-      await appendVideoTranslationTrace(
-        params.runId,
-        params.episodeId,
-        '第一步整体分析与切片方案',
-        'gemini-3.6-flash',
-        commonInputs,
-        `[[${globalPath}|整体分析与切片方案]]`,
-      )
-    }
-    reportProgress('第 2/5 步完成：已生成 01-整体分析与切片方案.md')
-    reportProgress('第 3/5 步：FFmpeg 正在按方案切片')
-    const slices = await prepareVideoTranslationReviewSlices(
-      params.runId,
-      params.episodeId,
-      videoPath,
-      splitPlan,
+      params.videoPath,
+      params.durationMs,
+      reportProgress,
       signal,
     )
-    const sliceManifest = slices
-      .map(
-        (slice, index) =>
-          `- slice-${String(index + 1).padStart(3, '0')} | ${slice.startMs} | ${slice.endMs} | [[${relativeRunAsset(params.runId, slice.path)}|FFmpeg 切片]]`,
-      )
-      .join('\n')
-    const sliceManifestPath = await writeVideoTranslationStage(
-      params.runId,
-      params.episodeId,
-      '02-FFmpeg切片.md',
-      'FFmpeg切片',
-      'FFmpeg',
-      [{ label: '整体分析与切片方案', target: globalPath }],
-      `## 实际切片\n\n${sliceManifest}`,
-    )
     await appendVideoTranslationTrace(
       params.runId,
       params.episodeId,
-      '第二步 FFmpeg 切片',
-      'FFmpeg',
-      [{ label: '整体分析与切片方案', target: globalPath }],
-      `[[${sliceManifestPath}|FFmpeg 切片清单]]`,
+      'FunASR 整轨识别',
+      transcript.engine,
+      [{ label: 'FunASR 原始转写', target: relativeRunAsset(params.runId, srtPath) }],
+      '等待人工检查与语义校准',
     )
-    reportProgress(`第 3/5 步完成：已生成 ${slices.length} 个切片和 02-FFmpeg切片.md`)
-    const sliceOutputs: string[] = []
-    const speakers: VideoTranslationSpeakerDraft[] = []
-    for (let index = 0; index < slices.length; index++) {
-      const slice = slices[index]
-      const sliceNumber = String(index + 1).padStart(3, '0')
-      const savedSlice = await readVideoTranslationStage(
-        params.runId,
-        params.episodeId,
-        `03-片段${sliceNumber}台词.md`,
-      )
-      if (savedSlice) {
-        try {
-          speakers.push(
-            ...parseVideoTranslationSliceDialogue(savedSlice.result, slice, params.roles),
-          )
-          sliceOutputs.push(
-            `## 片段 ${sliceNumber}（原片 ${slice.startMs}-${slice.endMs}ms）\n\n${savedSlice.result}`,
-          )
-          reportProgress(`第 4/5 步：复用已完成片段 ${index + 1}/${slices.length}，继续检查下一片`)
-          continue
-        } catch {
-          // Invalid checkpoints are regenerated below.
-        }
-      }
-      reportProgress(`第 4/5 步：Gemini 正在扒取片段 ${index + 1}/${slices.length}`)
-      const sliceVideo = await fs.promises.readFile(slice.path)
-      let reason = ''
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const sliceOutput = await generateMarkdownResponse(
-          '你是影视对白逐片扒片器。完整读取声音、画面字幕和口型，只输出规定格式的 Markdown。',
-          [
-            {
-              type: 'file',
-              file: {
-                filename: path.basename(slice.path),
-                file_data: `data:${videoMimeType(slice.path)};base64,${sliceVideo.toString('base64')}`,
-              },
-            },
-            {
-              type: 'text',
-              text: `这是原片 ${slice.startMs}-${slice.endMs} 毫秒的 FFmpeg 切片，片内时长 ${slice.endMs - slice.startMs} 毫秒。完整观看这一片，综合声音、画面字幕和口型，逐句输出全部真实有声台词。不得概括、跳过短句或把画面字幕忽略掉。时间必须使用本切片内从 0 开始的相对毫秒，按时间递增且不得重叠。若确实无对白，只返回“无对白”。
-
-只返回 Markdown，不要前言、总结或代码块。每句严格使用：
-## line-001
-- 开始毫秒：0
-- 结束毫秒：1000
-- 角色 ID：role-1（新人或未知写“无”）
-- 角色名：角色名
-- 置信度：0.9
-- 需要复核：否
-
-### 校准原文
-真实口语原文
-
-### 证据
-声音、口型、画面字幕和上下文证据
-
-### 画面文字
-对应画面字幕，无则写“无”
-
-已有翻译角色：${JSON.stringify(params.roles)}
-
-本片分离人声后的 Whisper 语音区间（只作时间与漏句证据，文字可能不准确）：${JSON.stringify(
-                speech.transcript.cues
-                  .filter(
-                    (cue: { startMs: number; endMs: number }) =>
-                      cue.startMs < slice.endMs && cue.endMs > slice.startMs,
-                  )
-                  .map((cue: { startMs: number; endMs: number; recognizedText: string }) => ({
-                    startMs: Math.max(0, cue.startMs - slice.startMs),
-                    endMs: Math.min(slice.endMs, cue.endMs) - slice.startMs,
-                    recognizedText: cue.recognizedText,
-                  })),
-              )}
-
-整体剧情文档：
-${globalOutput}${reason ? `\n\n上次结果无效：${reason}。请修复后完整重发本片结果。` : ''}`,
-            },
-          ],
-          'gemini-3.6-flash',
-          signal,
-          8_000,
-          VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
-        )
-        try {
-          speakers.push(...parseVideoTranslationSliceDialogue(sliceOutput, slice, params.roles))
-          sliceOutputs.push(
-            `## 片段 ${sliceNumber}（原片 ${slice.startMs}-${slice.endMs}ms）\n\n${sliceOutput}`,
-          )
-          const sliceStagePath = await writeVideoTranslationStage(
-            params.runId,
-            params.episodeId,
-            `03-片段${sliceNumber}台词.md`,
-            `片段 ${sliceNumber} 台词`,
-            'gemini-3.6-flash',
-            [
-              { label: '整体分析与切片方案', target: globalPath },
-              {
-                label: `FFmpeg 片段 ${sliceNumber}`,
-                target: relativeRunAsset(params.runId, slice.path),
-              },
-            ],
-            sliceOutput,
-          )
-          await appendVideoTranslationTrace(
-            params.runId,
-            params.episodeId,
-            `第三步片段 ${index + 1}/${slices.length}`,
-            'gemini-3.6-flash',
-            [
-              {
-                label: `FFmpeg 片段 ${sliceNumber}`,
-                target: relativeRunAsset(params.runId, slice.path),
-              },
-            ],
-            `[[${sliceStagePath}|片段 ${sliceNumber} 台词]]`,
-          )
-          reportProgress(
-            `第 4/5 步：已完成片段 ${index + 1}/${slices.length}，已生成 03-片段${sliceNumber}台词.md`,
-          )
-          reason = ''
-          break
-        } catch (error) {
-          reason = error instanceof Error ? error.message : String(error)
-        }
-      }
-      if (reason) throw new Error(reason)
-    }
-    const sliceDialoguePath = await writeVideoTranslationStage(
-      params.runId,
-      params.episodeId,
-      '03-Gemini逐片台词.md',
-      'Gemini逐片台词',
-      'gemini-3.6-flash',
-      [
-        { label: '人声识别与漏句证据', target: speech.evidencePath },
-        { label: '整体分析与切片方案', target: globalPath },
-        { label: 'FFmpeg 切片清单', target: sliceManifestPath },
-      ],
-      sliceOutputs.join('\n\n'),
+    reportProgress(
+      transcript.cues.length ? '字幕识别完成，请检查原文并按需语义校准' : '音频中没有识别到对白',
     )
-    await appendVideoTranslationTrace(
-      params.runId,
-      params.episodeId,
-      '第三步 Gemini 逐片台词',
-      'gemini-3.6-flash',
-      [{ label: 'FFmpeg 切片清单', target: sliceManifestPath }],
-      `[[${sliceDialoguePath}|逐片台词结果]]`,
-    )
-    reportProgress('第 4/5 步完成：已生成 03-Gemini逐片台词.md')
-    speakers.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
-    for (let index = 1; index < speakers.length; index++)
-      if (speakers[index].startMs < speakers[index - 1].endMs)
-        throw new Error('逐片台词合并后发生时间重叠')
-    const calibratedSpeakers = speakers
-      .flatMap((speaker) =>
-        splitTimedSubtitleText(speaker.correctedText, speaker.startMs, speaker.endMs, 'auto').map(
-          (part) => ({
-            ...speaker,
-            startMs: part.startMs,
-            endMs: part.endMs,
-            correctedText: part.text,
-          }),
-        ),
-      )
-      .map((speaker, index) => ({
-        ...speaker,
-        cueId: `translation-cue-${String(index + 1).padStart(3, '0')}`,
-      }))
-    const suspectedMissing = findUncoveredSpeechIntervals(
-      calibratedSpeakers,
-      speech.transcript.cues,
-    ).map(
-      (gap, index): VideoTranslationSpeakerDraft => ({
-        cueId: `suspected-missing-${String(index + 1).padStart(3, '0')}`,
-        startMs: gap.startMs,
-        endMs: gap.endMs,
-        recognizedText: gap.recognizedText,
-        correctedText: '',
-        proposedName: '待确认',
+    return {
+      speakers: transcript.cues.map((cue) => ({
+        cueId: cue.cueId,
+        startMs: cue.startMs,
+        endMs: cue.endMs,
+        recognizedText: cue.recognizedText,
+        correctedText: cue.recognizedText,
+        performanceDirection: cue.emotion ? `音频情绪：${cue.emotion}` : '',
+        proposedName: cue.speakerCluster || '待确认',
         confidence: 0,
-        evidence: '疑似漏句：分离人声后的 Whisper 检测到未被 Gemini 字幕覆盖的语音区间',
+        evidence: `FunASR ${transcript.engine}`,
         ocrText: '',
         needsReview: true,
-        suspectedMissing: true,
-      }),
-    )
-    const finalSpeakers = [...calibratedSpeakers, ...suspectedMissing].sort(
-      (left, right) => left.startMs - right.startMs || left.endMs - right.endMs,
-    )
-    reportProgress('第 5/5 步：正在合并时间轴并检查疑似漏句')
-    const finalPath = await writeVideoTranslationStage(
-      params.runId,
-      params.episodeId,
-      '04-最终稿.md',
-      '最终稿',
-      '程序直接合并',
-      [
-        { label: '人声识别与漏句证据', target: speech.evidencePath },
-        { label: '整体分析与切片方案', target: globalPath },
-        { label: 'FFmpeg 切片清单', target: sliceManifestPath },
-        { label: 'Gemini 逐片台词', target: sliceDialoguePath },
-      ],
-      renderVideoTranslationFinalDialogue(finalSpeakers),
-    )
-    await appendVideoTranslationTrace(
-      params.runId,
-      params.episodeId,
-      '第四步直接确定最终稿',
-      '程序直接合并',
-      [{ label: 'Gemini 逐片台词', target: sliceDialoguePath }],
-      `[[${finalPath}|最终稿]]`,
-    )
-    reportProgress('第 5/5 步完成：已生成 04-最终稿.md')
-    return {
-      speakers: finalSpeakers,
-      finalPath,
+        speakerCluster: cue.speakerCluster,
+        emotion: cue.emotion,
+        audioEvent: cue.audioEvent,
+      })),
     }
   })
-  return {
-    speakers: output.speakers,
-    contextPaths: context.map(({ path, hash }) => ({ path, hash })),
-    sourceTranscriptPath: speech.transcriptPath,
-    sourceSrtPath: speech.srtPath,
-  }
+}
+
+export async function calibrateVideoTranslationSubtitles(
+  params: CalibrateVideoTranslationSubtitlesParams,
+): Promise<{ subtitles: Array<{ cueId: string; text: string }> }> {
+  if (
+    !params?.runId ||
+    !params.episodeId ||
+    !TEXT_MODELS.includes(params.textModel) ||
+    !params.cues.length
+  )
+    throw new Error('语义校准参数无效')
+  const expectedIds = params.cues.map((cue) => cue.cueId)
+  if (
+    new Set(expectedIds).size !== expectedIds.length ||
+    params.cues.some((cue) => !cue.cueId?.trim() || !cue.text?.trim())
+  )
+    throw new Error('语义校准字幕无效')
+  return withRunAbort(params.runId, async (signal) => {
+    const context = await collectVideoTranslationContext(params.runId, params.episodeId)
+    const prompt = `根据整集上下文校正下面 FunASR 原文中的同音字、错别字、标点、人名、地名和专有名词。不得翻译、概括、补写、合并、拆分或改变顺序。只返回 Markdown，每条严格使用：\n## cue-001\n校准后的原文\n\n项目上下文：${JSON.stringify(context)}\n\n完整原文：${JSON.stringify(params.cues)}`
+    let reason = ''
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const output = await generateMarkdownResponse(
+        '你是影视字幕语义校准员。只改文字，不输出时间戳或角色结论。',
+        `${prompt}${reason ? `\n\n上次结果无效：${reason}。请按原 cueId、原顺序和原数量重新输出。` : ''}`,
+        params.textModel,
+        signal,
+        16_000,
+        VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
+      )
+      try {
+        const calibrated = parseCueMarkdown(output)
+        if (
+          calibrated.length !== expectedIds.length ||
+          calibrated.some((item, index) => item.cueId !== expectedIds[index] || !item.body.trim())
+        )
+          throw new Error('语义校准结果的 cueId、顺序、数量或正文不一致')
+        return { subtitles: calibrated.map((item) => ({ cueId: item.cueId, text: item.body.trim() })) }
+      } catch (error) {
+        reason = error instanceof Error ? error.message : String(error)
+      }
+    }
+    throw new Error(reason || '语义校准失败')
+  })
 }
 
 export async function analyzeMaterialVideo(
@@ -1155,10 +1394,10 @@ function assertStoryboardWritePath(value: unknown, episodeId: string) {
 
 async function generateToolTurn(messages: any[], textModel: TextModel, signal?: AbortSignal) {
   try {
-    const apiKey = await readApiKey()
+    const requestConfig = await textRequestConfig(textModel)
     const response = await axios.request({
       method: 'POST',
-      url: `${API_ORIGIN}/v1/chat/completions`,
+      url: requestConfig.url,
       data: {
         model: textModel,
         messages,
@@ -1170,13 +1409,10 @@ async function generateToolTurn(messages: any[], textModel: TextModel, signal?: 
       },
       responseType: 'stream',
       timeout: 300_000,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'x-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
+      headers: requestConfig.headers,
       signal,
     })
+    await throwStreamHttpError(response)
     let pending = ''
     const decoder = new StringDecoder('utf8')
     let text = ''
@@ -1233,38 +1469,45 @@ async function generateText(
 async function generateJsonResponse(
   system: string,
   userContent: string | Record<string, unknown>[],
-  textModel: TextModel,
+  textModel: CloudRequestModel,
   signal?: AbortSignal,
   maxTokens = 16_000,
   responseFormat: 'json' | 'text' = 'json',
   timeoutMs = 300_000,
 ) {
   try {
-    const apiKey = await readApiKey()
+    const requestConfig = await textRequestConfig(textModel)
+    const multimodal = Array.isArray(userContent)
+    const requestContent =
+      multimodal && requestConfig.officialArk
+        ? await prepareArkMultimodalContent(userContent, requestConfig.headers, textModel)
+        : userContent
     const data = {
       model: textModel,
       messages: [
         { role: 'system', content: system },
-        { role: 'user', content: userContent },
+        { role: 'user', content: requestContent },
       ],
       ...(responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
       temperature: 0.2,
       max_tokens: maxTokens,
-      stream: true,
+      stream: !multimodal,
     }
     const response = await axios.request({
       method: 'POST',
-      url: `${API_ORIGIN}/v1/chat/completions`,
+      url: requestConfig.url,
       data,
-      responseType: 'stream',
+      responseType: multimodal ? 'json' : 'stream',
       timeout: timeoutMs,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'x-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
+      headers: requestConfig.headers,
       signal,
     })
+    await throwStreamHttpError(response)
+    if (multimodal && typeof response.data?.[Symbol.asyncIterator] !== 'function') {
+      const content = response.data?.choices?.[0]?.message?.content
+      if (!String(content || '').trim()) throw new Error('文稿模型没有返回内容')
+      return String(content).trim()
+    }
     let pending = ''
     const decoder = new StringDecoder('utf8')
     let text = ''
@@ -1292,7 +1535,7 @@ async function generateJsonResponse(
 function generateMarkdownResponse(
   system: string,
   userContent: string | Record<string, unknown>[],
-  textModel: TextModel,
+  textModel: CloudRequestModel,
   signal?: AbortSignal,
   maxTokens = 16_000,
   timeoutMs = 300_000,
@@ -1309,116 +1552,6 @@ function parseCueMarkdown(markdown: string) {
   ]
   for (const match of matches) entries.push({ cueId: match[1], body: match[2].trim() })
   return entries
-}
-
-function markdownField(body: string, label: string) {
-  return body.match(new RegExp(`^-\\s*${label}[：:]\\s*(.+)$`, 'm'))?.[1]?.trim() || ''
-}
-
-function markdownSection(body: string, label: string) {
-  return (
-    body
-      .match(new RegExp(`^###\\s+${label}\\s*\\n([\\s\\S]*?)(?=^###\\s+|$(?![\\s\\S]))`, 'm'))?.[1]
-      ?.trim() || ''
-  )
-}
-
-function parseVideoTranslationSplitPlan(markdown: string, durationMs: number) {
-  const plan = [
-    ...markdown.matchAll(/^-\s*(slice-\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(.+)$/gm),
-  ].map((match) => ({
-    sliceId: match[1],
-    startMs: Number(match[2]),
-    endMs: Number(match[3]),
-    reason: match[4].trim(),
-  }))
-  if (!plan.length || new Set(plan.map((item) => item.sliceId)).size !== plan.length)
-    throw new Error('Gemini 没有返回有效且唯一的 FFmpeg 切片方案')
-  if (plan[0].startMs !== 0 || plan.at(-1)?.endMs !== durationMs)
-    throw new Error('FFmpeg 切片方案没有完整覆盖视频')
-  for (let index = 0; index < plan.length; index++) {
-    const item = plan[index]
-    if (
-      item.endMs <= item.startMs ||
-      item.endMs - item.startMs > 45_000 ||
-      (index > 0 && item.startMs !== plan[index - 1].endMs)
-    )
-      throw new Error('FFmpeg 切片方案必须首尾相接且单片不超过 45 秒')
-  }
-  return plan.map(({ startMs, endMs }) => ({ startMs, endMs }))
-}
-
-function parseVideoTranslationSliceDialogue(
-  markdown: string,
-  slice: { startMs: number; endMs: number },
-  roles: IdentifyVideoTranslationSpeakersParams['roles'],
-): VideoTranslationSpeakerDraft[] {
-  if (markdown.trim() === '无对白') return []
-  const entries = parseCueMarkdown(markdown)
-  if (!entries.length || new Set(entries.map((entry) => entry.cueId)).size !== entries.length)
-    throw new Error('逐片结果没有有效或唯一的台词条目')
-  const roleIds = new Set(roles.map((role) => role.translationRoleId))
-  const sliceDurationMs = slice.endMs - slice.startMs
-  const parsed = entries.map((entry) => {
-    const body = entry.body
-    const relativeStartMs = Number(markdownField(body, '开始毫秒'))
-    const relativeEndMs = Number(markdownField(body, '结束毫秒'))
-    const correctedText = markdownSection(body, '校准原文')
-    if (
-      !Number.isFinite(relativeStartMs) ||
-      !Number.isFinite(relativeEndMs) ||
-      relativeStartMs < 0 ||
-      relativeEndMs <= relativeStartMs ||
-      relativeEndMs > sliceDurationMs ||
-      !correctedText
-    )
-      throw new Error(`${entry.cueId} 的时间或校准原文无效`)
-    const roleValue = markdownField(body, '角色 ID').replace(/（.*$/, '').trim()
-    const proposedRoleId = roleIds.has(roleValue) ? roleValue : undefined
-    const reviewValue = markdownField(body, '需要复核').toLowerCase()
-    return {
-      cueId: entry.cueId,
-      startMs: slice.startMs + relativeStartMs,
-      endMs: slice.startMs + relativeEndMs,
-      recognizedText: '',
-      correctedText,
-      proposedRoleId,
-      proposedName: markdownField(body, '角色名') || '新角色',
-      confidence: Math.max(0, Math.min(1, Number(markdownField(body, '置信度')) || 0)),
-      evidence: markdownSection(body, '证据'),
-      ocrText: markdownSection(body, '画面文字').replace(/^无$/, ''),
-      needsReview: !proposedRoleId || !['否', 'no', 'false'].includes(reviewValue),
-    }
-  })
-  parsed.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
-  for (let index = 1; index < parsed.length; index++)
-    if (parsed[index].startMs < parsed[index - 1].endMs)
-      throw new Error('逐片结果的台词时间发生重叠')
-  return parsed
-}
-
-function renderVideoTranslationFinalDialogue(speakers: VideoTranslationSpeakerDraft[]) {
-  if (!speakers.length) return '无对白'
-  return speakers
-    .map(
-      (speaker) => `## ${speaker.cueId}
-- 开始毫秒：${speaker.startMs}
-- 结束毫秒：${speaker.endMs}
-- 角色 ID：${speaker.proposedRoleId || '无'}
-- 角色名：${speaker.proposedName}
-- 置信度：${speaker.confidence}
-- 需要复核：${speaker.needsReview ? '是' : '否'}
-
-### 校准原文
-${speaker.suspectedMissing ? '疑似漏句，待人工补充' : speaker.correctedText}
-
-### 证据
-${speaker.evidence || '无'}
-
-### 画面文字
-${speaker.ocrText || '无'}`,
-    )
-    .join('\n\n')
 }
 
 function parseJson(text: string) {

@@ -145,10 +145,10 @@ interface Window {
         params: import('./types').IdentifyVideoTranslationSpeakersParams,
       ) => Promise<{
         speakers: import('./types').VideoTranslationSpeakerDraft[]
-        contextPaths: Array<{ path: string; hash: string }>
-        sourceTranscriptPath: string
-        sourceSrtPath: string
       }>
+      calibrateVideoTranslationSubtitles: (
+        params: import('./types').CalibrateVideoTranslationSubtitlesParams,
+      ) => Promise<{ subtitles: Array<{ cueId: string; text: string }> }>
       onVideoTranslationProgress: (
         listener: (progress: import('./types').VideoTranslationProgressEvent) => void,
       ) => () => void
@@ -156,21 +156,17 @@ interface Window {
         params: import('./types').TranslateVideoSubtitlesParams,
       ) => Promise<{
         subtitles: Array<{ cueId: string; text: string }>
-        contextPaths: Array<{ path: string; hash: string }>
       }>
-      writeVideoTranslationContext: (
-        runId: string,
-        episodeId: string,
-        contextPaths: Array<{ path: string; hash: string }>,
-      ) => Promise<string>
       confirmVideoTranslation: (
         runId: string,
         episodeId: string,
+        sourceFingerprint: string,
         sourceLanguage: string,
         targetLanguage: string,
         cues: import('../src/runtime/videoTranslation').VideoTranslationCue[],
         roles: import('../src/runtime/videoTranslation').TranslationRole[],
-      ) => Promise<string>
+        durationMs: number,
+      ) => Promise<{ path: string; finalScriptId: string; scriptHash: string; markdown: string }>
       bindVideoTranslationVoice: (
         runId: string,
         role: import('../src/runtime/videoTranslation').TranslationRole,
@@ -192,13 +188,15 @@ interface Window {
         runId: string,
         episodeId: string,
         targetLanguage: string,
-        options?: { forceNewVersion?: boolean },
       ) => Promise<import('../src/runtime/videoTranslation').VideoTranslationVoiceVersion>
       listVideoTranslationVoiceVersions: (
         runId: string,
         episodeId: string,
         targetLanguage: string,
       ) => Promise<import('../src/runtime/videoTranslation').VideoTranslationVoiceVersion[]>
+      generateVideoTranslationDialogueTimestamps: (
+        params: import('./types').GenerateVideoTranslationDialogueTimestampsParams,
+      ) => Promise<{ path: string; hash: string; targetVoicePath: string }>
       composeVideoTranslation: (
         params: import('./ffmpeg/types').ComposeVideoTranslationParams,
       ) => Promise<string>

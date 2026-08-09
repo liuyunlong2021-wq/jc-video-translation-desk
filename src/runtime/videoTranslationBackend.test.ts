@@ -11,7 +11,6 @@ let seedCalls = 0
 let ffmpegCalls = 0
 let whisperCalls = 0
 let seedDuration = 1
-let whisperWordEnd = 0.8
 
 mock.module('electron', {
   namedExports: {
@@ -82,18 +81,6 @@ mock.module('../../electron/seed-audio.ts', {
     },
   },
 })
-mock.module('../../electron/material-transcript.ts', {
-  namedExports: {
-    runFasterWhisper: async () => {
-      whisperCalls++
-      return {
-        duration: 1,
-        segments: [{ start: 0.1, end: 0.8, text: 'Hello' }],
-        words: [{ word: 'Hello', start: 0.1, end: whisperWordEnd }],
-      }
-    },
-  },
-})
 mock.module('../../electron/ffmpeg/index.ts', {
   namedExports: {
     executeFFmpeg: async (args: string[]) => {
@@ -113,8 +100,7 @@ mock.module('../../electron/ffmpeg/index.ts', {
 const workspace = await import('../../electron/media-workspace.ts')
 const translation = await import('../../electron/video-translation.ts')
 const trace = await import('../../electron/video-translation-trace.ts')
-const translationInput = await import('../../electron/video-translation-input.ts')
-const translationSpeech = await import('../../electron/video-translation-speech.ts')
+const translationAsr = await import('../../electron/video-translation-asr.ts')
 const projectId = 'translation-backend'
 const episodeId = 'episode-001'
 const projectRoot = path.join(root, 'project')
@@ -144,6 +130,23 @@ test('upload cancellation changes nothing and upload preserves the original sour
   )
 })
 
+test('FunASR SRT formatter preserves cue timestamps exactly', () => {
+  assert.equal(
+    translationAsr.funAsrCuesToSrt(
+      [
+        {
+          cueId: 'cue-001',
+          startMs: 610,
+          endMs: 5_530,
+          recognizedText: '原文',
+        },
+      ],
+      () => '润色文字',
+    ),
+    '1\n00:00:00,610 --> 00:00:05,530\n润色文字\n',
+  )
+})
+
 test('archives a matching clean final master and rejects a different edit', async () => {
   const sourcePath = 'episodes/episode-001/video-translate/source.mp4'
   selectedFile = path.join(root, 'clean-master.mp4')
@@ -164,33 +167,6 @@ test('archives a matching clean final master and rejects a different edit', asyn
     /不是同一剪辑/,
   )
   assert.equal(fs.readFileSync(path.join(projectRoot, result!.finalMasterVideoPath), 'utf8'), saved)
-})
-
-test('separates source speech once and reuses Whisper evidence for the same video', async () => {
-  const controlledSource = path.join(
-    projectRoot,
-    'episodes',
-    episodeId,
-    'video-translate',
-    'source.mp4',
-  )
-  fs.mkdirSync(path.dirname(controlledSource), { recursive: true })
-  fs.writeFileSync(controlledSource, 'source-video')
-  const before = whisperCalls
-  const first = await translationSpeech.prepareVideoTranslationSpeechEvidence(
-    projectId,
-    episodeId,
-    'episodes/episode-001/video-translate/source.mp4',
-  )
-  const second = await translationSpeech.prepareVideoTranslationSpeechEvidence(
-    projectId,
-    episodeId,
-    'episodes/episode-001/video-translate/source.mp4',
-  )
-  assert.equal(whisperCalls, before + 1)
-  assert.equal(second.transcriptPath, first.transcriptPath)
-  assert.ok(fs.existsSync(path.join(projectRoot, first.srtPath)))
-  assert.ok(fs.existsSync(path.join(projectRoot, first.evidencePath)))
 })
 
 test('stores uploaded translation reference audio inside the translation sandbox', async () => {
@@ -246,12 +222,9 @@ test('accepts any extension when ffprobe confirms a real video stream', async ()
   assert.ok(result?.sourceVideoPath.endsWith('.uncommon-container'))
 })
 
-test('archives an oversized upload without running FFmpeg before the user clicks reverse', async () => {
+test('archives an oversized upload without running FFmpeg before subtitle recognition', async () => {
   selectedFile = path.join(root, 'large-source.mp4')
-  fs.writeFileSync(
-    selectedFile,
-    Buffer.alloc(translationInput.VIDEO_TRANSLATION_MODEL_INPUT_MAX_BYTES + 1),
-  )
+  fs.writeFileSync(selectedFile, Buffer.alloc(21 * 1024 * 1024))
   const before = ffmpegCalls
 
   const result = await translation.selectVideoTranslationSource(projectId, episodeId)
@@ -262,50 +235,6 @@ test('archives an oversized upload without running FFmpeg before the user clicks
     fs.existsSync(path.join(projectRoot, 'episodes', episodeId, 'video-translate', 'analysis.mp4')),
     false,
   )
-})
-
-test('keeps small model inputs unchanged and compresses only oversized sources', async () => {
-  const videoDir = path.join(projectRoot, 'episodes', episodeId, 'video-translate')
-  fs.mkdirSync(videoDir, { recursive: true })
-  const small = path.join(videoDir, 'source.mp4')
-  fs.writeFileSync(small, Buffer.alloc(1024 * 1024))
-  const before = ffmpegCalls
-  assert.equal(
-    await translationInput.prepareVideoTranslationModelInput(projectId, episodeId, small, 2000),
-    small,
-  )
-  assert.equal(ffmpegCalls, before)
-
-  fs.truncateSync(small, translationInput.VIDEO_TRANSLATION_MODEL_INPUT_MAX_BYTES + 1)
-  const analysis = await translationInput.prepareVideoTranslationModelInput(
-    projectId,
-    episodeId,
-    small,
-    2000,
-  )
-  assert.equal(analysis, path.join(videoDir, 'analysis.mp4'))
-  assert.equal(ffmpegCalls, before + 1)
-  assert.equal(translationInput.VIDEO_TRANSLATION_MODEL_INPUT_TARGET_BYTES, 12 * 1024 * 1024)
-  assert.equal(fs.statSync(analysis).size, 1024 * 1024)
-  assert.equal(
-    fs.statSync(small).size,
-    translationInput.VIDEO_TRANSLATION_MODEL_INPUT_MAX_BYTES + 1,
-  )
-})
-
-test('rebuilds FFmpeg review slices instead of reusing another uploaded video', async () => {
-  const videoDir = path.join(projectRoot, 'episodes', episodeId, 'video-translate')
-  const source = path.join(videoDir, 'source.mp4')
-  fs.mkdirSync(videoDir, { recursive: true })
-  fs.writeFileSync(source, Buffer.from('first-video'))
-  const before = ffmpegCalls
-  const plan = [{ startMs: 0, endMs: 2000 }]
-
-  await translationInput.prepareVideoTranslationReviewSlices(projectId, episodeId, source, plan)
-  fs.writeFileSync(source, Buffer.from('second-video'))
-  await translationInput.prepareVideoTranslationReviewSlices(projectId, episodeId, source, plan)
-
-  assert.equal(ffmpegCalls, before + 2)
 })
 
 test('translation Wiki writes never rewrite creative Wiki files', async () => {
@@ -333,6 +262,7 @@ test('translation Wiki writes never rewrite creative Wiki files', async () => {
         recognizedText: '你好',
         sourceText: '你好',
         translatedText: 'Hello',
+        performanceDirection: '平静问候',
         translationRoleId: role.translationRoleId,
         needsReview: false,
       },
@@ -340,21 +270,14 @@ test('translation Wiki writes never rewrite creative Wiki files', async () => {
     [role],
   )
   assert.deepEqual(fs.readFileSync(creative), before)
-  assert.ok(fs.existsSync(path.join(projectRoot, 'wiki', '翻译', episodeId, '角色台词确认.md')))
+  const finalScriptPath = path.join(projectRoot, 'wiki', '翻译', episodeId, '最终时间戳剧本.md')
+  assert.ok(fs.existsSync(finalScriptPath))
+  assert.match(fs.readFileSync(finalScriptPath, 'utf8'), /finalScriptId: timestamp-script-/)
+  assert.match(fs.readFileSync(finalScriptPath, 'utf8'), /scriptHash: [a-f0-9]{64}/)
+  assert.match(fs.readFileSync(finalScriptPath, 'utf8'), /status: confirmed/)
   assert.equal(
     fs.existsSync(path.join(projectRoot, 'wiki', '翻译', episodeId, '角色台词确认.json')),
     false,
-  )
-  const contextPath = await translation.writeVideoTranslationContext(projectId, episodeId, [
-    {
-      path: 'wiki/文稿/episode-001/确认文稿.md',
-      hash: 'abc',
-    },
-  ])
-  assert.equal(contextPath, 'wiki/翻译/episode-001/来源上下文.md')
-  assert.match(
-    fs.readFileSync(path.join(projectRoot, contextPath), 'utf8'),
-    /确认文稿\.md.*sha256: abc/,
   )
 })
 
@@ -362,7 +285,7 @@ test('appends one trace event per distinct result and keeps Wiki links', async (
   const projectId = 'translation-trace-run'
   const traceRoot = path.join(root, projectId)
   await workspace.registerProjectRoot(projectId, traceRoot, false)
-  const input = [{ label: '扒片最终稿', target: '04-最终稿.md', hash: 'abc' }]
+  const input = [{ label: '润色字幕', target: '润色字幕.srt', hash: 'abc' }]
   await trace.appendVideoTranslationTrace(
     projectId,
     episodeId,
@@ -384,12 +307,12 @@ test('appends one trace event per distinct result and keeps Wiki links', async (
     'utf8',
   )
   assert.equal(content.match(/<!-- event:/g)?.length, 1)
-  assert.match(content, /\[\[04-最终稿\.md\|扒片最终稿\]\]/)
+  assert.match(content, /\[\[润色字幕\.srt\|润色字幕\]\]/)
   assert.match(content, /- plot：测试/)
 })
 
 test('translation confirmation restores every Wiki file after a partial replace failure', async () => {
-  const markdownPath = path.join(projectRoot, 'wiki', '翻译', episodeId, '角色台词确认.md')
+  const markdownPath = path.join(projectRoot, 'wiki', '翻译', episodeId, '最终时间戳剧本.md')
   const before = fs.readFileSync(markdownPath)
   const originalRename = fs.promises.rename
   let failed = false
@@ -422,6 +345,7 @@ test('translation confirmation restores every Wiki file after a partial replace 
             recognizedText: '你好',
             sourceText: '你好',
             translatedText: 'Changed',
+            performanceDirection: '平静问候',
             translationRoleId: role.translationRoleId,
             needsReview: false,
           },
@@ -436,10 +360,11 @@ test('translation confirmation restores every Wiki file after a partial replace 
   assert.deepEqual(fs.readFileSync(markdownPath), before)
 })
 
-test('continuous dialogue generation reuses Seed and Whisper checkpoints', async () => {
+test('each global dubbing click creates a new raw version without Whisper alignment', async () => {
   const seedBefore = seedCalls
   const whisperBefore = whisperCalls
-  const blockId = 'dialogue-block-001'
+  const blockId = 'voice-block-001'
+  const scriptHash = 'a'.repeat(64)
   await translation.writeVideoTranslationSeedPlan(
     projectId,
     episodeId,
@@ -448,6 +373,8 @@ test('continuous dialogue generation reuses Seed and Whisper checkpoints', async
       schemaVersion: 1,
       episodeId,
       targetLanguage: 'en',
+      finalScriptId: 'timestamp-script-test',
+      scriptHash,
       durationMs: 2_000,
       blocks: [
         {
@@ -467,45 +394,25 @@ test('continuous dialogue generation reuses Seed and Whisper checkpoints', async
         },
       ],
     },
-    `## ${blockId}\n\nHello`,
+    `## ${blockId}\n\n角色（自然问候）：“Hello”`,
   )
 
   const version = await translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en')
   assert.equal(seedCalls, seedBefore + 1)
-  assert.equal(whisperCalls, whisperBefore + 1)
-  assert.match(version.previewPath, /连续对白块\/voice-.*-dialogue-block-001\.wav$/)
-  assert.match(version.targetVoicePath, /连续对白版本\/voice-.*\/对齐目标人声\.wav$/)
-  const reused = await translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en')
-  assert.equal(reused.versionId, version.versionId)
-  assert.equal(seedCalls, seedBefore + 1)
-  assert.equal(whisperCalls, whisperBefore + 1)
-  const timeline = JSON.parse(
-    fs.readFileSync(
-      path.join(
-        projectRoot,
-        'wiki',
-        '翻译',
-        episodeId,
-        'en',
-        '连续对白版本',
-        version.versionId,
-        '时间轴.json',
-      ),
-      'utf8',
-    ),
-  )
-  assert.equal(timeline.cues[0].cueId, 'cue-1')
-  assert.equal(timeline.cues[0].observedStartMs, 20)
-  assert.equal(timeline.cues[0].observedEndMs, 920)
+  assert.equal(whisperCalls, whisperBefore)
+  assert.match(version.previewPath, /全局配音版本\/voice-.*\/连续试听\.wav$/)
+  assert.equal(version.finalScriptId, 'timestamp-script-test')
+  assert.equal(version.scriptHash, scriptHash)
+  assert.deepEqual(version.blocks?.[0].cueIds, ['cue-1'])
   const regenerated = await translation.generateVideoTranslationTargetVoice(
     projectId,
     episodeId,
     'en',
-    { forceNewVersion: true },
   )
   assert.notEqual(regenerated.versionId, version.versionId)
   assert.notEqual(regenerated.previewPath, version.previewPath)
   assert.equal(seedCalls, seedBefore + 2)
+  assert.equal(whisperCalls, whisperBefore)
   assert.ok(fs.existsSync(path.join(projectRoot, version.previewPath)))
   assert.equal(
     (await translation.listVideoTranslationVoiceVersions(projectId, episodeId, 'en')).length,
@@ -513,7 +420,7 @@ test('continuous dialogue generation reuses Seed and Whisper checkpoints', async
   )
 })
 
-test('loads legacy timeline and continuous audio as selectable versions', async () => {
+test('ignores legacy timeline and continuous audio versions', async () => {
   const legacyEpisode = 'episode-legacy'
   const wiki = path.join(projectRoot, 'wiki', '翻译', legacyEpisode, 'en')
   const media = path.join(projectRoot, 'episodes', legacyEpisode, 'video-translate', 'en')
@@ -563,18 +470,11 @@ test('loads legacy timeline and continuous audio as selectable versions', async 
     legacyEpisode,
     'en',
   )
-  assert.deepEqual(
-    versions.map((version) => [version.kind, version.durationMs]),
-    [
-      ['timeline', 88_000],
-      ['continuous', 48_000],
-    ],
-  )
+  assert.deepEqual(versions, [])
 })
 
-test('records an overrun warning across dialogue blocks', async () => {
+test('raw dubbing versions keep block order and defer timing to the final workspace', async () => {
   seedDuration = 2
-  whisperWordEnd = 1.8
   const blocks = [
     {
       blockId: 'dialogue-block-001',
@@ -611,26 +511,36 @@ test('records an overrun warning across dialogue blocks', async () => {
     projectId,
     episodeId,
     'en',
-    { schemaVersion: 1, episodeId, targetLanguage: 'en', durationMs: 2_000, blocks },
-    blocks.map((block) => `## ${block.blockId}\n\nHello`).join('\n\n'),
+    {
+      schemaVersion: 1,
+      episodeId,
+      targetLanguage: 'en',
+      finalScriptId: 'timestamp-script-test',
+      scriptHash: 'b'.repeat(64),
+      durationMs: 2_000,
+      blocks,
+    },
+    blocks.map((block) => `## ${block.blockId}\n\n角色（自然问候）：“Hello”`).join('\n\n'),
   )
   const version = await translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en')
-  const alignment = JSON.parse(
-    fs.readFileSync(
+  assert.deepEqual(
+    version.blocks?.map((block) => block.cueIds),
+    [['cue-1'], ['cue-2']],
+  )
+  assert.equal(
+    fs.existsSync(
       path.join(
         projectRoot,
         'wiki',
         '翻译',
         episodeId,
-        'en',
-        '连续对白版本',
+        '声音',
+        '全局配音版本',
         version.versionId,
         '对齐.json',
       ),
-      'utf8',
     ),
+    false,
   )
-  assert.match(alignment.cues[0].warning, /超过下一句起点/)
   seedDuration = 1
-  whisperWordEnd = 0.8
 })

@@ -20,12 +20,10 @@ import type {
   VideoTranslationVoiceVersion,
 } from '../src/runtime/videoTranslation.ts'
 import {
-  alignDialogueBlockWords,
   validateConfirmedTranslation,
   validateVideoTranslationDialoguePrompt,
 } from '../src/runtime/videoTranslation.ts'
 import { generateSeedAudio } from './seed-audio.ts'
-import { runFasterWhisper } from './material-transcript.ts'
 import { executeFFmpeg } from './ffmpeg/index.ts'
 import type { VideoTranslationMasterUploadResult, VideoTranslationUploadResult } from './types.ts'
 import { appendVideoTranslationTrace } from './video-translation-trace.ts'
@@ -175,7 +173,6 @@ export async function selectVideoTranslationSource(
   if (!(await fs.promises.stat(rawSnapshot).catch(() => null)))
     await atomicCopy(source, rawSnapshot)
   await atomicCopy(rawSnapshot, controlled)
-  await fs.promises.rm(path.join(path.dirname(controlled), 'analysis.mp4'), { force: true })
   return {
     sourceVideoPath: relativeRunAsset(runId, controlled),
     rawSnapshotPath: relativeRunAsset(runId, rawSnapshot),
@@ -223,22 +220,8 @@ export async function selectVideoTranslationFinalMaster(
   }
 }
 
-export async function writeVideoTranslationContext(
-  runId: string,
-  episodeId: string,
-  contextPaths: Array<{ path: string; hash: string }>,
-) {
-  safeId(episodeId, '剧集 ID')
-  const target = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, '来源上下文.md')
-  await atomicWrite(
-    target,
-    `# 来源上下文\n\n${contextPaths.map((item) => `- [[${item.path}]]（sha256: ${item.hash}）`).join('\n') || '- 无'}\n`,
-  )
-  return relativeRunAsset(runId, target)
-}
-
 function roleMarkdown(role: TranslationRole) {
-  return `---\ntranslationRoleId: ${role.translationRoleId}\nstatus: confirmed${role.linkedCreativeRoleId ? `\nlinkedCreativeRoleId: ${role.linkedCreativeRoleId}` : ''}\n---\n\n# ${role.displayName}\n\n- 别名：${role.aliases.join('、') || '无'}\n- 来源剧集：${role.sourceEpisodeIds.join('、')}${role.description ? `\n- 角色说明：${role.description}` : ''}\n`
+  return `---\ntranslationRoleId: ${role.translationRoleId}\nstatus: confirmed${role.screenshotId ? `\nscreenshotId: ${role.screenshotId}` : ''}${role.linkedCreativeRoleId ? `\nlinkedCreativeRoleId: ${role.linkedCreativeRoleId}` : ''}\n---\n\n# ${role.displayName}\n\n- 别名：${role.aliases.join('、') || '无'}\n- 来源剧集：${role.sourceEpisodeIds.join('、')}${role.description ? `\n- 角色说明：${role.description}` : ''}\n`
 }
 
 export async function writeConfirmedVideoTranslation(
@@ -248,6 +231,8 @@ export async function writeConfirmedVideoTranslation(
   targetLanguage: string,
   cues: VideoTranslationCue[],
   roles: TranslationRole[],
+  sourceFingerprint = createHash('sha256').update(`legacy:${runId}:${episodeId}`).digest('hex'),
+  durationMs = Number.POSITIVE_INFINITY,
 ) {
   safeId(episodeId, '剧集 ID')
   const roleIds = new Set<string>()
@@ -258,17 +243,78 @@ export async function writeConfirmedVideoTranslation(
     if (!role.displayName.trim() || /[\r\n]/.test(role.displayName))
       throw new Error('翻译角色名称无效')
   }
-  validateConfirmedTranslation(cues, roles)
+  validateConfirmedTranslation(cues, roles, durationMs)
+  if (!/^[a-f0-9]{64}$/i.test(sourceFingerprint)) throw new Error('识别视频指纹无效')
   const root = getRunDir(runId)
   const base = path.join(root, 'wiki', '翻译')
-  const markdownPath = path.join(base, episodeId, '角色台词确认.md')
+  const markdownPath = path.join(base, episodeId, '最终时间戳剧本.md')
+  const contractPath = path.join(base, episodeId, '最终时间戳剧本.json')
   const roleById = new Map(roles.map((role) => [role.translationRoleId, role]))
+  const sortedCues = cues.slice().sort((left, right) => left.startMs - right.startMs)
+  const canonical = {
+    sourceFingerprint,
+    sourceLanguage,
+    targetLanguage,
+    cues: sortedCues.map((cue) => ({
+      cueId: cue.cueId,
+      translationRoleId: cue.translationRoleId,
+      roleName: roleById.get(cue.translationRoleId!)!.displayName,
+      startMs: cue.startMs,
+      endMs: cue.endMs,
+      performanceDirection: cue.performanceDirection || '',
+      sourceText: cue.sourceText,
+      translatedText: cue.translatedText,
+    })),
+  }
+  const scriptHash = createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
+  const finalScriptId = `timestamp-script-${scriptHash.slice(0, 16)}`
+  const speakingRoleIds = [...new Set(sortedCues.map((cue) => cue.translationRoleId!))]
+  const markdown = `---
+finalScriptId: ${finalScriptId}
+scriptHash: ${scriptHash}
+sourceFingerprint: ${sourceFingerprint}
+sourceLanguage: ${sourceLanguage}
+targetLanguage: ${targetLanguage}
+status: confirmed
+---
+
+# 最终时间戳剧本
+
+## 角色
+${speakingRoleIds
+  .map((roleId) => {
+    const role = roleById.get(roleId)!
+    return `- ${role.displayName}｜角色 ID：${roleId}${role.screenshotId ? `｜截图 ID：${role.screenshotId}` : ''}`
+  })
+  .join('\n')}
+
+${sortedCues
+  .map((cue) => {
+    const role = roleById.get(cue.translationRoleId!)!
+    return `## ${cue.cueId}
+- 说话人：${role.displayName}
+- 说话人 ID：${cue.translationRoleId}
+- 时间：${cue.startMs}-${cue.endMs}ms
+${cue.performanceDirection ? `- 音频情绪：${cue.performanceDirection}\n` : ''}
+
+### 原文
+${cue.sourceText}
+
+### 译文
+${cue.translatedText}`
+  })
+  .join('\n\n')}
+`
   await serializeTranslationWrite(runId, async () => {
     const indexFiles = await videoTranslationIndexFiles(runId, episodeId, roles)
     await replaceFiles([
       {
         path: markdownPath,
-        content: `# 角色与字幕确认\n\n- 源语言：${sourceLanguage}\n- 目标语言：${targetLanguage}\n\n${cues.map((cue) => `## ${cue.cueId}\n\n- 时间：${cue.startMs}-${cue.endMs}ms\n- 角色 ID：${cue.translationRoleId}\n- 角色：${roleById.get(cue.translationRoleId!)!.displayName}\n\n### 原文\n\n${cue.sourceText}\n\n### 译文\n\n${cue.translatedText}`).join('\n\n')}\n`,
+        content: markdown,
+      },
+      {
+        path: contractPath,
+        content: `${JSON.stringify({ finalScriptId, scriptHash, ...canonical }, null, 2)}\n`,
       },
       ...roles.map((role) => ({
         path: path.join(base, '角色', `${role.translationRoleId}.md`),
@@ -283,23 +329,35 @@ export async function writeConfirmedVideoTranslation(
     '人工确认角色、源字幕与译文',
     '人工审核',
     [
-      { label: '扒片最终稿', target: '04-最终稿.md' },
-      { label: '来源上下文', target: '来源上下文.md' },
-      { label: '最终确认稿', target: '角色台词确认.md' },
+      { label: '润色字幕', target: '润色字幕.srt' },
+      { label: '最终时间戳剧本', target: '最终时间戳剧本.md' },
     ],
     { sourceLanguage, targetLanguage, cues },
   )
-  return relativeRunAsset(runId, markdownPath)
+  return {
+    path: relativeRunAsset(runId, markdownPath),
+    finalScriptId,
+    scriptHash,
+    markdown,
+  }
 }
 
 export async function writeTranslationVoiceBinding(runId: string, role: TranslationRole) {
   safeId(role.translationRoleId, '翻译角色 ID')
   if (!role.voiceProfileId) throw new Error('翻译角色尚未选择声音')
+  if (!role.voiceIdentityText?.trim()) throw new Error('角色声音身份不能为空')
+  if (!role.voiceConfirmedAt) throw new Error('角色声音尚未人工确认')
   safeId(role.voiceProfileId, '声音档案 ID')
+  const { resolveSeedVoiceProfiles } = await import('./voice-library.ts')
+  const [reference] = await resolveSeedVoiceProfiles([
+    { speakerId: role.translationRoleId, voiceProfileId: role.voiceProfileId },
+  ])
+  const stat = await fs.promises.stat(reference.referenceAudioPath).catch(() => null)
+  if (!stat?.isFile() || !stat.size) throw new Error('角色参考音文件不可用')
   const target = path.join(getRunDir(runId), 'wiki', '翻译', '声音', `${role.translationRoleId}.md`)
   await atomicWrite(
     target,
-    `---\ntranslationRoleId: ${role.translationRoleId}\nvoiceProfileId: ${role.voiceProfileId}\nstatus: confirmed\n---\n\n# ${role.displayName}的翻译声音\n\n- 声音档案：[[声音库/音色/${role.voiceProfileId}]]\n`,
+    `---\ntranslationRoleId: ${role.translationRoleId}\nvoiceProfileId: ${role.voiceProfileId}\nconfirmedAt: ${role.voiceConfirmedAt}\nstatus: confirmed\n---\n\n# ${role.displayName}的角色声音\n\n${role.voiceIdentityText.trim()}\n\n- 声音档案：[[声音库/音色/${role.voiceProfileId}]]\n`,
   )
   return relativeRunAsset(runId, target)
 }
@@ -312,7 +370,7 @@ export async function writeVideoTranslationSeedPlan(
   promptMarkdown: string,
 ) {
   safeId(episodeId, '剧集 ID')
-  const language = safeLanguage(targetLanguage)
+  safeLanguage(targetLanguage)
   if (
     !arrangement?.blocks?.length ||
     arrangement.blocks.some(
@@ -322,12 +380,18 @@ export async function writeVideoTranslationSeedPlan(
         block.lines.some((line) => !line.cueId || !line.speakerId || !line.text.trim()),
     )
   )
-    throw new Error('视频翻译连续对白安排无效')
+    throw new Error('视频翻译全局配音安排无效')
   if (!promptMarkdown.trim() || Buffer.byteLength(promptMarkdown, 'utf8') > 2 * 1024 * 1024)
     throw new Error('豆包语音稿无效')
-  const base = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, language)
-  const arrangementPath = path.join(base, '连续对白安排.json')
-  const promptPath = path.join(base, '连续对白导演稿.md')
+  if (
+    !arrangement.finalScriptId ||
+    !arrangement.scriptHash ||
+    !/^[a-f0-9]{64}$/i.test(arrangement.scriptHash)
+  )
+    throw new Error('全局配音安排没有绑定最终时间戳剧本')
+  const base = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, '声音')
+  const arrangementPath = path.join(base, '全局配音安排.json')
+  const promptPath = path.join(base, '全局配音提示词.md')
   await Promise.all([
     atomicWrite(arrangementPath, `${JSON.stringify(arrangement, null, 2)}\n`),
     atomicWrite(promptPath, `${promptMarkdown.trim()}\n`),
@@ -352,74 +416,48 @@ function blockPrompts(markdown: string) {
   )
 }
 
-function voiceVersionId(prefix: string, value: string) {
-  return `${prefix}-${createHash('sha256').update(value).digest('hex').slice(0, 12)}`
-}
-
 export async function listVideoTranslationVoiceVersions(
   runId: string,
   episodeId: string,
   targetLanguage: string,
 ): Promise<VideoTranslationVoiceVersion[]> {
   safeId(episodeId, '剧集 ID')
-  const language = safeLanguage(targetLanguage)
-  const base = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, language)
-  const readJson = (filePath: string) =>
-    fs.promises
-      .readFile(filePath, 'utf8')
-      .then(JSON.parse)
-      .catch(() => null)
-  const continuousRecord = await readJson(path.join(base, '连续对白生成记录.json'))
-  const versions: VideoTranslationVoiceVersion[] = Array.isArray(continuousRecord?.versions)
-    ? continuousRecord.versions.filter(
-        (version: VideoTranslationVoiceVersion) =>
-          version?.versionId && version.previewPath && version.targetVoicePath,
-      )
-    : []
-  const usedPreviewPaths = new Set(versions.map((version) => version.previewPath))
-  const continuousTimeline = await readJson(path.join(base, '连续对白时间轴.json'))
-  const continuousGeneration = [...(continuousRecord?.generations || [])]
-    .reverse()
-    .find((generation: any) => generation?.wavPath && !usedPreviewPaths.has(generation.wavPath))
-  if (continuousGeneration && continuousTimeline?.targetVoicePath)
-    versions.push({
-      versionId: voiceVersionId(
-        'continuous-legacy',
-        `${continuousGeneration.createdAt}:${continuousGeneration.wavPath}`,
-      ),
-      kind: 'continuous',
-      createdAt: continuousGeneration.createdAt || new Date(0).toISOString(),
-      prompt: continuousGeneration.prompt || '',
-      previewPath: continuousGeneration.wavPath,
-      targetVoicePath: continuousTimeline.targetVoicePath,
-      blockAudioPaths: [continuousGeneration.wavPath],
-      durationMs: Math.round(Number(continuousGeneration.duration || 0) * 1000),
-      model: continuousGeneration.model,
-    })
-  const timelineRecord = await readJson(path.join(base, '声音生成记录.json'))
-  const timeline = await readJson(path.join(base, '目标人声时间轴.json'))
-  for (const generation of timelineRecord?.generations || []) {
-    if (!generation?.wavPath || usedPreviewPaths.has(generation.wavPath)) continue
-    versions.push({
-      versionId: voiceVersionId('timeline-legacy', `${generation.createdAt}:${generation.wavPath}`),
-      kind: 'timeline',
-      createdAt: generation.createdAt || new Date(0).toISOString(),
-      prompt: generation.prompt || '',
-      previewPath: generation.wavPath,
-      targetVoicePath: timeline?.targetVoicePath || generation.wavPath,
-      blockAudioPaths: [generation.wavPath],
-      durationMs: Math.round(Number(generation.duration || 0) * 1000),
-      model: generation.model,
-    })
-  }
+  safeLanguage(targetLanguage)
+  const indexPath = path.join(
+    getRunDir(runId),
+    'wiki',
+    '翻译',
+    episodeId,
+    '声音',
+    '全局配音版本',
+    'index.json',
+  )
+  const entries = await fs.promises
+    .readFile(indexPath, 'utf8')
+    .then((value) => JSON.parse(value).versions as VideoTranslationVoiceVersion[])
+    .catch(() => [])
   const available: VideoTranslationVoiceVersion[] = []
-  for (const version of versions) {
-    const [preview, target] = await Promise.all(
-      [version.previewPath, version.targetVoicePath].map((value) =>
+  for (const entry of entries) {
+    if (!entry?.versionId) continue
+    const version = await fs.promises
+      .readFile(path.join(path.dirname(indexPath), entry.versionId, 'manifest.json'), 'utf8')
+      .then((value) => JSON.parse(value) as VideoTranslationVoiceVersion)
+      .catch(() => null)
+    if (!version?.versionId || !version.previewPath || !version.blocks?.length) continue
+    const paths = [version.previewPath, ...version.blocks.map((block) => block.audioPath)]
+    const files = await Promise.all(
+      paths.map((value) =>
         fs.promises.stat(assertVideoTranslationAsset(runId, episodeId, value)).catch(() => null),
       ),
     )
-    if (preview?.size && target?.size) available.push(version)
+    const hashes = await Promise.all(
+      version.blocks.map((block) => fileHash(assertVideoTranslationAsset(runId, episodeId, block.audioPath))),
+    )
+    if (
+      files.every((file) => file?.size) &&
+      version.blocks.every((block, index) => block.audioHash === hashes[index])
+    )
+      available.push(version)
   }
   return available.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
 }
@@ -428,329 +466,140 @@ export async function generateVideoTranslationTargetVoice(
   runId: string,
   episodeId: string,
   targetLanguage: string,
-  options: { forceNewVersion?: boolean } = {},
   abortSignal?: AbortSignal,
   reportProgress: (message: string) => void = () => {},
 ): Promise<VideoTranslationVoiceVersion> {
   safeId(episodeId, '剧集 ID')
   const language = safeLanguage(targetLanguage)
-  const base = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, language)
+  const wikiBase = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, '声音')
   const arrangement = JSON.parse(
-    await fs.promises.readFile(path.join(base, '连续对白安排.json'), 'utf8'),
+    await fs.promises.readFile(path.join(wikiBase, '全局配音安排.json'), 'utf8'),
   ) as VideoTranslationDialogueArrangement
-  const promptMarkdown = await fs.promises.readFile(path.join(base, '连续对白导演稿.md'), 'utf8')
+  const promptMarkdown = await fs.promises.readFile(
+    path.join(wikiBase, '全局配音提示词.md'),
+    'utf8',
+  )
+  if (
+    !arrangement.finalScriptId ||
+    !arrangement.scriptHash ||
+    !/^[a-f0-9]{64}$/i.test(arrangement.scriptHash)
+  )
+    throw new Error('全局配音安排没有绑定有效最终剧本')
   const prompts = blockPrompts(promptMarkdown)
-  if (!arrangement?.blocks?.length) throw new Error('连续对白安排无效')
-  const recordPath = path.join(base, '连续对白生成记录.json')
-  const readRecord = () =>
-    fs.promises
-      .readFile(recordPath, 'utf8')
-      .then((value) => JSON.parse(value))
-      .catch(() => ({ schemaVersion: 2, generations: [], versions: [] })) as {
-      schemaVersion?: number
-      generations?: unknown[]
-      versions?: Array<VideoTranslationVoiceVersion & { fingerprint?: string }>
-      pending?: {
-        versionId: string
-        fingerprint: string
-        createdAt: string
-        tasks: Record<string, { fingerprint: string; path: string; durationMs: number }>
-      }
-    }
-  let record = await readRecord()
-  const generationFingerprint = createHash('sha256')
-    .update(JSON.stringify({ language, arrangement, promptMarkdown }))
-    .digest('hex')
-  const completed = [...(record.versions || [])]
-    .reverse()
-    .find((version) => version.fingerprint === generationFingerprint)
-  if (!options.forceNewVersion && completed) return completed
-  const pending =
-    !options.forceNewVersion && record.pending?.fingerprint === generationFingerprint
-      ? record.pending
-      : {
-          versionId: `voice-${Date.now()}-${randomUUID().slice(0, 8)}`,
-          fingerprint: generationFingerprint,
-          createdAt: new Date().toISOString(),
-          tasks: {},
-        }
-  if (record.pending?.versionId !== pending.versionId) {
-    record.pending = pending
-    record.schemaVersion = 2
-    await atomicWrite(recordPath, `${JSON.stringify(record, null, 2)}\n`)
-  }
-  const versionId = safeId(pending.versionId, '声音版本 ID')
-  const alignedCues: Array<{
-    blockId: string
-    cueId: string
-    speakerId: string
-    text: string
-    expectedStartMs: number
-    expectedEndMs: number
-    observedStartMs: number
-    observedEndMs: number
-    clipPath: string
-    warning?: string
-  }> = []
-  const nextCueStartById = new Map<string, number>()
-  const allLines = arrangement.blocks.flatMap((block) => block.lines)
-  for (let index = 0; index < allLines.length - 1; index++)
-    nextCueStartById.set(allLines[index].cueId, allLines[index + 1].expectedStartMs)
-  const blockAudioPaths: string[] = []
-  let previewDurationMs = 0
-  for (let blockIndex = 0; blockIndex < arrangement.blocks.length; blockIndex++) {
-    const block = arrangement.blocks[blockIndex]
-    if (abortSignal?.aborted) throw new Error('任务已停止')
-    const prompt = prompts.get(block.blockId)
-    if (!prompt) throw new Error(`${block.blockId} 缺少已保存连续对白导演稿`)
-    if (block.references.length > 3) throw new Error(`${block.blockId} 超过三个角色参考音`)
-    validateVideoTranslationDialoguePrompt(prompt, block)
-    const fingerprint = createHash('sha256')
-      .update(
-        JSON.stringify({
-          targetLanguage: language,
-          blockId: block.blockId,
-          speakerIds: block.speakerIds,
-          lines: block.lines,
-          references: block.references.map(({ speakerId, voiceProfileId }) => ({
-            speakerId,
-            voiceProfileId,
-          })),
-          prompt,
-        }),
-      )
-      .digest('hex')
-    const checkpoint = pending.tasks[block.blockId]
-    let blockAudioPath = ''
-    let blockDurationMs = 0
-    if (checkpoint?.fingerprint === fingerprint) {
-      const existing = assertVideoTranslationAsset(runId, episodeId, checkpoint.path)
-      if ((await fs.promises.stat(existing).catch(() => null))?.size) {
-        blockAudioPath = existing
-        blockDurationMs = Math.round((await mediaDuration(existing)) * 1000)
-      }
-    }
-    if (!blockAudioPath) {
-      reportProgress(`正在生成连续对白 ${blockIndex + 1}/${arrangement.blocks.length}`)
-      const result = await generateSeedAudio({
-        runId,
-        episodeId,
-        workflow: 'video-translation',
-        targetLanguage: language,
-        mode: 'dialogue-performance',
-        durationMs: Math.max(
-          1_000,
-          block.lines.reduce((total, line) => total + line.expectedEndMs - line.expectedStartMs, 0),
-        ),
-        prompt,
-        language: language === 'zh' ? 'zh' : 'en',
-        references: block.references,
-        outputName: `${versionId}-${block.blockId}`,
-        abortSignal,
-      })
-      blockAudioPath = result.path
-      blockDurationMs = Math.round(result.duration * 1000)
-    }
-    const blockRelativePath = relativeRunAsset(runId, blockAudioPath)
-    blockAudioPaths.push(blockRelativePath)
-    previewDurationMs += blockDurationMs
-    if (!checkpoint || checkpoint.fingerprint !== fingerprint) {
-      const latestRecord = await readRecord()
-      latestRecord.pending = pending
-      latestRecord.pending.tasks[block.blockId] = {
-        fingerprint,
-        path: blockRelativePath,
-        durationMs: blockDurationMs,
-      }
-      await atomicWrite(recordPath, `${JSON.stringify(latestRecord, null, 2)}\n`)
-    }
-    const recognitionPath = path.join(
-      base,
-      '连续对白版本',
-      versionId,
-      '识别',
-      `${block.blockId}-whisper.json`,
-    )
-    const cachedRecognition = await fs.promises
-      .readFile(recognitionPath, 'utf8')
-      .then(JSON.parse)
-      .catch(() => null)
-    let recognition = cachedRecognition
-    if (cachedRecognition?.fingerprint !== fingerprint) {
-      reportProgress(`正在识别连续对白 ${blockIndex + 1}/${arrangement.blocks.length}`)
-      recognition = { fingerprint, ...(await runFasterWhisper(blockAudioPath, abortSignal)) }
-    }
-    if (!Array.isArray(recognition.words) || !recognition.words.length)
-      throw new Error(`${block.blockId} 没有识别到单词时间`)
-    if (cachedRecognition?.fingerprint !== fingerprint)
-      await atomicWrite(recognitionPath, `${JSON.stringify(recognition, null, 2)}\n`)
-    const alignment = alignDialogueBlockWords(block.lines, recognition.words, blockDurationMs)
-    reportProgress(`正在对齐并裁剪对白 ${blockIndex + 1}/${arrangement.blocks.length}`)
-    const alignmentByCue = new Map(alignment.map((item) => [item.cueId, item]))
-    for (let index = 0; index < block.lines.length; index++) {
-      const line = block.lines[index]
-      const observed = alignmentByCue.get(line.cueId)!
-      safeId(line.cueId, 'Cue ID')
-      const clip = path.join(
-        getRunDir(runId),
-        'episodes',
-        episodeId,
-        'video-translate',
-        language,
-        '连续对白片段',
-        versionId,
-        `${line.cueId}.wav`,
-      )
-      await fs.promises.mkdir(path.dirname(clip), { recursive: true })
-      await executeFFmpeg(
-        [
-          '-ss',
-          String(observed.observedStartMs / 1000),
-          '-to',
-          String(observed.observedEndMs / 1000),
-          '-i',
-          blockAudioPath,
-          '-ar',
-          '48000',
-          '-ac',
-          '2',
-          '-c:a',
-          'pcm_s16le',
-          '-y',
-          clip,
-        ],
-        { abortSignal },
-      )
-      const actualEndMs = line.expectedStartMs + observed.observedEndMs - observed.observedStartMs
-      const nextStartMs = nextCueStartById.get(line.cueId)
-      alignedCues.push({
-        blockId: block.blockId,
-        cueId: line.cueId,
-        speakerId: line.speakerId,
-        text: line.text,
-        expectedStartMs: line.expectedStartMs,
-        expectedEndMs: line.expectedEndMs,
-        observedStartMs: observed.observedStartMs,
-        observedEndMs: observed.observedEndMs,
-        clipPath: relativeRunAsset(runId, clip),
-        ...(nextStartMs != null && actualEndMs > nextStartMs + 1_000
-          ? { warning: `目标人声超过下一句起点 ${actualEndMs - nextStartMs}ms` }
-          : {}),
-      })
-    }
-  }
-  let previewPath = blockAudioPaths[0]
-  if (blockAudioPaths.length > 1) {
-    const preview = path.join(
-      getRunDir(runId),
-      'episodes',
-      episodeId,
-      'video-translate',
-      language,
-      '连续对白版本',
-      versionId,
-      '原始连续对白.wav',
-    )
-    const previewInputs = blockAudioPaths.map((value) =>
-      assertVideoTranslationAsset(runId, episodeId, value),
-    )
-    await fs.promises.mkdir(path.dirname(preview), { recursive: true })
-    await executeFFmpeg([
-      ...previewInputs.flatMap((input) => ['-i', input]),
-      '-filter_complex',
-      `${previewInputs.map((_, index) => `[${index}:a]`).join('')}concat=n=${previewInputs.length}:v=0:a=1[out]`,
-      '-map',
-      '[out]',
-      '-ar',
-      '48000',
-      '-ac',
-      '2',
-      '-c:a',
-      'pcm_s16le',
-      '-y',
-      preview,
-    ])
-    previewPath = relativeRunAsset(runId, preview)
-  }
-  const target = path.join(
+  const versionId = `voice-${Date.now()}-${randomUUID().slice(0, 8)}`
+  const mediaBase = path.join(
     getRunDir(runId),
     'episodes',
     episodeId,
     'video-translate',
     language,
-    '连续对白版本',
+    '全局配音版本',
     versionId,
-    '对齐目标人声.wav',
   )
-  await fs.promises.mkdir(path.dirname(target), { recursive: true })
-  const inputs = alignedCues.map((cue) =>
-    assertVideoTranslationAsset(runId, episodeId, cue.clipPath),
-  )
-  const filters = inputs.map((_, index) => {
-    const delay = alignedCues[index].expectedStartMs
-    return `[${index}:a]aresample=48000,adelay=${delay}|${delay}[a${index}]`
-  })
-  filters.push(
-    `${inputs.map((_, index) => `[a${index}]`).join('')}amix=inputs=${inputs.length}:duration=longest:normalize=0,apad,atrim=0:${arrangement.durationMs / 1000}[out]`,
-  )
-  reportProgress('正在把对白贴回原片时间轴')
-  await executeFFmpeg(
-    [
-      ...inputs.flatMap((input) => ['-i', input]),
-      '-filter_complex',
-      filters.join(';'),
-      '-map',
-      '[out]',
-      '-ar',
-      '48000',
-      '-ac',
-      '2',
-      '-c:a',
-      'pcm_s16le',
-      '-y',
-      target,
-    ],
-    { abortSignal },
-  )
-  const targetVoicePath = relativeRunAsset(runId, target)
-  await atomicWrite(
-    path.join(base, '连续对白版本', versionId, '对齐.json'),
-    `${JSON.stringify({ schemaVersion: 1, targetLanguage: language, cues: alignedCues }, null, 2)}\n`,
-  )
-  await atomicWrite(
-    path.join(base, '连续对白版本', versionId, '时间轴.json'),
-    `${JSON.stringify(
-      {
-        schemaVersion: 1,
-        targetLanguage: language,
-        targetVoicePath,
-        durationMs: arrangement.durationMs,
-        cues: alignedCues,
-      },
-      null,
-      2,
-    )}\n`,
-  )
-  const version: VideoTranslationVoiceVersion & { fingerprint: string } = {
-    versionId,
-    kind: 'continuous',
-    createdAt: pending.createdAt,
-    prompt: promptMarkdown.trim(),
-    previewPath,
-    targetVoicePath,
-    blockAudioPaths,
-    durationMs: previewDurationMs,
-    model: 'seed-audio-1.0',
-    fingerprint: generationFingerprint,
+  await fs.promises.mkdir(mediaBase, { recursive: true })
+  const blocks: NonNullable<VideoTranslationVoiceVersion['blocks']> = []
+  for (let index = 0; index < arrangement.blocks.length; index++) {
+    const block = arrangement.blocks[index]
+    const prompt = prompts.get(block.blockId)
+    if (!prompt) throw new Error(`${block.blockId} 缺少最终提示词`)
+    if (block.references.some((reference) => !reference.voiceProfileId))
+      throw new Error(`${block.blockId} 缺少已确认 voiceProfileId`)
+    validateVideoTranslationDialoguePrompt(prompt, block)
+    reportProgress(`正在生成全局配音 ${index + 1}/${arrangement.blocks.length}`)
+    const generated = await generateSeedAudio({
+      runId,
+      episodeId,
+      workflow: 'video-translation',
+      targetLanguage: language,
+      mode: 'dialogue-performance',
+      durationMs: Math.max(
+        1_000,
+        block.lines.reduce((total, line) => total + line.expectedEndMs - line.expectedStartMs, 0),
+      ),
+      prompt,
+      language: language === 'zh' ? 'zh' : 'en',
+      references: block.references,
+      outputName: `${versionId}-${block.blockId}`,
+      abortSignal,
+    })
+    const target = path.join(mediaBase, `${block.blockId}.wav`)
+    await atomicCopy(assertVideoTranslationAsset(runId, episodeId, generated.path), target)
+    const durationMs = Math.round((await mediaDuration(target)) * 1000)
+    blocks.push({
+      voiceBlockId: block.blockId,
+      cueIds: [...block.cueIds],
+      audioPath: relativeRunAsset(runId, target),
+      audioHash: await fileHash(target),
+      durationMs,
+      prompt,
+      references: block.references.map((reference, referenceIndex) => ({
+        translationRoleId: reference.speakerId,
+        voiceProfileId: reference.voiceProfileId!,
+        referenceIndex: referenceIndex + 1,
+      })),
+    })
   }
-  record = await readRecord()
-  record.schemaVersion = 2
-  record.versions = [
-    ...(record.versions || []).filter((item) => item.versionId !== versionId),
-    version,
-  ]
-  if (record.pending?.versionId === versionId) delete record.pending
-  await atomicWrite(recordPath, `${JSON.stringify(record, null, 2)}\n`)
+  const preview = path.join(mediaBase, '连续试听.wav')
+  if (blocks.length === 1) {
+    await atomicCopy(assertVideoTranslationAsset(runId, episodeId, blocks[0].audioPath), preview)
+  } else {
+    const inputs = blocks.map((block) =>
+      assertVideoTranslationAsset(runId, episodeId, block.audioPath),
+    )
+    await executeFFmpeg(
+      [
+        ...inputs.flatMap((input) => ['-i', input]),
+        '-filter_complex',
+        `${inputs.map((_, index) => `[${index}:a]`).join('')}concat=n=${inputs.length}:v=0:a=1[out]`,
+        '-map',
+        '[out]',
+        '-c:a',
+        'pcm_s16le',
+        '-y',
+        preview,
+      ],
+      { abortSignal },
+    )
+  }
+  const version: VideoTranslationVoiceVersion = {
+    versionId,
+    createdAt: new Date().toISOString(),
+    previewPath: relativeRunAsset(runId, preview),
+    finalScriptId: arrangement.finalScriptId,
+    scriptHash: arrangement.scriptHash,
+    blocks,
+    durationMs: blocks.reduce((total, block) => total + block.durationMs, 0),
+    model: 'seed-audio-1.0',
+  }
+  const versionDir = path.join(wikiBase, '全局配音版本')
+  const indexPath = path.join(versionDir, 'index.json')
+  const existing = await fs.promises
+    .readFile(indexPath, 'utf8')
+    .then((value) => JSON.parse(value).versions as VideoTranslationVoiceVersion[])
+    .catch(() => [])
+  await Promise.all([
+    atomicWrite(
+      path.join(versionDir, versionId, 'manifest.json'),
+      `${JSON.stringify(version, null, 2)}\n`,
+    ),
+    atomicWrite(
+      indexPath,
+      `${JSON.stringify(
+        {
+          versions: [
+            ...existing.map((item) => ({
+              versionId: item.versionId,
+              createdAt: item.createdAt,
+              durationMs: item.durationMs,
+            })),
+            { versionId, createdAt: version.createdAt, durationMs: version.durationMs },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    ),
+  ])
   return version
 }
 
@@ -786,7 +635,7 @@ async function videoTranslationIndexFiles(
     },
     {
       path: episodeIndex,
-      content: `# ${episodeId} 视频翻译\n\n- [[01-整体分析与切片方案|整体分析与切片方案]]\n- [[02-FFmpeg切片|FFmpeg 切片]]\n- [[03-Gemini逐片台词|逐片台词]]\n- [[04-最终稿|扒片最终稿]]\n- [[来源上下文|来源上下文]]\n- [[过程记录|过程记录]]\n- [[角色台词确认|角色与字幕确认]]\n`,
+      content: `# ${episodeId} 视频翻译\n\n- [[原始转写|原始 FunASR 转写]]\n- [[润色字幕|锁定时间戳的润色字幕]]\n- [[最终时间戳剧本|人工确认的最终时间戳剧本]]\n- [[声音/全局配音提示词|全局配音提示词]]\n- [[成片/配音对白时间戳|配音对白时间戳]]\n- [[过程记录|过程记录]]\n`,
     },
   ]
 }

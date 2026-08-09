@@ -35,6 +35,8 @@ import {
   translateSubtitles,
   translateVideoSubtitles,
   identifyVideoTranslationSpeakers,
+  calibrateVideoTranslationSubtitles,
+  generateVideoTranslationDialogueTimestamps,
   withRunAbort,
 } from './cloud'
 import { cancelLocalVoice, generateLocalVoice, getLocalVoiceStatus } from './local-tts'
@@ -105,7 +107,6 @@ import {
   writeConfirmedVideoTranslation,
   writeVideoTranslationSeedPlan,
   writeTranslationVoiceBinding,
-  writeVideoTranslationContext,
 } from './video-translation'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -336,14 +337,33 @@ export default function initIPC() {
       }),
     ),
   )
-  ipcMain.handle('video-translation-translate', (_event, params) => translateVideoSubtitles(params))
-  ipcMain.handle('video-translation-write-context', (_event, runId, episodeId, contextPaths) =>
-    writeVideoTranslationContext(runId, episodeId, contextPaths),
+  ipcMain.handle('video-translation-calibrate-subtitles', (_event, params) =>
+    calibrateVideoTranslationSubtitles(params),
   )
+  ipcMain.handle('video-translation-translate', (_event, params) => translateVideoSubtitles(params))
   ipcMain.handle(
     'video-translation-confirm',
-    (_event, runId, episodeId, sourceLanguage, targetLanguage, cues, roles) =>
-      writeConfirmedVideoTranslation(runId, episodeId, sourceLanguage, targetLanguage, cues, roles),
+    (
+      _event,
+      runId,
+      episodeId,
+      sourceFingerprint,
+      sourceLanguage,
+      targetLanguage,
+      cues,
+      roles,
+      durationMs,
+    ) =>
+      writeConfirmedVideoTranslation(
+        runId,
+        episodeId,
+        sourceLanguage,
+        targetLanguage,
+        cues,
+        roles,
+        sourceFingerprint,
+        durationMs,
+      ),
   )
   ipcMain.handle('video-translation-bind-voice', (_event, runId, role) =>
     writeTranslationVoiceBinding(runId, role),
@@ -363,20 +383,26 @@ export default function initIPC() {
     (_event, runId, episodeId, targetLanguage) =>
       listVideoTranslationVoiceVersions(runId, episodeId, targetLanguage),
   )
-  ipcMain.handle(
-    'video-translation-generate-voice',
-    (event, runId, episodeId, targetLanguage, options) =>
-      withRunAbort(runId, (signal) =>
-        generateVideoTranslationTargetVoice(
-          runId,
-          episodeId,
-          targetLanguage,
-          options,
-          signal,
-          (message) =>
-            event.sender.send('video-translation-progress', { runId, episodeId, message }),
-        ),
+  ipcMain.handle('video-translation-generate-voice', (event, runId, episodeId, targetLanguage) =>
+    withRunAbort(runId, (signal) =>
+      generateVideoTranslationTargetVoice(runId, episodeId, targetLanguage, signal, (message) =>
+        event.sender.send('video-translation-progress', { runId, episodeId, message }),
       ),
+    ),
+  )
+  ipcMain.handle('video-translation-timestamp-dialogue', (event, params) =>
+    withRunAbort(params.runId, (signal) =>
+      generateVideoTranslationDialogueTimestamps(
+        params,
+        (message) =>
+          event.sender.send('video-translation-progress', {
+            runId: params.runId,
+            episodeId: params.episodeId,
+            message,
+          }),
+        signal,
+      ),
+    ),
   )
   ipcMain.handle('video-translation-compose', (_event, params) =>
     withRunAbort(params.runId, (signal) =>

@@ -13,11 +13,7 @@ export interface SeedAudioReference {
 }
 
 export interface SeedAudioRequestReference {
-  speaker: string
-  audio: {
-    data: string
-    format: string
-  }
+  audio_data: string
 }
 
 export interface SeedAudioLine {
@@ -127,11 +123,7 @@ export function buildSeedAudioRequest(input: SeedAudioPromptInput): SeedAudioReq
   const durationMs = Number(input.durationMs)
   if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error('Seed Audio 时长无效')
   const references = input.references?.map((item) => ({
-    speaker: cleanId(item.speaker, '参考音 ID'),
-    audio: {
-      data: cleanId(item.audio?.data, '参考音数据'),
-      format: cleanId(item.audio?.format, '参考音格式'),
-    },
+    audio_data: cleanId(item.audio_data, '参考音数据'),
   }))
   if (references && references.length > 3) throw new Error('Seed Audio 最多支持 3 个参考音')
   if (mode === 'voice-profile' && references?.length) throw new Error('基准音不能携带参考音')

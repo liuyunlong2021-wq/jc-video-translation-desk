@@ -123,6 +123,14 @@
       <v-card prepend-icon="mdi-key-variant" :title="t('workflow.api.title')">
         <v-card-text class="flex flex-col gap-3">
           <div class="text-subtitle-2">{{ t('workflow.api.section') }}</div>
+          <v-select
+            v-model="mediaStore.textModel"
+            :items="TEXT_MODEL_ITEMS"
+            item-title="title"
+            item-value="value"
+            label="模型"
+            hide-details
+          />
           <v-text-field
             :label="t('workflow.api.address')"
             :model-value="API_URL"
@@ -166,10 +174,10 @@
             }}
           </div>
           <v-divider />
-          <div class="text-subtitle-2">Seed Audio 官方接口</div>
+          <div class="text-subtitle-2">火山引擎官方接口</div>
           <v-text-field
             v-model="seedAudioApiKey"
-            label="Seed Audio API Key"
+            label="火山引擎 API Key（豆包 / Seed Audio 共用）"
             type="password"
             autocomplete="off"
             hide-details
@@ -179,7 +187,7 @@
             class="text-caption"
             :class="hasSeedAudioApiKey ? 'text-success' : 'text-medium-emphasis'"
           >
-            {{ hasSeedAudioApiKey ? 'Seed Audio Key 已配置' : '只在使用豆包整段声音轨时需要' }}
+            {{ hasSeedAudioApiKey ? '火山引擎 Key 已配置' : '豆包 Seed Evolving 与 Seed Audio 均使用此 Key' }}
           </div>
           <v-divider />
           <div class="flex items-center justify-between gap-3">
@@ -295,10 +303,15 @@ const API_URL = 'https://api.jiucaihezi.studio/v1'
 const KEYS_URL = 'https://api.jiucaihezi.studio/keys'
 const TEXT_MODELS = [
   'gemini-3.6-flash',
+  'doubao-seed-evolving',
   'claude-fable-5',
   'claude-opus-5',
   'gpt-5.6-sol',
   'deepseek-v4-pro',
+]
+const TEXT_MODEL_ITEMS = [
+  { title: 'Gemini 3.6 Flash（韭菜盒子）', value: 'gemini-3.6-flash' },
+  { title: '豆包 Seed', value: 'doubao-seed-evolving' },
 ]
 const VIDEO_MODELS = [
   { title: 'Veo 3.1', value: 'veo-3.1-generate-preview' },

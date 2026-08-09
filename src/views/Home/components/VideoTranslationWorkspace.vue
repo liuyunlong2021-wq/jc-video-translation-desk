@@ -37,15 +37,15 @@
             <th class="timeline-column">时间轴</th>
             <th class="preview-column">视频片段预览</th>
             <th v-if="showRoles" class="role-column">说话角色</th>
-            <th>{{ languageLabel(state.sourceLanguage) }}字幕</th>
+            <th>FunASR 原文</th>
+            <th>{{ languageLabel(state.sourceLanguage) }}工作稿</th>
             <th>{{ languageLabel(state.targetLanguage) }}字幕</th>
-            <th class="audio-column">目标语言配音</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!state.cues.length">
             <td :colspan="showRoles ? 6 : 5" class="empty-row">
-              点击右栏“扒片”后在这里审核角色、原文和译文
+              点击右栏“识别字幕”后在这里审核角色、原文和译文
             </td>
           </tr>
           <tr
@@ -77,9 +77,12 @@
                 :label="cue.proposedName ? `候选：${cue.proposedName}` : '选择角色'"
                 @update:model-value="bindRole(cue, $event)"
               />
-              <small v-if="cue.evidence" :title="cue.evidence"
-                >置信度 {{ Math.round((cue.confidence || 0) * 100) }}%</small
-              >
+              <small v-if="cue.speakerCluster || cue.emotion" :title="cue.evidence">
+                {{ [cue.speakerCluster, cue.emotion].filter(Boolean).join(' · ') }}
+              </small>
+            </td>
+            <td @click.stop="selectCue(cue.cueId)">
+              <div class="recognized-text">{{ cue.recognizedText || '人工新增，无 FunASR 原文' }}</div>
             </td>
             <td @click.stop="selectCue(cue.cueId)">
               <textarea
@@ -88,7 +91,14 @@
                 aria-label="原字幕"
                 :placeholder="cue.suspectedMissing ? cue.recognizedText : undefined"
                 @input="updateText(cue, 'sourceText', $event)"
+                @click="rememberTextCursor(cue, $event)"
+                @keyup="rememberTextCursor(cue, $event)"
+                @select="rememberTextCursor(cue, $event)"
               />
+              <small
+                v-if="cue.calibrationSuggestion && cue.calibrationSuggestion !== cue.sourceText"
+                class="calibration-suggestion"
+              >建议：{{ cue.calibrationSuggestion }}</small>
             </td>
             <td @click.stop="selectCue(cue.cueId)">
               <textarea
@@ -97,19 +107,33 @@
                 @input="updateText(cue, 'translatedText', $event)"
               />
             </td>
-            <td>
-              <audio
-                v-if="cue.voicePath || state.targetVoicePath"
-                :src="`${fileUrl(cue.voicePath || state.targetVoicePath!)}#t=${cue.startMs / 1000},${cue.endMs / 1000}`"
-                controls
-                preload="metadata"
-              />
-              <small v-else>待生成</small>
-            </td>
           </tr>
         </tbody>
       </table>
     </div>
+    <v-dialog v-model="roleDialogOpen" max-width="420">
+      <v-card title="新建角色">
+        <v-card-text>
+          <v-text-field
+            v-model="roleNameDraft"
+            label="真实角色姓名"
+            autofocus
+            hide-details
+            @keyup.enter="confirmNewRole"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <button type="button" class="dialog-action" @click="roleDialogOpen = false">取消</button>
+          <button
+            type="button"
+            class="dialog-action primary"
+            :disabled="!roleNameDraft.trim()"
+            @click="confirmNewRole"
+          >确认</button>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-sheet>
 </template>
 
@@ -123,12 +147,19 @@ const props = withDefaults(defineProps<{ selectedCueId: string; showRoles?: bool
   showRoles: true,
 })
 const { showRoles } = props
-const emit = defineEmits<{ selectCue: [cueId: string]; playhead: [playheadMs: number] }>()
+const emit = defineEmits<{
+  selectCue: [cueId: string]
+  playhead: [playheadMs: number]
+  textCursor: [cueId: string, offset: number]
+}>()
 const mediaStore = useMediaTaskStore()
 const state = computed(() => mediaStore.videoTranslation!)
 const sourcePreview = ref<HTMLVideoElement>()
 const tableWrap = ref<HTMLDivElement>()
 const selectedEndMs = ref<number>()
+const roleDialogOpen = ref(false)
+const roleNameDraft = ref('')
+const pendingRoleCue = ref<VideoTranslationCue>()
 const selectedCue = computed(() =>
   state.value.cues.find((cue) => cue.cueId === props.selectedCueId),
 )
@@ -176,22 +207,20 @@ function roleItems(cue: VideoTranslationCue) {
   ]
 }
 function bindRole(cue: VideoTranslationCue, value: string) {
-  let roleId = value
   if (value === '__new__') {
-    const name = cue.proposedName?.trim() || '新角色'
-    roleId = `role-${crypto.randomUUID()}`
-    mediaStore.videoTranslationRoles.push({
-      translationRoleId: roleId,
-      displayName: name,
-      aliases: [],
-      sourceEpisodeIds: [mediaStore.episodeId],
-      status: 'confirmed',
-    })
+    pendingRoleCue.value = cue
+    roleNameDraft.value = cue.proposedName || ''
+    roleDialogOpen.value = true
+    return
   }
-  const sameCandidate = cue.proposedName?.trim()
+  applyRole(cue, value)
+}
+function applyRole(cue: VideoTranslationCue, roleId: string) {
+  const sameCandidate = cue.speakerCluster?.trim()
+  const canBatchBind = Boolean(sameCandidate)
   state.value.cues
     .filter(
-      (item) => item === cue || (sameCandidate && item.proposedName?.trim() === sameCandidate),
+      (item) => item === cue || (canBatchBind && item.speakerCluster?.trim() === sameCandidate),
     )
     .forEach((item) => {
       item.translationRoleId = roleId
@@ -199,9 +228,34 @@ function bindRole(cue: VideoTranslationCue, value: string) {
     })
   mediaStore.invalidateTranslation('role-binding')
 }
-function updateText(cue: VideoTranslationCue, key: 'sourceText' | 'translatedText', event: Event) {
+function confirmNewRole() {
+  const cue = pendingRoleCue.value
+  const name = roleNameDraft.value.trim()
+  if (!cue || !name) return
+  const roleId = `role-${crypto.randomUUID()}`
+  mediaStore.videoTranslationRoles.push({
+    translationRoleId: roleId,
+    displayName: name,
+    aliases: [],
+    sourceEpisodeIds: [mediaStore.episodeId],
+    screenshotId: `screenshot-${crypto.randomUUID()}`,
+    status: 'confirmed',
+  })
+  applyRole(cue, roleId)
+  roleDialogOpen.value = false
+  pendingRoleCue.value = undefined
+}
+function updateText(
+  cue: VideoTranslationCue,
+  key: 'sourceText' | 'translatedText',
+  event: Event,
+) {
   cue[key] = (event.target as HTMLTextAreaElement).value
-  mediaStore.invalidateTranslation(key === 'sourceText' ? 'source-dialogue' : 'translation')
+  if (key === 'sourceText') rememberTextCursor(cue, event)
+  mediaStore.invalidateTranslation(key === 'translatedText' ? 'translation' : 'source-dialogue')
+}
+function rememberTextCursor(cue: VideoTranslationCue, event: Event) {
+  emit('textCursor', cue.cueId, (event.target as HTMLTextAreaElement).selectionStart || 0)
 }
 function selectCue(cueId: string) {
   emit('selectCue', cueId)
@@ -281,6 +335,15 @@ p {
 }
 .source-preview.full-width {
   grid-column: 1 / -1;
+}
+.recognized-text {
+  white-space: pre-wrap;
+  color: rgba(0, 0, 0, 0.68);
+}
+.calibration-suggestion {
+  display: block;
+  margin-top: 5px;
+  color: rgb(var(--v-theme-primary));
 }
 .source-placeholder {
   grid-column: 1 / -1;
@@ -365,5 +428,17 @@ audio {
   padding: 32px;
   text-align: center;
   color: rgba(0, 0, 0, 0.56);
+}
+.dialog-action {
+  min-height: 36px;
+  padding: 0 14px;
+  color: rgba(0, 0, 0, 0.72);
+}
+.dialog-action.primary {
+  color: rgb(var(--v-theme-primary));
+  font-weight: 600;
+}
+.dialog-action:disabled {
+  opacity: 0.38;
 }
 </style>

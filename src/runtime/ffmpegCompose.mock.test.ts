@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import test, * as nodeTest from 'node:test'
 import { parseBuffer } from 'music-metadata'
 
@@ -312,13 +313,48 @@ test('burns translation subtitles on the complete uploaded source without creati
   ])
   ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=880:duration=0.4', '-c:a', 'pcm_s16le', '-y', mixed])
 
+  const canonical = {
+    sourceFingerprint: 'f'.repeat(64),
+    sourceLanguage: 'zh',
+    targetLanguage: 'en',
+    cues: [
+      {
+        cueId: 'cue-001',
+        translationRoleId: 'role-1',
+        roleName: '林默',
+        startMs: 0,
+        endMs: 300,
+        performanceDirection: '平静问候',
+        sourceText: '你好',
+        translatedText: 'Hello',
+      },
+    ],
+  }
+  const scriptHash = createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
+  const finalScriptId = `timestamp-script-${scriptHash.slice(0, 16)}`
+  const voiceVersionId = 'voice-test'
+  const dubDialogueTimestampHash = 'd'.repeat(64)
+  const translationWiki = path.join(base, 'wiki', '翻译', episodeId)
+  fs.mkdirSync(path.join(translationWiki, '成片'), { recursive: true })
+  fs.writeFileSync(
+    path.join(translationWiki, '最终时间戳剧本.json'),
+    JSON.stringify({ finalScriptId, scriptHash, ...canonical }),
+  )
+  fs.writeFileSync(
+    path.join(translationWiki, '成片', '配音对白时间戳.json'),
+    JSON.stringify({ finalScriptId, scriptHash, voiceVersionId, dubDialogueTimestampHash }),
+  )
+
   const output = await composeVideoTranslation({
     runId,
     episodeId,
     sourceVideoPath: source,
     mixedAudioPath: mixed,
     targetLanguage: 'en',
-    subtitleCues: [{ start: 0, end: 0.3, text: 'Hello' }],
+    finalScriptId,
+    scriptHash,
+    voiceVersionId,
+    dubDialogueTimestampHash,
   })
   assert.match(output, /^episodes\/episode-001\/video-translate\/en\/final/)
   const probe = spawnSync(ffmpegPath, ['-hide_banner', '-i', path.join(base, output)], { encoding: 'utf8' }).stderr

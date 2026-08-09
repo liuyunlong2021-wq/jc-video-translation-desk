@@ -62,6 +62,7 @@ export type VideoModel =
   | 'rh-seedance2'
 export type TextModel =
   | 'gemini-3.6-flash'
+  | 'doubao-seed-evolving'
   | 'claude-fable-5'
   | 'claude-opus-5'
   | 'gpt-5.6-sol'
@@ -347,20 +348,33 @@ export interface TranslateVideoSubtitlesParams {
   textModel: TextModel
   sourceLanguage: string
   targetLanguage: string
-  subtitles: Array<{ cueId: string; roleName?: string; text: string }>
-  contextPaths?: Array<{ path: string; hash: string }>
+  subtitles: Array<{
+    cueId: string
+    startMs: number
+    endMs: number
+    translationRoleId?: string
+    roleName?: string
+    performanceDirection?: string
+    text: string
+  }>
 }
 
 export interface IdentifyVideoTranslationSpeakersParams {
   runId: string
   episodeId: string
-  textModel: TextModel
   videoPath: string
-  roles: Array<{
-    translationRoleId: string
-    displayName: string
-    aliases: string[]
-    linkedCreativeRoleId?: string
+  durationMs: number
+}
+
+export interface CalibrateVideoTranslationSubtitlesParams {
+  runId: string
+  episodeId: string
+  textModel: TextModel
+  cues: Array<{
+    cueId: string
+    text: string
+    speakerCluster?: string
+    emotion?: string
   }>
 }
 
@@ -376,6 +390,7 @@ export interface VideoTranslationSpeakerDraft {
   endMs: number
   recognizedText: string
   correctedText: string
+  performanceDirection: string
   proposedRoleId?: string
   proposedName: string
   confidence: number
@@ -383,6 +398,9 @@ export interface VideoTranslationSpeakerDraft {
   ocrText: string
   needsReview: boolean
   suspectedMissing?: boolean
+  speakerCluster?: string
+  emotion?: string
+  audioEvent?: string
 }
 
 export interface VideoTranslationContextSource {
@@ -397,6 +415,15 @@ export interface VideoTranslationUploadResult {
   sourceFingerprint: string
   durationMs: number
   hasAudio: boolean
+}
+
+export interface GenerateVideoTranslationDialogueTimestampsParams {
+  runId: string
+  episodeId: string
+  targetLanguage: string
+  finalScriptId: string
+  scriptHash: string
+  voiceVersionId: string
 }
 
 export interface VideoTranslationMasterUploadResult {

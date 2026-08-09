@@ -55,5 +55,8 @@ export interface ComposeVideoTranslationParams {
   sourceVideoPath: string
   mixedAudioPath: string
   targetLanguage: string
-  subtitleCues: SubtitleCue[]
+  finalScriptId: string
+  scriptHash: string
+  voiceVersionId: string
+  dubDialogueTimestampHash: string
 }

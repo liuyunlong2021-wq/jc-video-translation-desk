@@ -62,8 +62,6 @@ function relativizeRun(run: any) {
       'finalMasterVideoPath',
       'sourceTranscriptPath',
       'sourceSrtPath',
-      'contextPath',
-      'confirmedDialoguePath',
       'seedArrangementPath',
       'seedPromptPath',
       'targetVoicePath',
@@ -75,10 +73,6 @@ function relativizeRun(run: any) {
       run.videoTranslation[key] = relativeAsset(run.runId, run.videoTranslation[key])
     run.videoTranslation.voiceVersions?.forEach((version: any) => {
       version.previewPath = relativeAsset(run.runId, version.previewPath)
-      version.targetVoicePath = relativeAsset(run.runId, version.targetVoicePath)
-      version.blockAudioPaths = (version.blockAudioPaths || []).map((value: string) =>
-        relativeAsset(run.runId, value),
-      )
     })
     run.videoTranslation.cues?.forEach((cue: any) => {
       cue.voicePath = relativeAsset(run.runId, cue.voicePath)
@@ -184,6 +178,7 @@ function migrateRun(run: any) {
     for (const key of [
       'transcriptStatus',
       'speakerStatus',
+      'calibrationStatus',
       'translationStatus',
       'reviewStatus',
       'arrangementStatus',
@@ -196,6 +191,10 @@ function migrateRun(run: any) {
       else if (!['idle', 'ready', 'failed', 'stale'].includes(run.videoTranslation[key]))
         run.videoTranslation[key] = 'idle'
     }
+    run.videoTranslation.calibrationApplied =
+      typeof run.videoTranslation.calibrationApplied === 'boolean'
+        ? run.videoTranslation.calibrationApplied
+        : run.videoTranslation.speakerStatus === 'ready'
     run.videoTranslation.originalVocalRemoved = Boolean(run.videoTranslation.originalVocalRemoved)
     const legacyPrompt = run.videoTranslation.seedPromptText || run.seedAudioGlobalPrompt
     if (
@@ -221,6 +220,7 @@ function migrateRun(run: any) {
   if (
     ![
       'gemini-3.6-flash',
+      'doubao-seed-evolving',
       'claude-fable-5',
       'claude-opus-5',
       'gpt-5.6-sol',

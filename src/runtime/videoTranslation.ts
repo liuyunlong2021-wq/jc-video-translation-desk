@@ -8,8 +8,11 @@ export interface TranslationRole {
   displayName: string
   aliases: string[]
   description?: string
+  screenshotId?: string
   linkedCreativeRoleId?: string
   voiceProfileId?: string
+  voiceIdentityText?: string
+  voiceConfirmedAt?: string
   sourceEpisodeIds: string[]
   status: 'confirmed'
 }
@@ -21,6 +24,7 @@ export interface VideoTranslationCue {
   recognizedText: string
   sourceText: string
   translatedText: string
+  performanceDirection?: string
   translationRoleId?: string
   proposedName?: string
   confidence?: number
@@ -29,6 +33,11 @@ export interface VideoTranslationCue {
   needsReview: boolean
   voicePath?: string
   suspectedMissing?: boolean
+  speakerCluster?: string
+  emotion?: string
+  audioEvent?: string
+  calibrationSuggestion?: string
+  calibrationBackupText?: string
 }
 
 export interface VideoTranslationState {
@@ -40,10 +49,9 @@ export interface VideoTranslationState {
   targetLanguage: string
   durationMs: number
   hasAudio: boolean
-  sourceTranscriptPath?: string
-  sourceSrtPath?: string
-  contextPath?: string
-  confirmedDialoguePath?: string
+  finalScriptId?: string
+  scriptHash?: string
+  finalScriptMarkdown?: string
   seedArrangementPath?: string
   seedPromptPath?: string
   seedPromptText?: string
@@ -51,13 +59,16 @@ export interface VideoTranslationState {
   voiceVersions: VideoTranslationVoiceVersion[]
   activeVoiceVersionId?: string
   targetVoicePath?: string
+  dubDialogueTimestampPath?: string
+  dubDialogueTimestampHash?: string
   vocalPath?: string
   instrumentPath?: string
   mixedPath?: string
   finalVideoPath?: string
   cues: VideoTranslationCue[]
-  transcriptStatus: ArtifactStatus
   speakerStatus: ArtifactStatus
+  calibrationStatus: ArtifactStatus
+  calibrationApplied: boolean
   translationStatus: ArtifactStatus
   reviewStatus: ArtifactStatus
   arrangementStatus: ArtifactStatus
@@ -71,12 +82,23 @@ export interface VideoTranslationState {
 
 export interface VideoTranslationVoiceVersion {
   versionId: string
-  kind: 'timeline' | 'continuous'
   createdAt: string
-  prompt: string
   previewPath: string
-  targetVoicePath: string
-  blockAudioPaths: string[]
+  finalScriptId?: string
+  scriptHash?: string
+  blocks?: Array<{
+    voiceBlockId: string
+    cueIds: string[]
+    audioPath: string
+    audioHash: string
+    durationMs: number
+    prompt: string
+    references: Array<{
+      translationRoleId: string
+      voiceProfileId: string
+      referenceIndex: number
+    }>
+  }>
   durationMs: number
   model?: string
 }
@@ -102,26 +124,14 @@ export interface VideoTranslationDialogueArrangement {
   schemaVersion: 1
   episodeId: string
   targetLanguage: string
+  finalScriptId?: string
+  scriptHash?: string
   durationMs: number
   blocks: VideoTranslationDialogueBlock[]
 }
 
 export interface VideoTranslationDialoguePlan {
   arrangement: VideoTranslationDialogueArrangement
-  promptMarkdown: string
-}
-
-export interface DialogueWord {
-  word: string
-  start: number
-  end: number
-}
-
-export interface DialogueCueAlignment {
-  cueId: string
-  observedStartMs: number
-  observedEndMs: number
-  matchedWords: number
 }
 
 export function insertVideoTranslationCueAt(
@@ -132,35 +142,12 @@ export function insertVideoTranslationCueAt(
 ) {
   const sorted = cues.map((cue) => ({ ...cue })).sort((a, b) => a.startMs - b.startMs)
   const at = Math.max(0, Math.min(durationMs, Math.round(playheadMs)))
-  const containing = sorted.find((cue) => cue.startMs < at && at < cue.endMs)
-  if (containing) {
-    const oldEnd = containing.endMs
-    containing.endMs = at
-    const created: VideoTranslationCue = {
-      cueId,
-      startMs: at,
-      endMs: oldEnd,
-      recognizedText: '',
-      sourceText: '',
-      translatedText: '',
-      translationRoleId: containing.translationRoleId,
-      proposedName: containing.proposedName,
-      confidence: 0,
-      evidence: '人工从播放头拆分',
-      needsReview: true,
-    }
-    sorted.push(created)
-    return {
-      cues: sorted.sort((a, b) => a.startMs - b.startMs),
-      cue: created,
-      mode: 'split' as const,
-    }
-  }
-  const previous = sorted.filter((cue) => cue.endMs <= at).at(-1)
-  const next = sorted.find((cue) => cue.startMs >= at)
-  const endMs = Math.min(next?.startMs ?? durationMs, at + 2000)
-  if (endMs <= at) throw new Error('当前位置没有可新增字幕的时间空隙')
-  const neighbor = previous || next
+  const previous = sorted.filter((cue) => cue.startMs <= at).at(-1)
+  const next = sorted.find((cue) => cue.startMs > at)
+  const overlapsExisting = sorted.some((cue) => cue.startMs < at && at < cue.endMs)
+  const endMs = Math.min(durationMs, overlapsExisting ? at + 2000 : next?.startMs ?? at + 2000)
+  if (endMs <= at) throw new Error('当前位置已到视频结尾')
+  const neighbor = previous
   const created: VideoTranslationCue = {
     cueId,
     startMs: at,
@@ -168,6 +155,7 @@ export function insertVideoTranslationCueAt(
     recognizedText: '',
     sourceText: '',
     translatedText: '',
+    performanceDirection: '',
     translationRoleId: neighbor?.translationRoleId,
     proposedName: neighbor?.proposedName,
     confidence: 0,
@@ -194,160 +182,91 @@ export function setVideoTranslationCueBoundary(
   const cue = sorted[index]
   const at = Math.round(playheadMs)
   if (boundary === 'start') {
-    if (at < (sorted[index - 1]?.endMs ?? 0) || at >= cue.endMs)
-      throw new Error('开始时间必须位于上一条字幕结束后、当前字幕结束前')
+    if (at < 0 || at >= cue.endMs) throw new Error('开始时间必须位于视频内且早于结束时间')
     cue.startMs = at
   } else {
-    if (at <= cue.startMs || at > (sorted[index + 1]?.startMs ?? Number.POSITIVE_INFINITY))
-      throw new Error('结束时间必须位于当前字幕开始后、下一条字幕开始前')
+    if (at <= cue.startMs || at > Number.MAX_SAFE_INTEGER)
+      throw new Error('结束时间必须晚于开始时间')
     cue.endMs = at
   }
   return sorted
 }
 
-export function findUncoveredSpeechIntervals(
-  cues: Array<Pick<VideoTranslationCue, 'startMs' | 'endMs'>>,
-  speech: Array<{ startMs: number; endMs: number; recognizedText: string }>,
-  minimumMs = 300,
-) {
-  const covered = cues.slice().sort((a, b) => a.startMs - b.startMs)
-  return speech.flatMap((item) => {
-    let cursor = item.startMs
-    const gaps: Array<{ startMs: number; endMs: number; recognizedText: string }> = []
-    for (const cue of covered) {
-      if (cue.endMs <= cursor || cue.startMs >= item.endMs) continue
-      if (cue.startMs - cursor >= minimumMs)
-        gaps.push({ startMs: cursor, endMs: cue.startMs, recognizedText: item.recognizedText })
-      cursor = Math.max(cursor, cue.endMs)
-      if (cursor >= item.endMs) break
-    }
-    if (item.endMs - cursor >= minimumMs)
-      gaps.push({ startMs: cursor, endMs: item.endMs, recognizedText: item.recognizedText })
-    return gaps
-  })
+export function mergeVideoTranslationCueWithNext(cues: VideoTranslationCue[], cueId: string) {
+  const sorted = cues.map((cue) => ({ ...cue })).sort((a, b) => a.startMs - b.startMs)
+  const index = sorted.findIndex((cue) => cue.cueId === cueId)
+  const current = sorted[index]
+  const next = sorted[index + 1]
+  if (!current || !next) throw new Error('所选对白没有下一条可合并对白')
+  if (!current.translationRoleId || current.translationRoleId !== next.translationRoleId)
+    throw new Error('只有已确认且角色相同的相邻对白可以合并')
+  current.endMs = Math.max(current.endMs, next.endMs)
+  current.performanceDirection = [current.performanceDirection, next.performanceDirection]
+    .filter(Boolean)
+    .join('；')
+  current.sourceText = [current.sourceText, next.sourceText].filter(Boolean).join(' ')
+  current.translatedText = ''
+  current.needsReview = true
+  sorted.splice(index + 1, 1)
+  return sorted
 }
 
-const SUBTITLE_BREAKS = new Set([',', '.', '?', '!', ';', '，', '。', '？', '；', '！', ' '])
-const SUBTITLE_PUNCTUATION = new Set([',', '.', '?', '!', ';', '，', '。', '？', '；', '！', '…'])
-const SUBTITLE_CLOSERS = new Set(['"', "'", '”', '’', ')', ']', '）', '】'])
-
-export function splitTimedSubtitleText(
-  text: string,
-  startMs: number,
-  endMs: number,
-  language = 'auto',
+export function splitVideoTranslationCueAt(
+  cues: VideoTranslationCue[],
+  cueId: string,
+  playheadMs: number,
+  textOffset: number,
+  newCueId: string,
 ) {
-  const normalized = text.replace(/\r?(?:\n|\\n)/gi, ' ').trim()
-  const characters = Array.from(normalized)
-  const isCjk =
-    /^(?:zh|ja|jp|ko|yu)/i.test(language) ||
-    /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uf900-\ufaff]/u.test(normalized)
-  const maxLength = isCjk ? 15 : 40
-  const offset = Math.min(isCjk ? 2 : 8, Math.floor(maxLength / 2))
-  const punctuationParts: string[] = []
-  let punctuationPart = ''
-  for (let index = 0; index < characters.length; index++) {
-    const character = characters[index]
-    punctuationPart += character
-    const decimalPoint =
-      character === '.' &&
-      /\d/.test(characters[index - 1] || '') &&
-      /\d/.test(characters[index + 1] || '')
-    if (!SUBTITLE_PUNCTUATION.has(character) || decimalPoint) continue
-    while (
-      index + 1 < characters.length &&
-      (SUBTITLE_PUNCTUATION.has(characters[index + 1]) ||
-        SUBTITLE_CLOSERS.has(characters[index + 1]))
-    )
-      punctuationPart += characters[++index]
-    punctuationParts.push(punctuationPart.trim())
-    punctuationPart = ''
+  const sorted = cues.map((cue) => ({ ...cue })).sort((a, b) => a.startMs - b.startMs)
+  const index = sorted.findIndex((cue) => cue.cueId === cueId)
+  const cue = sorted[index]
+  if (!cue) throw new Error('请先选择字幕行')
+  const at = Math.round(playheadMs)
+  if (at <= cue.startMs || at >= cue.endMs) throw new Error('播放头必须位于所选字幕内部')
+  const left = cue.sourceText.slice(0, textOffset).trim()
+  const right = cue.sourceText.slice(textOffset).trim()
+  if (!left || !right) throw new Error('请把文字光标放在需要拆分的两个字之间')
+  const splitRecognizedText = cue.sourceText === cue.recognizedText
+  const next: VideoTranslationCue = {
+    ...cue,
+    cueId: newCueId,
+    startMs: at,
+    recognizedText: splitRecognizedText ? right : '',
+    sourceText: right,
+    translatedText: '',
+    calibrationSuggestion: undefined,
+    calibrationBackupText: undefined,
+    evidence: '人工在播放头拆分',
+    needsReview: true,
   }
-  if (punctuationPart.trim()) punctuationParts.push(punctuationPart.trim())
+  cue.endMs = at
+  cue.recognizedText = splitRecognizedText ? left : cue.recognizedText
+  cue.sourceText = left
+  cue.translatedText = ''
+  cue.calibrationSuggestion = undefined
+  cue.calibrationBackupText = undefined
+  cue.needsReview = true
+  sorted.splice(index + 1, 0, next)
+  return { cues: sorted, cue: next }
+}
 
-  const lines = punctuationParts.flatMap((part) => {
-    const partCharacters = Array.from(part)
-    if (partCharacters.length < maxLength + 4) return [part]
-    const wrapped: string[] = []
-    let current = ''
-    let index = 0
-    while (index < partCharacters.length) {
-      current = current.trimStart()
-      if (index >= partCharacters.length - offset) {
-        current += partCharacters.slice(index).join('')
-        break
-      }
-      if (Array.from(current).length < maxLength - offset) {
-        current += partCharacters[index++]
-        continue
-      }
-      const currentLength = Array.from(current).length
-      if (currentLength <= maxLength && SUBTITLE_BREAKS.has(partCharacters[index])) {
-        wrapped.push(current + partCharacters[index++])
-        current = ''
-        continue
-      }
-      let breakAt = index
-      for (let step = 1; step <= offset && index + step < partCharacters.length; step++) {
-        if (SUBTITLE_BREAKS.has(partCharacters[index + step])) {
-          breakAt = index + step + 1
-          break
-        }
-      }
-      if (breakAt !== index) {
-        wrapped.push(current + partCharacters.slice(index, breakAt).join(''))
-        current = ''
-        index = breakAt
-        continue
-      }
-      current += partCharacters[index++]
-      if (Array.from(current).length >= maxLength) {
-        wrapped.push(current)
-        current = ''
-      }
-    }
-    if (current && Array.from(current).length < maxLength / 3 && wrapped.length)
-      wrapped[wrapped.length - 1] += current
-    else if (current) wrapped.push(current)
-    return wrapped
-  })
-  if (lines.length < 2 || endMs - startMs < lines.length)
-    return [{ startMs, endMs, text: normalized }]
-
-  const weights = lines.map((line) => Math.max(1, Array.from(line.replace(/\s+/g, '')).length))
-  const totalWeight = weights.reduce((total, weight) => total + weight, 0)
-  const durationMs = endMs - startMs
-  let cursor = startMs
-  let cumulativeWeight = 0
-  return lines.map((line, lineIndex) => {
-    cumulativeWeight += weights[lineIndex]
-    const remaining = lines.length - lineIndex - 1
-    const next =
-      lineIndex === lines.length - 1
-        ? endMs
-        : Math.max(
-            cursor + 1,
-            Math.min(
-              endMs - remaining,
-              startMs + Math.round((durationMs * cumulativeWeight) / totalWeight),
-            ),
-          )
-    const result = { startMs: cursor, endMs: next, text: line.trim() }
-    cursor = next
-    return result
-  })
+export function deleteVideoTranslationCue(cues: VideoTranslationCue[], cueId: string) {
+  if (!cues.some((cue) => cue.cueId === cueId)) throw new Error('没有找到所选对白')
+  return cues.filter((cue) => cue.cueId !== cueId).map((cue) => ({ ...cue }))
 }
 
 export type VideoTranslationAction =
   | 'upload-video'
   | 'upload-final-master'
   | 'reverse-video'
+  | 'calibrate-subtitles'
   | 'translate-all-subtitles'
   | 'open-voice-workspace'
   | 'arrange-doubao-voice'
   | 'generate-target-voice'
+  | 'timestamp-target-dialogue'
   | 'separate-source-audio'
-  | 'remove-original-vocal'
   | 'mix-background-audio'
   | 'burn-subtitles-and-voice'
 
@@ -355,6 +274,7 @@ export type VideoTranslationChange =
   | 'source-video'
   | 'final-master-video'
   | 'source-dialogue'
+  | 'timing'
   | 'translation'
   | 'role-binding'
   | 'language'
@@ -371,8 +291,9 @@ export function createVideoTranslationState(): VideoTranslationState {
     hasAudio: false,
     cues: [],
     voiceVersions: [],
-    transcriptStatus: 'idle',
     speakerStatus: 'idle',
+    calibrationStatus: 'idle',
+    calibrationApplied: false,
     translationStatus: 'idle',
     reviewStatus: 'idle',
     arrangementStatus: 'idle',
@@ -388,10 +309,6 @@ export function validateVideoTranslationDialoguePrompt(
   prompt: string,
   block: VideoTranslationDialogueBlock,
 ) {
-  const paragraphs = prompt
-    .split(/\n\s*\n/)
-    .map((value) => value.trim())
-    .filter(Boolean)
   block.references.forEach((reference, index) => {
     const label = reference.label?.split('·')[0]?.trim() || reference.speakerId
     if (
@@ -409,19 +326,23 @@ export function validateVideoTranslationDialoguePrompt(
     )
   )
     throw new Error(`${block.blockId} 不得包含时间戳或强度档位`)
-  let cursor = 0
-  for (const line of block.lines) {
-    const offset = prompt.indexOf(line.text, cursor)
-    if (offset < 0) throw new Error(`${block.blockId} 未按顺序逐字保留确认台词`)
+  const dialogueLines = prompt
+    .split('\n')
+    .map((value) => value.trim())
+    .map((value) => value.match(/^(.+?)[（(].+[）)]\s*[：:]\s*[“"](.+)[”"]$/))
+    .filter((value): value is RegExpMatchArray => Boolean(value))
+  if (dialogueLines.length !== block.lines.length)
+    throw new Error(`${block.blockId} 未按顺序逐行保留全部确认台词`)
+  block.lines.forEach((line, index) => {
     const label = block.references
       .find((item) => item.speakerId === line.speakerId)
       ?.label?.split('·')[0]
       ?.trim()
-    const paragraph = paragraphs.find((value) => value.includes(line.text))
-    if (!paragraph || (label && !paragraph.includes(label)))
+    const output = dialogueLines[index]
+    if (output[2] !== line.text) throw new Error(`${block.blockId} 未按顺序逐字保留确认台词`)
+    if (label && output[1].trim() !== label)
       throw new Error(`${block.blockId} 的台词缺少角色和自然表演说明：${line.cueId}`)
-    cursor = offset + line.text.length
-  }
+  })
 }
 
 function actionable(status: ArtifactStatus) {
@@ -444,9 +365,16 @@ export function availableVideoTranslationActions(
   if (!state.hasAudio) return actions
   actions.push('reverse-video')
   if (state.speakerStatus !== 'ready') return actions
+  if (state.cues.length) actions.push('calibrate-subtitles')
   if (
     state.speakerStatus === 'ready' &&
-    state.cues.every((cue) => cue.sourceText.trim()) &&
+    state.calibrationApplied &&
+    state.cues.every(
+      (cue) =>
+        cue.sourceText.trim() &&
+        cue.translationRoleId &&
+        roles.some((role) => role.translationRoleId === cue.translationRoleId),
+    ) &&
     actionable(state.translationStatus)
   )
     actions.push('translate-all-subtitles')
@@ -463,17 +391,28 @@ export function availableVideoTranslationActions(
       cue.sourceText.trim() &&
       cue.translatedText.trim() &&
       cue.translationRoleId &&
-      roleById.get(cue.translationRoleId)?.voiceProfileId,
+      roleById.get(cue.translationRoleId)?.voiceProfileId &&
+      roleById.get(cue.translationRoleId)?.voiceIdentityText &&
+      roleById.get(cue.translationRoleId)?.voiceConfirmedAt,
   )
   if (dialogueReady && (actionable(state.arrangementStatus) || state.voiceStatus === 'failed'))
     actions.push('arrange-doubao-voice')
   if (state.arrangementStatus === 'ready' && actionable(state.voiceStatus))
     actions.push('generate-target-voice')
+  const activeVersion = state.voiceVersions.find(
+    (version) => version.versionId === state.activeVoiceVersionId,
+  )
+  if (
+    activeVersion &&
+    activeVersion.finalScriptId === state.finalScriptId &&
+    activeVersion.scriptHash === state.scriptHash &&
+    !state.dubDialogueTimestampHash
+  )
+    actions.push('timestamp-target-dialogue')
   if (actionable(state.separationStatus)) actions.push('separate-source-audio')
-  else if (state.separationStatus === 'ready' && !state.originalVocalRemoved)
-    actions.push('remove-original-vocal')
   else if (
-    state.originalVocalRemoved &&
+    state.separationStatus === 'ready' &&
+    state.dubDialogueTimestampHash &&
     state.voiceStatus === 'ready' &&
     actionable(state.mixStatus)
   )
@@ -514,6 +453,12 @@ export function invalidateVideoTranslation(
   } else if (change === 'translation') {
     next.reviewStatus = invalidate(next.reviewStatus)
   } else if (change === 'role-binding') {
+    next.translationStatus = invalidate(next.translationStatus)
+    next.reviewStatus = invalidate(next.reviewStatus)
+    next.cues.forEach((cue) => {
+      cue.translatedText = ''
+    })
+  } else if (change === 'timing') {
     next.reviewStatus = invalidate(next.reviewStatus)
   } else if (change === 'language') {
     next.translationStatus = invalidate(next.translationStatus)
@@ -522,11 +467,17 @@ export function invalidateVideoTranslation(
       cue.translatedText = ''
     })
   }
+  if (['source-dialogue', 'translation', 'role-binding', 'timing', 'language'].includes(change)) {
+    next.finalScriptId = undefined
+    next.scriptHash = undefined
+    next.finalScriptMarkdown = undefined
+  }
   if (
     [
       'source-dialogue',
       'translation',
       'role-binding',
+      'timing',
       'language',
       'voice-binding',
       'voice-prompt',
@@ -538,12 +489,30 @@ export function invalidateVideoTranslation(
       'source-dialogue',
       'translation',
       'role-binding',
+      'timing',
       'language',
       'voice-binding',
       'voice-prompt',
     ].includes(change)
   )
     next.voiceStatus = invalidate(next.voiceStatus)
+  if (
+    [
+      'source-dialogue',
+      'translation',
+      'role-binding',
+      'timing',
+      'language',
+      'voice-binding',
+      'voice-prompt',
+      'target-voice',
+    ].includes(change)
+  ) {
+    next.activeVoiceVersionId = undefined
+    next.targetVoicePath = undefined
+    next.dubDialogueTimestampPath = undefined
+    next.dubDialogueTimestampHash = undefined
+  }
   if (change !== 'separation') next.mixStatus = invalidate(next.mixStatus)
   if (change === 'target-voice' || change === 'separation')
     next.mixStatus = invalidate(next.mixStatus)
@@ -554,10 +523,10 @@ export function invalidateVideoTranslation(
 export function validateConfirmedTranslation(
   cues: VideoTranslationCue[],
   roles: TranslationRole[],
+  durationMs = Number.POSITIVE_INFINITY,
 ) {
   if (!cues.length) throw new Error('没有可确认的字幕')
   const roleIds = new Set(roles.map((role) => role.translationRoleId))
-  let previousEnd = 0
   const cueIds = new Set<string>()
   for (const cue of cues) {
     if (
@@ -565,8 +534,9 @@ export function validateConfirmedTranslation(
       cueIds.has(cue.cueId) ||
       !Number.isFinite(cue.startMs) ||
       !Number.isFinite(cue.endMs) ||
-      cue.startMs < previousEnd ||
+      cue.startMs < 0 ||
       cue.endMs <= cue.startMs ||
+      cue.endMs > durationMs ||
       !cue.sourceText?.trim() ||
       !cue.translatedText?.trim() ||
       !cue.translationRoleId ||
@@ -574,7 +544,6 @@ export function validateConfirmedTranslation(
     )
       throw new Error('角色与字幕确认内容无效')
     cueIds.add(cue.cueId)
-    previousEnd = cue.endMs
   }
   return cues
 }
@@ -586,13 +555,17 @@ export function planVideoTranslationDialogueBlocks(
   cues: VideoTranslationCue[],
   roles: TranslationRole[],
   references: SeedAudioReference[],
+  finalScriptId = '',
+  scriptHash = '',
 ): VideoTranslationDialoguePlan {
-  validateConfirmedTranslation(cues, roles)
+  validateConfirmedTranslation(cues, roles, durationMs)
   if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error('原片时长无效')
   const referenceBySpeaker = new Map(references.map((item) => [item.speakerId, item]))
   const blocks: VideoTranslationDialogueBlock[] = []
   let current: VideoTranslationDialogueBlock | undefined
-  for (const cue of cues) {
+  for (const cue of cues
+    .slice()
+    .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)) {
     const speakerId = cue.translationRoleId!
     const reference = referenceBySpeaker.get(speakerId)
     if (!reference?.referenceAudioPath?.trim()) throw new Error(`${speakerId} 缺少绑定参考音`)
@@ -600,7 +573,7 @@ export function planVideoTranslationDialogueBlocks(
       current = undefined
     if (!current) {
       current = {
-        blockId: `dialogue-block-${String(blocks.length + 1).padStart(3, '0')}`,
+        blockId: `voice-block-${String(blocks.length + 1).padStart(3, '0')}`,
         cueIds: [],
         speakerIds: [],
         references: [],
@@ -617,7 +590,7 @@ export function planVideoTranslationDialogueBlocks(
       cueId: cue.cueId,
       speakerId,
       text: cue.translatedText.trim(),
-      ...(cue.evidence?.trim() ? { performanceEvidence: cue.evidence.trim() } : {}),
+      performanceEvidence: cue.performanceDirection?.trim() || '',
       expectedStartMs: cue.startMs,
       expectedEndMs: cue.endMs,
     })
@@ -626,71 +599,10 @@ export function planVideoTranslationDialogueBlocks(
     schemaVersion: 1,
     episodeId,
     targetLanguage,
+    finalScriptId,
+    scriptHash,
     durationMs,
     blocks,
   }
-  const promptMarkdown = [
-    '# 连续对白导演稿',
-    ...blocks.map((block) => `\n## ${block.blockId}\n`),
-  ].join('\n')
-  return { arrangement, promptMarkdown }
-}
-
-function dialogueTokens(text: string) {
-  return (text.match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) || []).map((token) =>
-    token.toLocaleLowerCase().replace(/['’]/g, ''),
-  )
-}
-
-export function alignDialogueBlockWords(
-  lines: VideoTranslationDialogueLine[],
-  words: DialogueWord[],
-  durationMs: number,
-): DialogueCueAlignment[] {
-  const targets = lines.flatMap((line, cueIndex) =>
-    dialogueTokens(line.text).map((token) => ({ token, cueIndex })),
-  )
-  const observed = words.flatMap((word, wordIndex) =>
-    dialogueTokens(word.word).map((token) => ({ token, wordIndex })),
-  )
-  if (!targets.length || !observed.length) throw new Error('连续对白没有可对齐的识别单词')
-  const rows = targets.length + 1
-  const columns = observed.length + 1
-  const scores = Array.from({ length: rows }, () => new Uint16Array(columns))
-  for (let target = 1; target < rows; target++)
-    for (let word = 1; word < columns; word++)
-      scores[target][word] =
-        targets[target - 1].token === observed[word - 1].token
-          ? scores[target - 1][word - 1] + 1
-          : Math.max(scores[target - 1][word], scores[target][word - 1])
-  const matches: Array<{ cueIndex: number; wordIndex: number }> = []
-  let target = targets.length
-  let word = observed.length
-  while (target && word) {
-    if (targets[target - 1].token === observed[word - 1].token) {
-      matches.push({
-        cueIndex: targets[target - 1].cueIndex,
-        wordIndex: observed[word - 1].wordIndex,
-      })
-      target--
-      word--
-    } else if (scores[target - 1][word] >= scores[target][word - 1]) target--
-    else word--
-  }
-  matches.reverse()
-  if (!matches.length || matches.length / targets.length < 0.4)
-    throw new Error('连续对白识别结果与确认台词不匹配')
-  const byCue = lines.map((_, cueIndex) => matches.filter((item) => item.cueIndex === cueIndex))
-  return lines.map((line, cueIndex) => {
-    const cueMatches = byCue[cueIndex]
-    if (!cueMatches.length) throw new Error(`${line.cueId} 没有可靠的识别单词`)
-    const first = words[cueMatches[0].wordIndex]
-    const last = words[cueMatches.at(-1)!.wordIndex]
-    return {
-      cueId: line.cueId,
-      observedStartMs: Math.max(0, Math.round(first.start * 1000) - 80),
-      observedEndMs: Math.min(durationMs, Math.round(last.end * 1000) + 120),
-      matchedWords: cueMatches.length,
-    }
-  })
+  return { arrangement }
 }

@@ -18,6 +18,11 @@ release-translation
 *.db
 *.db-journal
 
+# Downloaded by pnpm setup:funasr; pinned in build/scripts/setup-funasr.js
+third_party/FunASR/
+__pycache__/
+*.pyc
+
 # Editor directories and files
 .DS_Store
 *.suo

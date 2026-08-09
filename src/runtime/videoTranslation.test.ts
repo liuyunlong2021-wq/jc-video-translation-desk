@@ -2,55 +2,25 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 import {
-  alignDialogueBlockWords,
   availableVideoTranslationActions,
   createVideoTranslationState,
-  findUncoveredSpeechIntervals,
   insertVideoTranslationCueAt,
   invalidateVideoTranslation,
   planVideoTranslationDialogueBlocks,
-  splitTimedSubtitleText,
+  splitVideoTranslationCueAt,
   setVideoTranslationCueBoundary,
   validateConfirmedTranslation,
   validateVideoTranslationDialoguePrompt,
   type TranslationRole,
 } from './videoTranslation.ts'
 
-test('splits final subtitle lines at punctuation and assigns contiguous timestamps', () => {
-  const parts = splitTimedSubtitleText(
-    '订婚宴上让我颜面扫地，抬不起头，那我也让你抬不起头！',
-    34_100,
-    40_800,
-    'zh',
-  )
-  assert.deepEqual(
-    parts.map((part) => part.text),
-    ['订婚宴上让我颜面扫地，', '抬不起头，', '那我也让你抬不起头！'],
-  )
-  assert.equal(parts[0].startMs, 34_100)
-  assert.equal(parts.at(-1)?.endMs, 40_800)
-  assert.equal(
-    parts.map((part) => part.text).join(''),
-    '订婚宴上让我颜面扫地，抬不起头，那我也让你抬不起头！',
-  )
-  for (let index = 1; index < parts.length; index++)
-    assert.equal(parts[index - 1].endMs, parts[index].startMs)
-})
-
-test('always starts a new cue after punctuation before applying the length limit', () => {
-  assert.deepEqual(
-    splitTimedSubtitleText('要不是我爸非让我嫁给你，你以为我稀罕你啊？', 29_700, 34_000, 'zh').map(
-      (part) => part.text,
-    ),
-    ['要不是我爸非让我嫁给你，', '你以为我稀罕你啊？'],
-  )
-})
-
 const role: TranslationRole = {
   translationRoleId: 'role-1',
   displayName: '林默',
   aliases: [],
   voiceProfileId: 'voice-1',
+  voiceIdentityText: '青年男性，美式英语自然，声线清晰',
+  voiceConfirmedAt: '2026-08-08T00:00:00.000Z',
   sourceEpisodeIds: ['episode-001'],
   status: 'confirmed',
 }
@@ -61,7 +31,6 @@ test('opens only the translation action whose dependencies are ready', () => {
   state.sourceVideoPath = 'episodes/episode-001/video-translate/source.mp4'
   state.hasAudio = true
   assert.ok(availableVideoTranslationActions(state, []).includes('reverse-video'))
-  state.transcriptStatus = 'ready'
   state.speakerStatus = 'ready'
   assert.ok(availableVideoTranslationActions(state, []).includes('reverse-video'))
   state.translationStatus = 'ready'
@@ -74,10 +43,17 @@ test('opens only the translation action whose dependencies are ready', () => {
       recognizedText: '你好',
       sourceText: '你好',
       translatedText: 'Hello',
+      performanceDirection: '自然地打招呼',
       translationRoleId: role.translationRoleId,
       needsReview: false,
     },
   ]
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('calibrate-subtitles'))
+  state.translationStatus = 'idle'
+  assert.ok(!availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
+  state.calibrationApplied = true
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
+  state.translationStatus = 'ready'
   assert.ok(availableVideoTranslationActions(state, [role]).includes('arrange-doubao-voice'))
   assert.ok(
     !availableVideoTranslationActions(state, [{ ...role, voiceProfileId: undefined }]).includes(
@@ -110,6 +86,7 @@ test('allows regenerating the Seed prompt after target voice generation fails', 
         recognizedText: '你好',
         sourceText: '你好',
         translatedText: 'Hello',
+        performanceDirection: '自然地打招呼',
         translationRoleId: role.translationRoleId,
         needsReview: false,
       },
@@ -184,6 +161,7 @@ test('invalidates translated text when the selected language changes', () => {
       recognizedText: '你好',
       sourceText: '你好',
       translatedText: 'Hello',
+      performanceDirection: '自然地打招呼',
       translationRoleId: role.translationRoleId,
       needsReview: false,
     },
@@ -205,6 +183,7 @@ test('clears stale translation when calibrated source dialogue changes', () => {
       recognizedText: '你好',
       sourceText: '你过来',
       translatedText: 'Hello there.',
+      performanceDirection: '压低声音提醒',
       translationRoleId: role.translationRoleId,
       needsReview: false,
     },
@@ -214,7 +193,7 @@ test('clears stale translation when calibrated source dialogue changes', () => {
   assert.equal(next.cues[0].translatedText, '')
 })
 
-test('keeps translated text when only the role binding changes', () => {
+test('invalidates translated text when the role binding changes', () => {
   const state = createVideoTranslationState()
   state.translationStatus = 'ready'
   state.reviewStatus = 'ready'
@@ -226,17 +205,18 @@ test('keeps translated text when only the role binding changes', () => {
       recognizedText: '你好',
       sourceText: '你好',
       translatedText: 'Hello',
+      performanceDirection: '自然地打招呼',
       translationRoleId: role.translationRoleId,
       needsReview: false,
     },
   ]
   const next = invalidateVideoTranslation(state, 'role-binding')
-  assert.equal(next.translationStatus, 'ready')
+  assert.equal(next.translationStatus, 'stale')
   assert.equal(next.reviewStatus, 'stale')
-  assert.equal(next.cues[0].translatedText, 'Hello')
+  assert.equal(next.cues[0].translatedText, '')
 })
 
-test('adds, splits, and adjusts subtitles from the video playhead without overlap', () => {
+test('adds overlapping dialogue and adjusts subtitles from the video playhead', () => {
   const cues = [
     {
       cueId: 'cue-1',
@@ -245,6 +225,7 @@ test('adds, splits, and adjusts subtitles from the video playhead without overla
       recognizedText: 'one',
       sourceText: 'one',
       translatedText: '',
+      performanceDirection: '平静陈述',
       translationRoleId: role.translationRoleId,
       needsReview: false,
     },
@@ -255,6 +236,7 @@ test('adds, splits, and adjusts subtitles from the video playhead without overla
       recognizedText: 'two',
       sourceText: 'two',
       translatedText: '',
+      performanceDirection: '平静陈述',
       translationRoleId: role.translationRoleId,
       needsReview: false,
     },
@@ -262,34 +244,26 @@ test('adds, splits, and adjusts subtitles from the video playhead without overla
   const inserted = insertVideoTranslationCueAt(cues, 5000, 2500, 'manual-1')
   assert.equal(inserted.mode, 'insert')
   assert.deepEqual([inserted.cue.startMs, inserted.cue.endMs], [2500, 3000])
-  const split = insertVideoTranslationCueAt(cues, 5000, 1500, 'manual-2')
-  assert.equal(split.mode, 'split')
-  assert.deepEqual(
-    split.cues.slice(0, 2).map((cue) => [cue.startMs, cue.endMs]),
-    [
-      [1000, 1500],
-      [1500, 2000],
-    ],
-  )
+  const overlapping = insertVideoTranslationCueAt(cues, 5000, 1500, 'manual-2')
+  assert.equal(overlapping.mode, 'insert')
+  assert.deepEqual([overlapping.cue.startMs, overlapping.cue.endMs], [1500, 3500])
+  assert.deepEqual([overlapping.cues[0].startMs, overlapping.cues[0].endMs], [1000, 2000])
   assert.equal(
     setVideoTranslationCueBoundary(cues, 'cue-2', 'start', 2500).find(
       (cue) => cue.cueId === 'cue-2',
     )?.startMs,
     2500,
   )
-  assert.throws(() => setVideoTranslationCueBoundary(cues, 'cue-2', 'start', 1500), /上一条字幕/)
-})
-
-test('marks only speech portions not covered by Gemini subtitle cues', () => {
+  assert.equal(
+    setVideoTranslationCueBoundary(cues, 'cue-2', 'start', 1500).find(
+      (cue) => cue.cueId === 'cue-2',
+    )?.startMs,
+    1500,
+  )
+  const split = splitVideoTranslationCueAt(cues, 'cue-2', 3500, 1, 'manual-split')
   assert.deepEqual(
-    findUncoveredSpeechIntervals(
-      [{ startMs: 1200, endMs: 1800 }],
-      [{ startMs: 500, endMs: 2500, recognizedText: 'whisper candidate' }],
-    ),
-    [
-      { startMs: 500, endMs: 1200, recognizedText: 'whisper candidate' },
-      { startMs: 1800, endMs: 2500, recognizedText: 'whisper candidate' },
-    ],
+    split.cues.slice(1).map((cue) => [cue.startMs, cue.endMs, cue.sourceText]),
+    [[3000, 3500, 't'], [3500, 4000, 'wo']],
   )
 })
 
@@ -301,6 +275,7 @@ test('requires ordered confirmed cues and known translation roles', () => {
     recognizedText: '你好',
     sourceText: '你好',
     translatedText: 'Hello',
+    performanceDirection: '自然地打招呼',
     translationRoleId: role.translationRoleId,
     needsReview: false,
   }
@@ -326,8 +301,8 @@ test('deterministically splits continuous dialogue before a fourth reference', (
     recognizedText: `原文${index + 1}`,
     sourceText: `原文${index + 1}`,
     translatedText: `line ${index + 1}`,
+    performanceDirection: index === 0 ? '角色听到拒绝后压着怒意追问' : '自然承接上一句回应',
     translationRoleId: item.translationRoleId,
-    evidence: index === 0 ? '角色听到拒绝后压着怒意追问' : undefined,
     needsReview: false,
   }))
   const plan = planVideoTranslationDialogueBlocks(
@@ -350,62 +325,6 @@ test('deterministically splits continuous dialogue before a fourth reference', (
   assert.equal(
     plan.arrangement.blocks[0].lines[0].performanceEvidence,
     '角色听到拒绝后压着怒意追问',
-  )
-  assert.doesNotMatch(plan.promptMarkdown, /ms|时间窗/)
-})
-
-test('aligns confirmed lines to generated dialogue word timestamps in order', () => {
-  const aligned = alignDialogueBlockWords(
-    [
-      {
-        cueId: 'cue-1',
-        speakerId: 'role-1',
-        text: 'I trusted you.',
-        expectedStartMs: 5_000,
-        expectedEndMs: 6_000,
-      },
-      {
-        cueId: 'cue-2',
-        speakerId: 'role-2',
-        text: "You don't understand.",
-        expectedStartMs: 8_000,
-        expectedEndMs: 9_000,
-      },
-    ],
-    [
-      { word: 'I', start: 0.2, end: 0.3 },
-      { word: 'trusted', start: 0.31, end: 0.7 },
-      { word: 'you', start: 0.71, end: 0.9 },
-      { word: 'You', start: 1.2, end: 1.35 },
-      { word: "don't", start: 1.36, end: 1.55 },
-      { word: 'understand', start: 1.56, end: 2.0 },
-    ],
-    2_100,
-  )
-  assert.deepEqual(
-    aligned.map((cue) => [cue.cueId, cue.observedStartMs, cue.observedEndMs]),
-    [
-      ['cue-1', 120, 1020],
-      ['cue-2', 1120, 2100],
-    ],
-  )
-})
-
-test('fails alignment instead of inventing timing when a line has no matched words', () => {
-  assert.throws(() =>
-    alignDialogueBlockWords(
-      [
-        {
-          cueId: 'cue-1',
-          speakerId: 'role-1',
-          text: 'Completely different',
-          expectedStartMs: 0,
-          expectedEndMs: 1_000,
-        },
-      ],
-      [{ word: 'hello', start: 0, end: 0.4 }],
-      500,
-    ),
   )
 })
 
@@ -433,13 +352,13 @@ test('accepts canonical role names with optional voice traits before Seed genera
   }
   assert.doesNotThrow(() =>
     validateVideoTranslationDialoguePrompt(
-      '林夏饰演者为@音频1。\n\n林夏先压住愤怒，最后一个词明显加重：“I know what you did.”',
+      '林夏饰演者为@音频1。\n\n林夏（先压住愤怒，最后一个词明显加重）：“I know what you did.”',
       block,
     ),
   )
   assert.doesNotThrow(() =>
     validateVideoTranslationDialoguePrompt(
-      '林夏是青年女性，medium-high pitch，声线清亮，饰演者为@音频1。\n\n林夏先压住愤怒，最后一个词明显加重：“I know what you did.”',
+      '林夏是青年女性，medium-high pitch，声线清亮，饰演者为@音频1。\n\n林夏（先压住愤怒，最后一个词明显加重）：“I know what you did.”',
       block,
     ),
   )
@@ -455,21 +374,22 @@ test('accepts canonical role names with optional voice traits before Seed genera
 
 test('uses voiceProfileId as the only reference voice identity', () => {
   const source = fs.readFileSync(new URL('../../src/views/Home/index.vue', import.meta.url), 'utf8')
-  assert.match(
-    source,
-    /无时间戳连续对白[\s\S]*正式英文台词逐字保留[\s\S]*不要输出绝对时间、目标总时长、cue ID/,
-  )
+  assert.match(source, /finalScriptMarkdown:[\s\S]*currentCueIds:[\s\S]*references/)
   const skill = fs.readFileSync(
     new URL('../../skills/jc-doubao-seed-audio/SKILL.md', import.meta.url),
     'utf8',
   )
+  const studioSkill = fs.readFileSync(
+    new URL('../../skills/jc-luyinpeng/SKILL.md', import.meta.url),
+    'utf8',
+  )
   assert.match(skill, /`voiceProfileId` 是唯一声音 ID/)
   assert.match(skill, /参考音文件由产品在正式声音请求中直接传入/)
-  assert.match(skill, /目标语言为英文时，正式英文台词必须逐字保留英文原文/)
-  assert.match(
-    skill,
-    /无时间戳连续对白提示词[\s\S]*不写绝对时间、目标总时长、cue ID、low、medium、high/,
-  )
+  assert.match(studioSkill, /专业的配音表演艺术家在顶级录音棚内的配音片段/)
+  assert.match(studioSkill, /角色定义结束后再空一行/)
+  assert.match(studioSkill, /正式译文必须逐字保留/)
+  assert.match(studioSkill, /不输出时间戳、时长、`cueId`、角色 ID、声音 ID/)
+  assert.match(studioSkill, /最终回复只能是可直接提交给 Seed Audio 的提示词正文/)
 })
 
 test('routes translation review through voice workbench before a role-free subtitle workbench', () => {
@@ -484,6 +404,7 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(home, /VideoTranslationWorkspace/)
   assert.match(home, /VideoTranslationInspector/)
   assert.match(home, /jc-doubao-seed-audio/)
+  assert.match(home, /generateTranslationSeedPrompt[\s\S]*runSkill\([\s\S]*'jc-luyinpeng'/)
   assert.match(home, /voiceDesignPrompt/)
   assert.match(
     home,
@@ -497,10 +418,13 @@ test('routes translation review through voice workbench before a role-free subti
     home,
     /translationEdition && !state[\s\S]*selectWorkspaceEntry\('video-translate'\)[\s\S]*flush: 'sync'/,
   )
-  for (const column of ['时间轴', '视频片段预览', '说话角色', '原字幕', '译文字幕', '目标语言配音'])
+  for (const column of ['时间轴', '视频片段预览', '说话角色', '原文', '字幕'])
     assert.match(workspace, new RegExp(column))
+  assert.doesNotMatch(workspace, /表演/)
   assert.match(workspace, /v-if="showRoles" class="role-column"/)
-  assert.match(workspace, /item\.proposedName\?\.trim\(\) === sameCandidate/)
+  assert.match(workspace, /item\.speakerCluster\?\.trim\(\) === sameCandidate/)
+  assert.match(workspace, /FunASR 原文/)
+  assert.match(workspace, /calibrationSuggestion/)
   assert.match(home, /:show-roles="!isTranslationSubtitleWorkspace"/)
   assert.match(home, /VideoTranslationSidebar[\s\S]*:show-roles="!isTranslationSubtitleWorkspace"/)
   for (const workspaceName of ['字幕工作台', '配音工作台', '成片工作台'])
@@ -513,12 +437,13 @@ test('routes translation review through voice workbench before a role-free subti
   for (const action of [
     '上传识别视频',
     '上传无字幕成片母版',
-    '扒片',
+    '识别字幕',
+    '大模型语义校准',
     '翻译所有字幕',
     '进入配音工作台',
     '分离原人声和背景声',
-    '去除原人声',
-    '混回背景声和目标语言配音',
+    '配音对白时间戳',
+    '合成目标语言音轨',
     '烧录字幕和配音',
   ])
     assert.match(inspector, new RegExp(action))
@@ -528,14 +453,19 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(home, /state\.cues\.map\(\(cue\) => \(\{ \.\.\.cue \}\)\)/)
   assert.doesNotMatch(inspector, /Whisper 生成时间轴|校准字幕与角色/)
   assert.doesNotMatch(inspector, /选择字幕行后设置角色声音|目标语言声音|voice-section/)
-  assert.match(home, /roles: mediaStore\.videoTranslationRoles\.map/)
+  assert.match(home, /durationMs: state\.durationMs/)
+  assert.match(home, /calibrateVideoTranslationSubtitles/)
   assert.match(home, /sourceText: speaker\.correctedText/)
   assert.match(home, /invalidateVideoTranslation\(state, 'source-dialogue'\)/)
   assert.match(inspector, /播放头字幕编辑/)
-  assert.match(inspector, /在当前位置新增字幕/)
-  assert.match(inspector, /从当前位置拆分字幕/)
-  assert.match(inspector, /manual-cue-/)
+  assert.match(inspector, /在当前位置新增对白/)
+  assert.match(inspector, /应用校准建议/)
+  assert.match(inspector, /撤销本次校准/)
+  assert.match(inspector, /恢复并采用 FunASR 原文/)
+  assert.doesNotMatch(inspector, /从当前位置拆分字幕/)
+  assert.match(inspector, /`cue-\$\{crypto\.randomUUID\(\)\}`/)
   assert.match(sidebar, /mdi-delete-outline/)
+  assert.match(sidebar, /修改角色名/)
   assert.match(home, /@delete-role="deleteTranslationRole"/)
   assert.match(home, /deleteVideoTranslationRole/)
   assert.match(home, /JSON\.parse\([\s\S]*videoTranslationRoles\.filter/)
@@ -549,11 +479,11 @@ test('routes translation review through voice workbench before a role-free subti
     /重新生成参考音|seed-voice-candidates|v-for="profile in voiceProfiles"/,
   )
   assert.match(render, /v-if="!translationMode"[\s\S]*>按提示词生成角色参考音<\/v-btn/)
-  for (const label of ['连续对白实验', '连续对白导演稿', '连续对白版本', '当前使用版本'])
+  for (const label of ['全局配音', '全局配音提示词', '全局配音版本', '当前使用版本'])
     assert.match(manage, new RegExp(label))
   assert.match(manage, /activeTranslationVoiceVersion/)
   assert.match(home, /selectTranslationVoiceVersion/)
-  assert.match(home, /version\.targetVoicePath/)
+  assert.match(home, /version\.finalScriptId/)
   assert.match(manage, /const previewSecond = \(cue\.startMs \+ cue\.endMs\) \/ 2000/)
   assert.match(home, /approvedScript: approvedScript \|\| sample/)
   assert.match(home, /outputName: `voice-\$\{speakerId\}-\$\{Date\.now\(\)\}`/)

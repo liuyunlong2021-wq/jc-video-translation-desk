@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'os'
 import path from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'child_process'
 import { parseFile } from 'music-metadata'
 import type {
@@ -416,7 +417,65 @@ export async function composeVideoTranslation(
   params: ComposeVideoTranslationParams & { abortSignal?: AbortSignal },
 ) {
   if (!/^[A-Za-z0-9_-]+$/.test(params.targetLanguage)) throw new Error('目标语言无效')
-  if (!params.subtitleCues?.length) throw new Error('没有可烧录的目标语言字幕')
+  if (
+    !params.finalScriptId ||
+    !/^[a-f0-9]{64}$/i.test(params.scriptHash) ||
+    !/^[A-Za-z0-9_-]+$/.test(params.voiceVersionId) ||
+    !/^[a-f0-9]{64}$/i.test(params.dubDialogueTimestampHash)
+  )
+    throw new Error('成片来源 ID 或哈希无效')
+  const translationWiki = path.join(getRunDir(params.runId), 'wiki', '翻译', params.episodeId)
+  const contract = JSON.parse(
+    await fs.promises.readFile(path.join(translationWiki, '最终时间戳剧本.json'), 'utf8'),
+  ) as {
+    finalScriptId: string
+    scriptHash: string
+    targetLanguage: string
+    sourceFingerprint: string
+    sourceLanguage: string
+    cues: Array<{ startMs: number; endMs: number; translatedText: string }>
+  }
+  const actualScriptHash = createHash('sha256')
+    .update(
+      JSON.stringify({
+        sourceFingerprint: contract.sourceFingerprint,
+        sourceLanguage: contract.sourceLanguage,
+        targetLanguage: contract.targetLanguage,
+        cues: contract.cues,
+      }),
+    )
+    .digest('hex')
+  if (
+    contract.finalScriptId !== params.finalScriptId ||
+    contract.scriptHash !== params.scriptHash ||
+    actualScriptHash !== params.scriptHash ||
+    contract.targetLanguage !== params.targetLanguage
+  )
+    throw new Error('最终时间戳剧本权威文件与成片请求不一致')
+  const timestamps = JSON.parse(
+    await fs.promises.readFile(
+      path.join(translationWiki, '成片', '配音对白时间戳.json'),
+      'utf8',
+    ),
+  ) as {
+    finalScriptId: string
+    scriptHash: string
+    voiceVersionId: string
+    dubDialogueTimestampHash: string
+  }
+  if (
+    timestamps.finalScriptId !== params.finalScriptId ||
+    timestamps.scriptHash !== params.scriptHash ||
+    timestamps.voiceVersionId !== params.voiceVersionId ||
+    timestamps.dubDialogueTimestampHash !== params.dubDialogueTimestampHash
+  )
+    throw new Error('配音对白时间戳与成片请求不一致')
+  const subtitleCues = contract.cues.map((cue) => ({
+    start: cue.startMs / 1000,
+    end: cue.endMs / 1000,
+    text: cue.translatedText,
+  }))
+  if (!subtitleCues.length) throw new Error('没有可烧录的目标语言字幕')
   const source = translationAsset(params.runId, params.episodeId, params.sourceVideoPath, [
     `episodes/${params.episodeId}/video-translate/source.`,
     `episodes/${params.episodeId}/video-translate/final-master.`,
@@ -443,7 +502,7 @@ export async function composeVideoTranslation(
   ])
   const output = generateUniqueFileName(path.join(outputDir, 'final.mp4'))
   const subtitlePath = path.join(wikiDir, 'target.srt')
-  await fs.promises.writeFile(subtitlePath, formatSrt(params.subtitleCues), 'utf8')
+  await fs.promises.writeFile(subtitlePath, formatSrt(subtitleCues), 'utf8')
   const escaped = subtitlePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "'\\\\''")
   await executeFFmpeg(
     [
@@ -477,13 +536,34 @@ export async function composeVideoTranslation(
     params,
   )
   const relativeOutput = relativeRunAsset(params.runId, output)
+  const finalVideoVersionId = `final-${Date.now()}-${randomUUID().slice(0, 8)}`
   const finalPage = path.join(wikiDir, '成片.md')
+  const recordPath = path.join(wikiDir, '成片记录.json')
+  const existingRecords = await fs.promises
+    .readFile(recordPath, 'utf8')
+    .then((value) => JSON.parse(value).versions as unknown[])
+    .catch(() => [])
+  const record = {
+    finalVideoVersionId,
+    createdAt: new Date().toISOString(),
+    finalScriptId: params.finalScriptId,
+    scriptHash: params.scriptHash,
+    voiceVersionId: params.voiceVersionId,
+    dubDialogueTimestampHash: params.dubDialogueTimestampHash,
+    outputPath: relativeOutput,
+  }
   await fs.promises.writeFile(
     `${finalPage}.tmp`,
-    `# ${params.episodeId} ${params.targetLanguage} 翻译成片\n\n- [打开成片](../../../../${relativeOutput})\n- [目标字幕](./target.srt)\n- [音频处理](./音频处理.json)\n`,
+    `# ${params.episodeId} ${params.targetLanguage} 翻译成片\n\n- 成片版本 ID：${finalVideoVersionId}\n- 最终剧本：${params.finalScriptId}（sha256: ${params.scriptHash}）\n- 配音版本：${params.voiceVersionId}\n- 配音对白时间戳：sha256:${params.dubDialogueTimestampHash}\n- [打开成片](../../../../${relativeOutput})\n- [目标字幕](./target.srt)\n- [音频处理](./音频处理.json)\n`,
     'utf8',
   )
   await fs.promises.rename(`${finalPage}.tmp`, finalPage)
+  await fs.promises.writeFile(
+    `${recordPath}.tmp`,
+    `${JSON.stringify({ versions: [...existingRecords, record] }, null, 2)}\n`,
+    'utf8',
+  )
+  await fs.promises.rename(`${recordPath}.tmp`, recordPath)
   return relativeOutput
 }
 

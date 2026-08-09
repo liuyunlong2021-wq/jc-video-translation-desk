@@ -14,23 +14,17 @@ test('detects the confirmed script language for Seed reference voices', () => {
   assert.equal(detectScriptLanguage('Emily: Mom, I am home.\nShe closes the door.'), 'en')
 })
 
-test('builds the official Seed Audio payload and preserves reference order', () => {
+test('builds the official Seed Audio payload and maps references to prompt audio labels', () => {
   const payload = buildSeedAudioRequest({
     mode: 'full-track',
     language: 'zh',
     durationMs: 12000,
     prompt: '角色A饰演者为@音频1，严格朗读确认台词。',
-    references: [
-      { speaker: 'ref-a', audio: { data: 'YQ==', format: 'wav' } },
-      { speaker: 'ref-b', audio: { data: 'Yg==', format: 'mp3' } },
-    ],
+    references: [{ audio_data: 'YQ==' }, { audio_data: 'Yg==' }],
   })
   assert.equal(payload.model, 'seed-audio-1.0')
   assert.equal(payload.audio_config.sample_rate, 48000)
-  assert.deepEqual(payload.references, [
-    { speaker: 'ref-a', audio: { data: 'YQ==', format: 'wav' } },
-    { speaker: 'ref-b', audio: { data: 'Yg==', format: 'mp3' } },
-  ])
+  assert.deepEqual(payload.references, [{ audio_data: 'YQ==' }, { audio_data: 'Yg==' }])
   assert.equal('duration' in payload, false)
 })
 
@@ -40,9 +34,10 @@ test('accepts untimed dialogue performance without adding timing to the API payl
     language: 'en',
     durationMs: 1,
     prompt: 'Amy is @音频1. "I trusted you."',
-    references: [{ speaker: 'voice-amy', audio: { data: 'YQ==', format: 'wav' } }],
+    references: [{ audio_data: 'YQ==' }],
   })
   assert.equal(payload.text_prompt, 'Amy is @音频1. "I trusted you."')
+  assert.deepEqual(payload.references, [{ audio_data: 'YQ==' }])
   assert.equal('durationMs' in payload, false)
 })
 
@@ -54,10 +49,7 @@ test('rejects more than three references and references on a base voice', () => 
         language: 'zh',
         durationMs: 1000,
         prompt: '内容',
-        references: ['a', 'b', 'c', 'd'].map((speaker) => ({
-          speaker,
-          audio: { data: 'YQ==', format: 'wav' },
-        })),
+        references: ['a', 'b', 'c', 'd'].map(() => ({ audio_data: 'YQ==' })),
       }),
     /最多支持 3 个参考音/,
   )
@@ -68,7 +60,7 @@ test('rejects more than three references and references on a base voice', () => 
         language: 'zh',
         durationMs: 1000,
         prompt: '内容',
-        references: [{ speaker: 'a', audio: { data: 'YQ==', format: 'wav' } }],
+        references: [{ audio_data: 'YQ==' }],
       }),
     /基准音不能携带参考音/,
   )
