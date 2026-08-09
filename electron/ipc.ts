@@ -93,9 +93,7 @@ import {
 import { generateMaterialTranscript } from './material-transcript'
 import {
   generateSeedAudio,
-  hasSeedAudioApiKey,
   mixSeedAudioTracks,
-  saveSeedAudioApiKey,
   writeSeedDialogueTimeline,
   writeSeedAudioArrangement,
 } from './seed-audio'
@@ -219,8 +217,6 @@ export default function initIPC() {
   ipcMain.handle('cloud-has-api-key', () => hasApiKey())
   ipcMain.handle('cloud-save-api-key', (_event, apiKey: string) => saveApiKey(apiKey))
   ipcMain.handle('cloud-test-api-key', () => testApiKey())
-  ipcMain.handle('seed-audio-has-api-key', () => hasSeedAudioApiKey())
-  ipcMain.handle('seed-audio-save-api-key', (_event, apiKey: string) => saveSeedAudioApiKey(apiKey))
   ipcMain.handle('seed-audio-generate', (_event, params) => generateSeedAudio(params))
   ipcMain.handle(
     'seed-audio-write-arrangement',

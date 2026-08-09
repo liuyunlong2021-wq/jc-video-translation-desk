@@ -31,8 +31,6 @@ contextBridge.exposeInMainWorld('electron', {
     hasApiKey: () => ipcRenderer.invoke('cloud-has-api-key'),
     saveApiKey: (apiKey: string) => ipcRenderer.invoke('cloud-save-api-key', apiKey),
     testApiKey: () => ipcRenderer.invoke('cloud-test-api-key'),
-    hasSeedAudioApiKey: () => ipcRenderer.invoke('seed-audio-has-api-key'),
-    saveSeedAudioApiKey: (apiKey: string) => ipcRenderer.invoke('seed-audio-save-api-key', apiKey),
     generateSeedAudio: (params: import('./seed-audio').GenerateSeedAudioParams) =>
       ipcRenderer.invoke('seed-audio-generate', params),
     writeSeedAudioArrangement: (

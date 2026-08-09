@@ -67,6 +67,21 @@ test('opens only the translation action whose dependencies are ready', () => {
   )
   state.arrangementStatus = 'ready'
   state.voiceStatus = 'ready'
+  state.finalScriptId = 'script-1'
+  state.scriptHash = 'hash-1'
+  state.activeVoiceVersionId = 'voice-version-1'
+  state.voiceVersions = [
+    {
+      versionId: 'voice-version-1',
+      createdAt: '2026-08-09T00:00:00.000Z',
+      previewPath: 'voice.wav',
+      finalScriptId: state.finalScriptId,
+      scriptHash: state.scriptHash,
+      durationMs: 1000,
+    },
+  ]
+  state.dubDialogueTimestampHash = 'existing-timestamp-hash'
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('timestamp-target-dialogue'))
   state.separationStatus = 'ready'
   state.originalVocalRemoved = true
   state.mixStatus = 'ready'
@@ -403,7 +418,10 @@ test('accepts canonical role names with optional voice traits before Seed genera
 
 test('uses voiceProfileId as the only reference voice identity', () => {
   const source = fs.readFileSync(new URL('../../src/views/Home/index.vue', import.meta.url), 'utf8')
-  assert.match(source, /finalScript:[\s\S]*translatedText: cue\.translatedText[\s\S]*currentCueIds:[\s\S]*references/)
+  assert.match(
+    source,
+    /finalScript:[\s\S]*translatedText: cue\.translatedText[\s\S]*currentCueIds:[\s\S]*references/,
+  )
   const skillInput = source.slice(
     source.indexOf('const skillInput = {'),
     source.indexOf("let prompt = ''", source.indexOf('const skillInput = {')),
@@ -446,6 +464,10 @@ test('routes translation review through voice workbench before a role-free subti
     /seedAudioRolePrompts\[reference\.speakerId\]\?\.trim\(\)[\s\S]*reference\.voiceDesignPrompt/,
   )
   assert.match(home, /isVideoTranslation\.value[\s\S]*saveTranslationSeedRolePrompt/)
+  assert.match(
+    home,
+    /const confirmedRole = JSON\.parse\([\s\S]*bindVideoTranslationVoice\(mediaStore\.runId, confirmedRole\)[\s\S]*Object\.assign\(role, confirmedRole\)/,
+  )
   assert.match(home, /上次输出未通过产品校验/)
   assert.match(inspector, /onVideoTranslationProgress/)
   assert.match(inspector, /v-progress-linear/)

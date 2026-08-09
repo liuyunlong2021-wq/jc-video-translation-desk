@@ -74,15 +74,9 @@ export interface SeedDialogueCue extends SeedAudioLine {
 
 export interface SeedAudioRequestPayload {
   model: 'seed-audio-1.0'
-  text_prompt: string
-  audio_config: {
-    format: 'mp3'
-    sample_rate: 48000
-    pitch_rate: number
-    speech_rate: number
-    loudness_rate: number
-  }
-  watermark: Record<string, never>
+  input: string
+  voice: 'alloy'
+  response_format: 'mp3'
   references?: SeedAudioRequestReference[]
 }
 
@@ -122,23 +116,15 @@ export function buildSeedAudioRequest(input: SeedAudioPromptInput): SeedAudioReq
   if (!String(input.prompt || '').trim()) throw new Error('Seed Audio 提示词不能为空')
   const durationMs = Number(input.durationMs)
   if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error('Seed Audio 时长无效')
-  const references = input.references?.map((item) => ({
-    audio_data: cleanId(item.audio_data, '参考音数据'),
-  }))
+  const references = input.references?.map((item) => cleanId(item.audio_data, '参考音数据'))
   if (references && references.length > 3) throw new Error('Seed Audio 最多支持 3 个参考音')
   if (mode === 'voice-profile' && references?.length) throw new Error('基准音不能携带参考音')
   return {
     model: 'seed-audio-1.0',
-    text_prompt: input.prompt.trim(),
-    audio_config: {
-      format: 'mp3',
-      sample_rate: 48000,
-      pitch_rate: 0,
-      speech_rate: 0,
-      loudness_rate: 0,
-    },
-    watermark: {},
-    ...(references?.length ? { references } : {}),
+    input: input.prompt.trim(),
+    voice: 'alloy',
+    response_format: 'mp3',
+    ...(references?.length ? { references: references.map((item) => ({ audio_data: item })) } : {}),
   }
 }
 

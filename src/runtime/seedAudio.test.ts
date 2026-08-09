@@ -14,7 +14,7 @@ test('detects the confirmed script language for Seed reference voices', () => {
   assert.equal(detectScriptLanguage('Emily: Mom, I am home.\nShe closes the door.'), 'en')
 })
 
-test('builds the official Seed Audio payload and maps references to prompt audio labels', () => {
+test('builds the unified Jiucaihezi Seed Audio request', () => {
   const payload = buildSeedAudioRequest({
     mode: 'full-track',
     language: 'zh',
@@ -23,7 +23,9 @@ test('builds the official Seed Audio payload and maps references to prompt audio
     references: [{ audio_data: 'YQ==' }, { audio_data: 'Yg==' }],
   })
   assert.equal(payload.model, 'seed-audio-1.0')
-  assert.equal(payload.audio_config.sample_rate, 48000)
+  assert.equal(payload.input, '角色A饰演者为@音频1，严格朗读确认台词。')
+  assert.equal(payload.voice, 'alloy')
+  assert.equal(payload.response_format, 'mp3')
   assert.deepEqual(payload.references, [{ audio_data: 'YQ==' }, { audio_data: 'Yg==' }])
   assert.equal('duration' in payload, false)
 })
@@ -36,8 +38,7 @@ test('accepts untimed dialogue performance without adding timing to the API payl
     prompt: 'Amy is @音频1. "I trusted you."',
     references: [{ audio_data: 'YQ==' }],
   })
-  assert.equal(payload.text_prompt, 'Amy is @音频1. "I trusted you."')
-  assert.deepEqual(payload.references, [{ audio_data: 'YQ==' }])
+  assert.equal(payload.input, 'Amy is @音频1. "I trusted you."')
   assert.equal('durationMs' in payload, false)
 })
 

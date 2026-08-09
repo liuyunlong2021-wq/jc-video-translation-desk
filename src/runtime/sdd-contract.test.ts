@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const read = (file: string) => fs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8')
 const cloud = read('electron/cloud.ts')
+const seedAudio = read('electron/seed-audio.ts')
 const localVoice = read('electron/local-tts.ts')
 const ipc = read('electron/ipc.ts')
 const preload = read('electron/preload.ts')
@@ -61,6 +62,11 @@ test('locks the API and selectable text and video models to the SDD values', () 
     assert.match(textUi, new RegExp(model.replace(/\./g, '\\.')))
   }
   assert.match(cloud, /model: 'rh-aiapp-voice-design'/)
+  assert.match(seedAudio, /API_ORIGIN.*\/v1\/audio\/speech/)
+  assert.match(seedAudio, /readApiKey\(\)/)
+  assert.match(seedAudio, /responseType: 'arraybuffer'/)
+  assert.doesNotMatch(textUi, /Seed Audio API Key|火山引擎 API Key/)
+  assert.doesNotMatch(cloud, /ark\.cn-beijing\.volces\.com|readSeedAudioApiKey/)
   assert.match(textUi, /:model-value="API_URL"\s+readonly/)
   assert.match(textUi, /mediaStore\.textModel/)
   assert.match(textUi, /mediaStore\.videoModel/)
@@ -95,7 +101,10 @@ test('keeps the translation edition identity, settings, and user data isolated',
   assert.match(homeUi, /v-if="!translationEdition"/)
   assert.match(homeUi, /translationEdition \|\| mediaStore\.workspaceEntry === 'video-translate'/)
   assert.match(main, /translationEdition \? '视频翻译工作台' : '点一点'/)
-  assert.match(main, /else if \(translationEdition\) app\.setPath\('userData', path\.join\(appDataPath, appName\)\)/)
+  assert.match(
+    main,
+    /else if \(translationEdition\) app\.setPath\('userData', path\.join\(appDataPath, appName\)\)/,
+  )
   assert.match(main, /label: appName/)
   assert.match(rendererMain, /__APP_EDITION__ === 'translation' \? '视频翻译工作台'/)
   assert.match(defaultLayout, /translationEdition \? '视频翻译工作台' : t\('app\.name'\)/)
@@ -105,7 +114,10 @@ test('keeps the translation edition identity, settings, and user data isolated',
   assert.match(electronI18n, /__APP_EDITION__ === 'translation' \? 'zh-CN' : app\.getLocale\(\)/)
   assert.match(main, /translationEdition[\s\S]*\? \[\][\s\S]*menu\.language/)
   assert.match(homeUi, /mdi-cog-outline[\s\S]*textGenerateRef\?\.openConfig\(\)/)
-  assert.match(homeUi, /ref="textGenerateRef"[\s\S]*v-show="!isVideoTranslation && leftPanelVisible"/)
+  assert.match(
+    homeUi,
+    /ref="textGenerateRef"[\s\S]*v-show="!isVideoTranslation && leftPanelVisible"/,
+  )
   assert.match(textUi, /defineExpose\(\{ openConfig \}\)/)
   assert.match(textUi, /if \(!hasApiKey\.value\) configDialog\.value = true/)
   assert.match(translationBuilder, /productName: '视频翻译工作台'/)
@@ -427,7 +439,8 @@ test('uses a separated instrument stem for the selectable final sound policy', (
   assert.match(ffmpeg, /concat=n=\$\{streams\.length\}:v=1:a=0/)
   assert.match(ffmpeg, /params\.audioMode === 'keep-original'/)
   assert.doesNotMatch(ffmpeg, /\[original\]\[voice\]amix/)
-  assert.match(ffmpeg, /\[bg\]\[voice\]amix/)
+  assert.match(ffmpeg, /\[bg\]\[voice-side\]sidechaincompress/)
+  assert.match(ffmpeg, /\[ducked\]\[voice-mix\]amix/)
   assert.match(ffmpeg, /instrumentPath/)
   assert.match(ffmpeg, /const timelineDuration = durations\.reduce/)
   assert.match(ffmpeg, /apad=pad_dur=\$\{totalDuration\}/)

@@ -392,7 +392,7 @@ export async function mixBackgroundAudio(
       '-i',
       voice,
       '-filter_complex',
-      '[0:a]aresample=48000[bg];[1:a]aresample=48000[voice];[bg][voice]amix=inputs=2:duration=first:dropout_transition=0,loudnorm=I=-16:TP=-1.5:LRA=11[out]',
+      '[0:a]aresample=48000,loudnorm=I=-24:TP=-2:LRA=7[bg];[1:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=7,asplit=2[voice-side][voice-mix];[bg][voice-side]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[ducked];[ducked][voice-mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,alimiter=limit=0.95[out]',
       '-map',
       '[out]',
       '-c:a',
@@ -453,10 +453,7 @@ export async function composeVideoTranslation(
   )
     throw new Error('最终时间戳剧本权威文件与成片请求不一致')
   const timestamps = JSON.parse(
-    await fs.promises.readFile(
-      path.join(translationWiki, '成片', '配音对白时间戳.json'),
-      'utf8',
-    ),
+    await fs.promises.readFile(path.join(translationWiki, '成片', '配音对白时间戳.json'), 'utf8'),
   ) as {
     finalScriptId: string
     scriptHash: string
@@ -511,13 +508,13 @@ export async function composeVideoTranslation(
       '-i',
       mixed,
       '-filter_complex',
-      `[1:a]apad,atrim=0:${duration},loudnorm=I=-16:TP=-1.5:LRA=11[aout]`,
+      `[1:a]apad,atrim=0:${duration},alimiter=limit=0.95[aout]`,
       '-map',
       '0:v:0',
       '-map',
       '[aout]',
       '-vf',
-      `subtitles='${escaped}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=90'`,
+      `subtitles='${escaped}':force_style='FontName=Arial,FontSize=10,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0,Alignment=2,MarginV=80'`,
       '-c:v',
       'libx264',
       '-preset',

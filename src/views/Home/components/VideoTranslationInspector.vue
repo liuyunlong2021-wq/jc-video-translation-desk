@@ -5,15 +5,14 @@
         <strong>{{
           mediaStore.workspaceView === 'dubbing' ? '成片工作台操作' : '字幕工作台操作'
         }}</strong>
-        <small>FunASR · 豆包语音 · FFmpeg</small>
       </header>
       <div class="actions">
         <template v-for="action in actions" :key="action.key">
           <v-btn
             class="translation-action"
             block
+            color="primary"
             :prepend-icon="action.icon"
-            :color="action.color"
             :variant="action.done ? 'tonal' : 'flat'"
             :title="!mediaStore.runId ? '请先新建或打开项目' : action.label"
             :disabled="
@@ -36,6 +35,16 @@
             {{ progressText || '正在启动字幕识别' }}
           </v-alert>
         </template>
+        <v-btn
+          v-if="mediaStore.videoTranslation?.finalVideoPath"
+          class="translation-action"
+          block
+          color="primary"
+          variant="flat"
+          prepend-icon="mdi-play-circle-outline"
+          @click="openFinalVideo"
+          >打开翻译成片</v-btn
+        >
       </div>
       <section
         v-if="mediaStore.workspaceView === 'script' && state.speakerStatus === 'ready'"
@@ -84,11 +93,7 @@
           @click="undoCalibration"
           >撤销本次校准</v-btn
         >
-        <v-btn
-          block
-          variant="text"
-          prepend-icon="mdi-restore"
-          @click="restoreRecognizedText"
+        <v-btn block variant="text" prepend-icon="mdi-restore" @click="restoreRecognizedText"
           >恢复并采用 FunASR 原文</v-btn
         >
       </section>
@@ -99,12 +104,7 @@
         <strong>播放头字幕编辑</strong>
         <small>当前位置 {{ formatTime(playheadMs) }}</small>
         <small v-if="manualError" class="manual-cue-error">{{ manualError }}</small>
-        <v-btn
-          block
-          color="primary"
-          variant="tonal"
-          prepend-icon="mdi-plus"
-          @click="addManualCue"
+        <v-btn block color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addManualCue"
           >在当前位置新增对白</v-btn
         >
         <div class="manual-cue-times">
@@ -312,13 +312,20 @@ const hasCalibrationSuggestion = computed(() =>
 const hasCalibrationBackup = computed(() =>
   state.value.cues.some((cue) => cue.calibrationBackupText !== undefined),
 )
-const hasFrameSuggestion = computed(() => state.value.cues.some((cue) => cue.frameSuggestion?.trim()))
+const hasFrameSuggestion = computed(() =>
+  state.value.cues.some((cue) => cue.frameSuggestion?.trim()),
+)
 const hasFrameBackup = computed(() =>
   state.value.cues.some((cue) => cue.frameCalibrationBackupText !== undefined),
 )
 
 function formatTime(ms: number) {
   return `${(ms / 1000).toFixed(3)} 秒`
+}
+
+function openFinalVideo() {
+  const path = mediaStore.videoTranslation?.finalVideoPath
+  if (mediaStore.runId && path) window.electron.cloud.showMedia(mediaStore.runId, path)
 }
 
 function addManualCue() {
@@ -486,6 +493,11 @@ header small {
 .translation-action {
   min-height: 42px;
   justify-content: flex-start;
+}
+.translation-action.v-btn--disabled {
+  opacity: 1;
+  background: rgba(var(--v-theme-primary), 0.12) !important;
+  color: rgba(var(--v-theme-primary), 0.48) !important;
 }
 .manual-cue {
   display: grid;

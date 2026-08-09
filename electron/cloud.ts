@@ -4,9 +4,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
 import axios, { AxiosError } from 'axios'
-import FormData from 'form-data'
 import { app, safeStorage } from 'electron'
-import { readSeedAudioApiKey } from './seed-audio.ts'
 import { generateUniqueFileName } from './lib/tools.ts'
 import type { PendingCloudTask, ResumedCloudTask } from './types.ts'
 import type {
@@ -42,12 +40,14 @@ import {
   writeDataUrl,
 } from './media-workspace.ts'
 import { validateMaterialTranscript } from '../src/runtime/productionContract.ts'
-import { fixedVideoTranslationSlicePlan } from './video-translation-input.ts'
 import { appendVideoTranslationTrace } from './video-translation-trace.ts'
-import { funAsrCuesToSrt, transcribeVideoTranslationAudio } from './video-translation-asr.ts'
+import {
+  funAsrCuesToSrt,
+  transcribeVideoTranslationAudio,
+  transcribeVideoTranslationDubbingBlock,
+} from './video-translation-asr.ts'
 
 export const API_ORIGIN = 'https://api.jiucaihezi.studio'
-export const ARK_API_ORIGIN = 'https://ark.cn-beijing.volces.com/api/v3'
 const DOUBAO_AUDIO_MODEL = 'doubao-seed-2-0-lite-260428' as const
 export const OPENAI_BASE_URL = `${API_ORIGIN}/v1`
 export const API_KEYS_URL = `${API_ORIGIN}/keys`
@@ -63,6 +63,92 @@ const VIDEO_TRANSLATION_FRAME_CUE_LIMIT = 30
 
 const KEY_FILE = 'jiucai-api-key.bin'
 export const VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
+
+type DubbingAlignmentCue = { cueId: string; translatedText: string }
+type DubbingAlignmentAsrCue = {
+  words?: Array<{ text: string; startMs: number; endMs: number }>
+}
+
+export function alignDubbingCuesToFunAsrWords(
+  cues: DubbingAlignmentCue[],
+  asrCues: DubbingAlignmentAsrCue[],
+) {
+  const expected: Array<{ char: string; cueIndex: number }> = []
+  cues.forEach((cue, cueIndex) => {
+    for (const char of cue.translatedText.toLowerCase().normalize('NFKD'))
+      if (/[a-z0-9]/.test(char)) expected.push({ char, cueIndex })
+  })
+  const words = asrCues
+    .flatMap((cue) => cue.words || [])
+    .filter(
+      (word) =>
+        Number.isFinite(word.startMs) &&
+        Number.isFinite(word.endMs) &&
+        word.startMs >= 0 &&
+        word.endMs > word.startMs,
+    )
+  const observed: Array<{ char: string; wordIndex: number }> = []
+  words.forEach((word, wordIndex) => {
+    for (const char of word.text.toLowerCase().normalize('NFKD'))
+      if (/[a-z0-9]/.test(char)) observed.push({ char, wordIndex })
+  })
+  if (!expected.length || !observed.length) throw new Error('FunASR 没有返回可对齐的英文单词')
+
+  const columns = observed.length + 1
+  const costs = new Uint32Array((expected.length + 1) * columns)
+  for (let row = 0; row <= expected.length; row++) costs[row * columns] = row
+  for (let column = 0; column <= observed.length; column++) costs[column] = column
+  for (let row = 1; row <= expected.length; row++) {
+    for (let column = 1; column <= observed.length; column++) {
+      const index = row * columns + column
+      costs[index] = Math.min(
+        costs[index - columns] + 1,
+        costs[index - 1] + 1,
+        costs[index - columns - 1] + (expected[row - 1].char === observed[column - 1].char ? 0 : 1),
+      )
+    }
+  }
+  const matchedWords = cues.map(() => new Set<number>())
+  const matchedChars = cues.map(() => 0)
+  let row = expected.length
+  let column = observed.length
+  while (row > 0 && column > 0) {
+    const index = row * columns + column
+    const same = expected[row - 1].char === observed[column - 1].char
+    if (costs[index] === costs[index - columns - 1] + (same ? 0 : 1)) {
+      if (same) {
+        const cueIndex = expected[row - 1].cueIndex
+        matchedWords[cueIndex].add(observed[column - 1].wordIndex)
+        matchedChars[cueIndex]++
+      }
+      row--
+      column--
+    } else if (costs[index] === costs[index - columns] + 1) row--
+    else column--
+  }
+  const aligned = cues.map((cue, cueIndex) => {
+    const cueChars = expected.filter((item) => item.cueIndex === cueIndex).length
+    const indices = [...matchedWords[cueIndex]].sort((left, right) => left - right)
+    if (indices.length && matchedChars[cueIndex] / cueChars < 0.35)
+      throw new Error(`FunASR 无法可靠匹配 ${cue.cueId}`)
+    return indices.length
+      ? {
+      cueId: cue.cueId,
+      startMs: words[indices[0]].startMs,
+      endMs: words[indices.at(-1)!].endMs,
+        }
+      : null
+  })
+  return aligned.map((item, index) => {
+    if (item) return item
+    const previous = aligned.slice(0, index).reverse().find(Boolean)
+    const next = aligned.slice(index + 1).find(Boolean)
+    const startMs = previous?.endMs ?? 0
+    const endMs = next?.startMs ?? words.at(-1)!.endMs
+    if (endMs <= startMs) throw new Error(`FunASR 无法可靠匹配 ${cues[index].cueId}`)
+    return { cueId: cues[index].cueId, startMs, endMs }
+  })
+}
 
 function safeTranslationId(value: string, label: string) {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error(`${label}无效`)
@@ -132,7 +218,7 @@ export async function saveApiKey(apiKey: string) {
   return true
 }
 
-async function readApiKey() {
+export async function readApiKey() {
   if (sessionApiKey) return sessionApiKey
   let encrypted: Buffer
   try {
@@ -147,21 +233,9 @@ async function readApiKey() {
 
 type CloudRequestModel = TextModel | typeof DOUBAO_AUDIO_MODEL
 
-async function textRequestConfig(model: CloudRequestModel) {
-  if (model === 'doubao-seed-evolving' || model === DOUBAO_AUDIO_MODEL) {
-    const apiKey = await readSeedAudioApiKey()
-    return {
-      officialArk: true,
-      url: `${ARK_API_ORIGIN}/chat/completions`,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    }
-  }
+async function textRequestConfig() {
   const apiKey = await readApiKey()
   return {
-    officialArk: false,
     url: `${API_ORIGIN}/v1/chat/completions`,
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -169,79 +243,6 @@ async function textRequestConfig(model: CloudRequestModel) {
       'Content-Type': 'application/json',
     },
   }
-}
-
-async function uploadArkMedia(
-  file: { filename: string; file_data: string },
-  headers: Record<string, string>,
-) {
-  const match = file.file_data.match(/^data:([^;]+);base64,(.+)$/)
-  if (!match) throw new Error('方舟媒体文件格式无效')
-  const form = new FormData()
-  form.append('purpose', 'user_data')
-  form.append('file', Buffer.from(match[2], 'base64'), {
-    filename: file.filename,
-    contentType: match[1],
-  })
-  const uploaded = await axios.post(`${ARK_API_ORIGIN}/files`, form, {
-    headers: { ...headers, ...form.getHeaders() },
-    timeout: 300_000,
-  })
-  let record = uploaded.data
-  for (let attempt = 0; record?.status !== 'active' && attempt < 180; attempt++) {
-    if (record?.status === 'failed' || record?.error?.message)
-      throw new Error(`方舟媒体文件处理失败：${record.error?.message || '未知错误'}`)
-    await new Promise((resolve) => setTimeout(resolve, 1_000))
-    record = (
-      await axios.request({
-        method: 'GET',
-        url: `${ARK_API_ORIGIN}/files/${record?.id}`,
-        headers,
-        timeout: 30_000,
-      })
-    ).data
-  }
-  if (record?.status !== 'active') throw new Error('方舟媒体文件预处理超时（已等待 180 秒）')
-  return { fileId: String(record.id), mimeType: match[1] }
-}
-
-async function prepareArkMultimodalContent(
-  content: Record<string, unknown>[],
-  headers: Record<string, string | undefined>,
-  model: CloudRequestModel,
-) {
-  const result: Record<string, unknown>[] = []
-  for (const item of content) {
-    if (item.type !== 'file') {
-      result.push(item)
-      continue
-    }
-    const sourceFile = item.file as { filename: string; file_data: string }
-    const isAudio = sourceFile.file_data.startsWith('data:audio/')
-    // 视频和人声分别交给各自的方舟模型。
-    if (model === 'doubao-seed-evolving' && isAudio) continue
-    if (model === DOUBAO_AUDIO_MODEL && !isAudio) continue
-    if (isAudio) {
-      const match = sourceFile.file_data.match(/^data:audio\/([^;]+);base64,(.+)$/)
-      if (!match) throw new Error('方舟音频文件格式无效')
-      result.push({
-        type: 'input_audio',
-        input_audio: { data: match[2], format: match[1] === 'mpeg' ? 'mp3' : match[1] },
-      })
-      continue
-    }
-    const uploaded = await uploadArkMedia(
-      sourceFile,
-      Object.fromEntries(Object.entries(headers).filter(([, value]) => value)) as Record<
-        string,
-        string
-      >,
-    )
-    if (uploaded.mimeType.startsWith('video/'))
-      result.push({ type: 'video_url', video_url: { file_id: uploaded.fileId }, fps: 2 })
-    else throw new Error(`方舟不支持该媒体类型：${uploaded.mimeType}`)
-  }
-  return result
 }
 
 function friendlyError(error: unknown): Error {
@@ -631,7 +632,7 @@ export async function generateVideoTranslationDialogueTimestamps(
   reportProgress: (message: string) => void = () => {},
   abortSignal?: AbortSignal,
 ) {
-  const { executeFFmpeg, separateAudioStems } = await import('./ffmpeg/index.ts')
+  const { executeFFmpeg } = await import('./ffmpeg/index.ts')
   safeTranslationId(params.episodeId, '剧集 ID')
   safeTranslationId(params.targetLanguage, '目标语言')
   safeTranslationId(params.voiceVersionId, '配音版本 ID')
@@ -679,7 +680,6 @@ export async function generateVideoTranslationDialogueTimestamps(
     .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)
   const cuesById = new Map(scriptCues.map((cue) => [cue.cueId, cue]))
   if (cuesById.size !== contract.cues.length) throw new Error('最终时间戳剧本含重复 cueId')
-  const roleNames = new Map(scriptCues.map((cue) => [cue.translationRoleId, cue.roleName]))
   scriptCues.forEach((cue) => safeTranslationId(cue.cueId, '对白 ID'))
   const version = JSON.parse(
     await fs.promises.readFile(
@@ -724,174 +724,45 @@ export async function generateVideoTranslationDialogueTimestamps(
     targetEndMs: number
     clipPath: string
   }> = []
-  const lastCueSlice = new Map<string, { blockId: string; sliceIndex: number }>()
-  const checkpointPathsByBlock = new Map<string, string[]>()
+  const blockDurationMs = new Map<string, number>()
+  const blockSources = new Map<string, string>()
   for (const [blockIndex, block] of versionBlocks.entries()) {
     const blockSource = assertVideoTranslationAsset(params.runId, params.episodeId, block.audioPath)
     if ((await hashTranslationFile(blockSource)) !== block.audioHash)
       throw new Error(`${block.voiceBlockId} 的音频与配音版本清单不一致`)
     const blockRoot = path.join(base, block.voiceBlockId)
-    const vocalPath = path.join(blockRoot, 'vocal.wav')
-    await fs.promises.mkdir(path.join(blockRoot, 'slices'), { recursive: true })
-    if (!(await fs.promises.stat(vocalPath).catch(() => null))?.size) {
-      const instrumentPath = path.join(blockRoot, 'instrument.wav')
-      await separateAudioStems(blockSource, vocalPath, instrumentPath, abortSignal)
-      await fs.promises.rm(instrumentPath, { force: true })
-    }
-    const durationMs = Math.round((await mediaDuration(vocalPath)) * 1000)
-    const slices = fixedVideoTranslationSlicePlan(durationMs)
-    const blockCues = block.cueIds.map((cueId) => cuesById.get(cueId)).filter(Boolean)
-    for (let sliceIndex = 0; sliceIndex < slices.length; sliceIndex++) {
-      const slice = slices[sliceIndex]
-      const slicePath = path.join(
-        blockRoot,
-        'slices',
-        `slice-${String(sliceIndex + 1).padStart(3, '0')}-${slice.startMs}-${slice.endMs}.wav`,
+    await fs.promises.mkdir(blockRoot, { recursive: true })
+    blockSources.set(block.voiceBlockId, blockSource)
+    const durationMs = Math.round((await mediaDuration(blockSource)) * 1000)
+    blockDurationMs.set(block.voiceBlockId, durationMs)
+    const checkpointPath = path.join(blockRoot, 'funasr.json')
+    const checkpoint = await fs.promises
+      .readFile(checkpointPath, 'utf8')
+      .then((value) => JSON.parse(value))
+      .catch(() => null)
+    const transcript =
+      checkpoint?.audioHash === block.audioHash && Array.isArray(checkpoint?.transcript?.cues)
+        ? checkpoint.transcript
+        : await transcribeVideoTranslationDubbingBlock(blockSource, durationMs, abortSignal)
+    if (checkpoint?.audioHash !== block.audioHash)
+      await fs.promises.writeFile(
+        checkpointPath,
+        `${JSON.stringify({ audioHash: block.audioHash, transcript }, null, 2)}\n`,
       )
-      if (!(await fs.promises.stat(slicePath).catch(() => null))?.size)
-        await executeFFmpeg(
-          [
-            '-ss',
-            String(slice.startMs / 1000),
-            '-i',
-            vocalPath,
-            '-t',
-            String((slice.endMs - slice.startMs) / 1000),
-            '-ar',
-            '48000',
-            '-ac',
-            '1',
-            '-c:a',
-            'pcm_s16le',
-            '-y',
-            slicePath,
-          ],
-          { abortSignal },
-        )
-      const inputHash = await hashTranslationFile(slicePath)
-      const checkpointPath = `${slicePath}.json`
-      const blockCheckpointPaths = checkpointPathsByBlock.get(block.voiceBlockId) || []
-      blockCheckpointPaths.push(checkpointPath)
-      checkpointPathsByBlock.set(block.voiceBlockId, blockCheckpointPaths)
-      let detected: Array<{ cueId: string; startMs: number; endMs: number }> | undefined
-      const checkpoint = await fs.promises
-        .readFile(checkpointPath, 'utf8')
-        .then((value) => JSON.parse(value))
-        .catch(() => null)
-      const validateDetected = (value: unknown) => {
-        if (!Array.isArray(value)) throw new Error('返回格式不是数组')
-        const parsed = value.map((item: any) => ({
-          cueId: String(item.cueId || ''),
-          startMs: Number(item.startMs),
-          endMs: Number(item.endMs),
-        }))
-        const allowed = new Set(block.cueIds)
-        if (
-          new Set(parsed.map((item) => item.cueId)).size !== parsed.length ||
-          parsed.some(
-            (item, index) =>
-              index > 0 &&
-              (item.startMs < parsed[index - 1].startMs ||
-                block.cueIds.indexOf(item.cueId) < block.cueIds.indexOf(parsed[index - 1].cueId)),
-          ) ||
-          parsed.some(
-            (item) =>
-              !allowed.has(item.cueId) ||
-              !Number.isFinite(item.startMs) ||
-              !Number.isFinite(item.endMs) ||
-              item.startMs < 0 ||
-              item.endMs <= item.startMs ||
-              item.endMs > slice.endMs - slice.startMs,
-          )
-        )
-          throw new Error('返回了重复或未知 cueId，或非法片内时间')
-        return parsed
-      }
-      if (checkpoint?.inputHash === inputHash) {
-        try {
-          detected = validateDetected(checkpoint.detected)
-        } catch {
-          // Regenerate an invalid checkpoint.
-        }
-      }
-      if (!detected) {
-        const audio = await fs.promises.readFile(slicePath)
-        let reason = ''
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const response = await generateMarkdownResponse(
-            '你是配音对白时间戳导演，只匹配已知台词，不重新转写。只返回 JSON 数组。',
-            [
-              {
-                type: 'file',
-                file: {
-                  filename: path.basename(slicePath),
-                  file_data: `data:audio/wav;base64,${audio.toString('base64')}`,
-                },
-              },
-              {
-                type: 'text',
-                text: `这是配音块 ${block.voiceBlockId} 的音频片段，片内范围 ${slice.startMs}-${slice.endMs}ms。只从以下已知对白中判断实际听到的 cueId：${JSON.stringify(
-                  blockCues.map((cue) => ({
-                    cueId: cue!.cueId,
-                    roleName: roleNames.get(cue!.translationRoleId || '') || '',
-                    translatedText: cue!.translatedText,
-                  })),
-                )}。返回每句片内相对开始和结束毫秒：[{"cueId":"cue-...","startMs":0,"endMs":900}]。未听到的句子不要编造。${reason ? `\n上次错误：${reason}，请重发完整数组。` : ''}`,
-              },
-            ],
-            'gemini-3.6-flash',
-            abortSignal,
-            8_000,
-            VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
-          )
-          try {
-            detected = validateDetected(parseJson(response))
-            reason = ''
-            break
-          } catch (error) {
-            reason = error instanceof Error ? error.message : String(error)
-          }
-        }
-        if (reason || !detected) throw new Error(reason || '配音对白时间戳生成失败')
-        await fs.promises.writeFile(
-          checkpointPath,
-          `${JSON.stringify({ inputHash, detected }, null, 2)}\n`,
-        )
-      }
-      for (const item of detected) {
-        const cue = cuesById.get(item.cueId)
-        if (!cue) continue
-        const sourceStartMs = slice.startMs + item.startMs
-        const sourceEndMs = slice.startMs + item.endMs
-        const existing = records.find((record) => record.cueId === item.cueId)
-        const last = lastCueSlice.get(item.cueId)
-        if (existing) {
-          const crossesBoundary =
-            last?.blockId === block.voiceBlockId &&
-            last.sliceIndex === sliceIndex - 1 &&
-            existing.sourceEndMs >= slice.startMs - 250 &&
-            sourceStartMs <= slice.startMs + 250
-          if (!crossesBoundary) {
-            await Promise.all(
-              blockCheckpointPaths.map((value) => fs.promises.rm(value, { force: true })),
-            )
-            throw new Error(`${item.cueId} 在非相邻切片中重复出现`)
-          }
-          existing.sourceEndMs = Math.max(existing.sourceEndMs, sourceEndMs)
-        } else {
-          records.push({
-            voiceVersionId: version.versionId,
-            voiceBlockId: block.voiceBlockId,
-            cueId: item.cueId,
-            sourceStartMs,
-            sourceEndMs,
-            targetStartMs: cue.startMs,
-            targetEndMs: cue.endMs,
-            clipPath: '',
-          })
-        }
-        lastCueSlice.set(item.cueId, { blockId: block.voiceBlockId, sliceIndex })
-      }
+    const blockCues = block.cueIds.map((cueId) => cuesById.get(cueId)!)
+    const aligned = alignDubbingCuesToFunAsrWords(blockCues, transcript.cues)
+    for (const item of aligned) {
+      const cue = cuesById.get(item.cueId)!
+      records.push({
+        voiceVersionId: version.versionId,
+        voiceBlockId: block.voiceBlockId,
+        cueId: item.cueId,
+        sourceStartMs: Math.max(0, item.startMs - 80),
+        sourceEndMs: Math.min(durationMs, item.endMs + 120),
+        targetStartMs: cue.startMs,
+        targetEndMs: cue.endMs,
+        clipPath: '',
+      })
     }
     reportProgress(`配音对白时间戳：已完成配音块 ${blockIndex + 1}/${versionBlocks.length}`)
   }
@@ -899,30 +770,27 @@ export async function generateVideoTranslationDialogueTimestamps(
     (cueId) => !records.some((record) => record.cueId === cueId),
   )
   if (records.length !== expected.length || missingCueIds.length) {
-    const affectedBlocks = versionBlocks.filter((block) =>
-      block.cueIds.some((cueId) => missingCueIds.includes(cueId)),
-    )
-    await Promise.all(
-      affectedBlocks.flatMap((block) =>
-        (checkpointPathsByBlock.get(block.voiceBlockId) || []).map((value) =>
-          fs.promises.rm(value, { force: true }),
-        ),
-      ),
-    )
-    throw new Error('配音对白时间戳缺少已知 cueId，请重试失败切片')
+    throw new Error(`FunASR 无法对齐对白：${missingCueIds.join('、')}`)
   }
   records.sort((left, right) => expected.indexOf(left.cueId) - expected.indexOf(right.cueId))
   for (const block of versionBlocks) {
-    const starts = block.cueIds.map(
-      (cueId) => records.find((record) => record.cueId === cueId)!.sourceStartMs,
+    const blockRecords = block.cueIds.map(
+      (cueId) => records.find((record) => record.cueId === cueId)!,
     )
+    const starts = blockRecords.map((record) => record.sourceStartMs)
     if (starts.some((start, index) => index > 0 && start < starts[index - 1]))
       throw new Error(`${block.voiceBlockId} 的 cueId 发音顺序与最终剧本不一致`)
+    blockRecords.forEach((record, index) => {
+      const next = blockRecords[index + 1]
+      record.sourceEndMs = next
+        ? Math.max(record.sourceEndMs, next.sourceStartMs)
+        : blockDurationMs.get(block.voiceBlockId)!
+    })
   }
   const cueRoot = path.join(base, 'cues')
   await fs.promises.mkdir(cueRoot, { recursive: true })
   for (const record of records) {
-    const vocal = path.join(base, record.voiceBlockId, 'vocal.wav')
+    const vocal = blockSources.get(record.voiceBlockId)!
     const clip = path.join(cueRoot, `${record.cueId}.wav`)
     await executeFFmpeg(
       [
@@ -1538,7 +1406,7 @@ function assertStoryboardWritePath(value: unknown, episodeId: string) {
 
 async function generateToolTurn(messages: any[], textModel: TextModel, signal?: AbortSignal) {
   try {
-    const requestConfig = await textRequestConfig(textModel)
+    const requestConfig = await textRequestConfig()
     const response = await axios.request({
       method: 'POST',
       url: requestConfig.url,
@@ -1619,61 +1487,68 @@ async function generateJsonResponse(
   responseFormat: 'json' | 'text' = 'json',
   timeoutMs = 300_000,
 ) {
-  try {
-    const requestConfig = await textRequestConfig(textModel)
-    const multimodal = Array.isArray(userContent)
-    const requestContent =
-      multimodal && requestConfig.officialArk
-        ? await prepareArkMultimodalContent(userContent, requestConfig.headers, textModel)
-        : userContent
-    const data = {
-      model: textModel,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: requestContent },
-      ],
-      ...(responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
-      temperature: 0.2,
-      max_tokens: maxTokens,
-      stream: !multimodal,
-    }
-    const response = await axios.request({
-      method: 'POST',
-      url: requestConfig.url,
-      data,
-      responseType: multimodal ? 'json' : 'stream',
-      timeout: timeoutMs,
-      headers: requestConfig.headers,
-      signal,
-    })
-    await throwStreamHttpError(response)
-    if (multimodal && typeof response.data?.[Symbol.asyncIterator] !== 'function') {
-      const content = response.data?.choices?.[0]?.message?.content
-      if (!String(content || '').trim()) throw new Error('文稿模型没有返回内容')
-      return String(content).trim()
-    }
-    let pending = ''
-    const decoder = new StringDecoder('utf8')
-    let text = ''
-    for await (const chunk of response.data) {
-      pending += decoder.write(chunk)
-      const lines = pending.split(/\r?\n/)
-      pending = lines.pop() || ''
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue
-        const value = line.slice(5).trim()
-        if (!value || value === '[DONE]') continue
-        const event = JSON.parse(value)
-        if (event?.error?.message) throw new Error(event.error.message)
-        text += event?.choices?.[0]?.delta?.content || ''
-      }
-    }
-    pending += decoder.end()
-    if (!text.trim()) throw new Error('文稿模型没有返回内容')
-    return text.trim()
-  } catch (error) {
-    throw friendlyError(error)
+  const transient = (error: unknown) => {
+    if (signal?.aborted) return false
+    const message = String((error as any)?.message || error)
+    return /socket hang up|ECONNRESET|ETIMEDOUT|网络连接/i.test(message)
   }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const requestConfig = await textRequestConfig()
+      const multimodal = Array.isArray(userContent)
+      const data = {
+        model: textModel,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userContent },
+        ],
+        ...(responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
+        temperature: 0.2,
+        max_tokens: maxTokens,
+        stream: !multimodal,
+      }
+      const response = await axios.request({
+        method: 'POST',
+        url: requestConfig.url,
+        data,
+        responseType: multimodal ? 'json' : 'stream',
+        timeout: timeoutMs,
+        headers: requestConfig.headers,
+        signal,
+      })
+      await throwStreamHttpError(response)
+      if (multimodal && typeof response.data?.[Symbol.asyncIterator] !== 'function') {
+        const content = response.data?.choices?.[0]?.message?.content
+        if (!String(content || '').trim()) throw new Error('文稿模型没有返回内容')
+        return String(content).trim()
+      }
+      let pending = ''
+      const decoder = new StringDecoder('utf8')
+      let text = ''
+      for await (const chunk of response.data) {
+        pending += decoder.write(chunk)
+        const lines = pending.split(/\r?\n/)
+        pending = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue
+          const value = line.slice(5).trim()
+          if (!value || value === '[DONE]') continue
+          const event = JSON.parse(value)
+          if (event?.error?.message) throw new Error(event.error.message)
+          text += event?.choices?.[0]?.delta?.content || ''
+        }
+      }
+      pending += decoder.end()
+      if (!text.trim()) throw new Error('文稿模型没有返回内容')
+      return text.trim()
+    } catch (error) {
+      if (attempt === 0 && transient(error)) continue
+      const friendly = friendlyError(error)
+      if (transient(error)) throw new Error('网络连接中断，内容未保存，请重试')
+      throw friendly
+    }
+  }
+  throw new Error('网络连接中断，内容未保存，请重试')
 }
 
 function generateMarkdownResponse(

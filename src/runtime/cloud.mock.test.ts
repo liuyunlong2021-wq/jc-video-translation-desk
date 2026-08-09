@@ -260,6 +260,27 @@ mock.module('../../electron/video-translation-asr.ts', {
         srtPath,
       }
     },
+    transcribeVideoTranslationDubbingBlock: async () => ({
+      schemaVersion: 1,
+      engine: 'funasr-test',
+      device: 'cpu',
+      cues: [
+        {
+          cueId: 'asr-001',
+          startMs: 9_500,
+          endMs: 10_000,
+          recognizedText: 'Hel',
+          words: [{ text: 'Hel', startMs: 9_500, endMs: 10_000 }],
+        },
+        {
+          cueId: 'asr-002',
+          startMs: 10_100,
+          endMs: 11_000,
+          recognizedText: 'lo',
+          words: [{ text: 'lo', startMs: 10_100, endMs: 11_000 }],
+        },
+      ],
+    }),
   },
 })
 
@@ -1602,7 +1623,7 @@ test('frame calibration rejects oversized cue sets early', async () => {
   )
 })
 
-test('merges one dubbed cue across adjacent audio slices and verifies the block hash', async () => {
+test('aligns a dubbed cue across FunASR segments and verifies the block hash', async () => {
   const runId = 'translation-timestamp-run'
   await workspace.registerProjectRoot(runId, projectRoot(runId), false)
   const blockPath = path.join(
@@ -1669,10 +1690,6 @@ test('merges one dubbed cue across adjacent audio slices and verifies the block 
     JSON.stringify({ finalScriptId: voiceVersion.finalScriptId, scriptHash, ...canonical }),
   )
   fs.writeFileSync(manifestPath, JSON.stringify(voiceVersion))
-  chatOutputs.push(
-    '[{"cueId":"cue-001","startMs":9500,"endMs":10000}]',
-    '[{"cueId":"cue-001","startMs":0,"endMs":500}]',
-  )
   const result = await cloud.generateVideoTranslationDialogueTimestamps({
     runId,
     episodeId,
@@ -1688,7 +1705,7 @@ test('merges one dubbed cue across adjacent audio slices and verifies the block 
       record.sourceStartMs,
       record.sourceEndMs,
     ]),
-    [['cue-001', 9500, 10500]],
+    [['cue-001', 9420, 12000]],
   )
   assert.ok(fs.existsSync(path.join(projectRoot(runId), result.targetVoicePath)))
   fs.writeFileSync(

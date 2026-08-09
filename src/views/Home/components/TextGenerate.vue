@@ -174,22 +174,6 @@
             }}
           </div>
           <v-divider />
-          <div class="text-subtitle-2">火山引擎官方接口</div>
-          <v-text-field
-            v-model="seedAudioApiKey"
-            label="火山引擎 API Key（豆包 / Seed Audio 共用）"
-            type="password"
-            autocomplete="off"
-            hide-details
-            :placeholder="hasSeedAudioApiKey ? '已安全保存，留空保持不变' : '请输入火山引擎 Key'"
-          />
-          <div
-            class="text-caption"
-            :class="hasSeedAudioApiKey ? 'text-success' : 'text-medium-emphasis'"
-          >
-            {{ hasSeedAudioApiKey ? '火山引擎 Key 已配置' : '豆包 Seed Evolving 与 Seed Audio 均使用此 Key' }}
-          </div>
-          <v-divider />
           <div class="flex items-center justify-between gap-3">
             <div>
               <div class="text-subtitle-2">{{ t('workflow.localVoice.title') }}</div>
@@ -224,7 +208,9 @@
               <v-chip
                 size="small"
                 variant="tonal"
-                :color="indexTtsState === 'running' || localVoiceStatus?.available ? 'success' : 'warning'"
+                :color="
+                  indexTtsState === 'running' || localVoiceStatus?.available ? 'success' : 'warning'
+                "
               >
                 {{ localVoiceStatusLabel }}
               </v-chip>
@@ -247,7 +233,8 @@
                 :loading="changingIndexTts"
                 :disabled="indexTtsState === 'running'"
                 @click="startIndexTts"
-              >启动服务</v-btn>
+                >启动服务</v-btn
+              >
               <v-btn
                 v-if="mediaStore.localVoiceEngine === 'indextts2'"
                 size="small"
@@ -255,7 +242,8 @@
                 :loading="changingIndexTts"
                 :disabled="indexTtsState !== 'running'"
                 @click="stopIndexTts"
-              >停止服务</v-btn>
+                >停止服务</v-btn
+              >
             </div>
           </div>
         </v-card-text>
@@ -326,8 +314,6 @@ const configDialog = ref(false)
 const apiKey = ref('')
 const hasApiKey = ref(false)
 const sessionOnly = ref(false)
-const seedAudioApiKey = ref('')
-const hasSeedAudioApiKey = ref(false)
 const testing = ref(false)
 const checkingLocalVoice = ref(false)
 const changingIndexTts = ref(false)
@@ -375,7 +361,6 @@ const indexTtsState = computed(() =>
 
 onMounted(async () => {
   hasApiKey.value = await window.electron.cloud.hasApiKey()
-  hasSeedAudioApiKey.value = await window.electron.cloud.hasSeedAudioApiKey()
   mediaStore.apiConfigured = hasApiKey.value
   if (!hasApiKey.value) configDialog.value = true
   if (mediaStore.voiceEngine === 'local') await checkLocalVoice()
@@ -391,9 +376,10 @@ defineExpose({ openConfig })
 async function checkLocalVoice() {
   checkingLocalVoice.value = true
   try {
-    localVoiceStatus.value = mediaStore.localVoiceEngine === 'indextts2'
-      ? await window.electron.cloud.indexTtsStatus()
-      : await window.electron.cloud.localVoiceStatus()
+    localVoiceStatus.value =
+      mediaStore.localVoiceEngine === 'indextts2'
+        ? await window.electron.cloud.indexTtsStatus()
+        : await window.electron.cloud.localVoiceStatus()
   } finally {
     checkingLocalVoice.value = false
   }
@@ -444,13 +430,9 @@ async function saveConfig() {
   }
   if (apiKey.value.trim())
     sessionOnly.value = !(await window.electron.cloud.saveApiKey(apiKey.value))
-  if (seedAudioApiKey.value.trim())
-    sessionOnly.value = !(await window.electron.cloud.saveSeedAudioApiKey(seedAudioApiKey.value)) || sessionOnly.value
   hasApiKey.value = await window.electron.cloud.hasApiKey()
-  hasSeedAudioApiKey.value = await window.electron.cloud.hasSeedAudioApiKey()
   mediaStore.apiConfigured = hasApiKey.value
   apiKey.value = ''
-  seedAudioApiKey.value = ''
   configDialog.value = false
   toast[sessionOnly.value ? 'warning' : 'success'](
     t(sessionOnly.value ? 'workflow.api.sessionOnly' : 'workflow.api.savedToast'),
@@ -536,7 +518,8 @@ function invalidateVisuals() {
     !mediaStore.visualAnchor &&
     !mediaStore.projectDirectorDraft &&
     !mediaStore.projectDirectorPlan
-  ) return
+  )
+    return
   mediaStore.invalidateVisuals()
   mediaStore.stage = mediaStore.voicePath
     ? 'voice-ready'
@@ -559,7 +542,18 @@ function invalidateVisuals() {
   display: grid;
   gap: 8px;
 }
-.local-engine-toggle { justify-self: start; }
-.local-voice-detail { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
-.local-voice-actions { display: flex; gap: 8px; }
+.local-engine-toggle {
+  justify-self: start;
+}
+.local-voice-detail {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.local-voice-actions {
+  display: flex;
+  gap: 8px;
+}
 </style>

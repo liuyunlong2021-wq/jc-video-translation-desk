@@ -1,7 +1,7 @@
 # TDD-10：Seed Audio 声音优先路线
 
 > 日期：2026-08-05
-> 状态：前置全局配音工作台、角色声音两步生成、可编辑豆包语音稿节点已实现；真实 Seed Audio 官方请求待用项目 Key 验收
+> 状态：前置全局配音工作台、角色声音两步生成和可编辑豆包语音稿节点已实现；参考音上传、绑定和韭菜盒子统一 API 透传已确认可用
 > 上位设计：`docs/导演分镜时间轴与角色配音编排SDD.md`
 > 路线母版：`docs/wiki/架构/逐镜智能剪辑与声音成片.md` 的旁白宣传片主链
 > 前置依赖：`docs/tdd/00-共享生产合同与状态机TDD.md`、`docs/tdd/02-声音引擎与角色音色绑定TDD.md`、`docs/tdd/03-素材SRTTDD.md`、`docs/tdd/04-Gemini剪辑时间轴TDD.md`、`docs/tdd/05-配音字幕工作台骨架TDD.md`、`docs/tdd/06-配音与字幕TDD.md`、`docs/tdd/07-音频处理与成片TDD.md`、`docs/tdd/08-项目与剧集数据边界TDD.md`、`docs/tdd/09-项目与剧集UITDD.md`
@@ -270,20 +270,14 @@ wiki/声音/<episodeId>/seed-audio/整段配音安排.json
 
 至少包含：`schemaVersion`、`projectId`、`episodeId`、`sourceScriptHash`、`voiceBindingHash`、`createdAt`、`segments`、`tasks`、`referenceMap`、`status` 和阻塞原因。
 
-## 10. 官方 API 合同
+## 10. 韭菜盒子统一 API 合同
 
-配置只存在 Electron 安全存储和环境变量：
-
-```text
-SEED_AUDIO_URL=https://openspeech.bytedance.com/api/v3/tts/create
-SEED_AUDIO_MODEL=seed-audio-1.0
-SEED_AUDIO_API_KEY=...
-```
+Seed Audio 与其他模型共用 Electron 安全存储中的韭菜盒子 API Key，不再保留火山引擎专属 Key 或直连配置。请求地址固定为 `https://api.jiucaihezi.studio/v1/audio/speech`。
 
 请求头固定为：
 
 ```http
-X-Api-Key: <key>
+Authorization: Bearer <韭菜盒子 API Key>
 Content-Type: application/json
 ```
 
@@ -292,29 +286,13 @@ Content-Type: application/json
 ```json
 {
   "model": "seed-audio-1.0",
-  "text_prompt": "最终编排后的 Seed Audio 提示词",
-  "audio_config": {
-    "format": "mp3",
-    "sample_rate": 48000,
-    "pitch_rate": 0,
-    "speech_rate": 0,
-    "loudness_rate": 0
-  },
-  "watermark": {}
+  "input": "最终编排后的 Seed Audio 提示词",
+  "voice": "alloy",
+  "response_format": "mp3"
 }
 ```
 
-有参考音时按安排加入：
-
-```json
-"references": [
-  { "speaker": "<reference-audio-1>" },
-  { "speaker": "<reference-audio-2>" },
-  { "speaker": "<reference-audio-3>" }
-]
-```
-
-后端优先下载返回的临时 `url`，失败才解码 Base64；通过 `ffprobe` 校验后保存 MP3，并转换为项目统一的 48kHz 双声道 WAV。任何官方资源 ID 只属于适配器传输层。
+统一渠道直接返 `audio/mpeg` 二进制 MP3，客户端落盘后转换为项目统一的 48kHz 双声道 WAV。参考音上传和透传已支持；正式请求中参考音数组顺序必须与 `voiceProfileId` 及提示词中 `@音频N` 完全一致，不得静默丢弃或交换角色参考音。
 
 ## 11. 配音字幕工作台适配
 
@@ -377,15 +355,15 @@ interface SeedAudioState {
 
 失效规则：
 
-| 变化 | 必须失效 |
-|---|---|
-| 文稿/台词变化 | Seed 安排、声音导演稿、声音轨、Whisper 时间轴、SRT、分镜、分镜图、视频、editing-timeline、混音、成片 |
-| Seed 音色绑定变化 | 声音导演稿、声音轨、Whisper 时间轴、SRT、分镜及全部下游 |
-| 声音导演稿变化 | 声音轨、Whisper 时间轴、SRT、分镜及全部下游 |
-| Seed 声音轨重新生成 | Whisper 时间轴、SRT、分镜及全部下游 |
-| 画面素材变化 | 素材 SRT、Gemini editing-timeline、画面剪辑、混音、成片；保留 Seed 声音时间轴 |
-| 画面剪辑点滑块变化 | 画面剪辑、混音、成片；保留 Seed 声音和对白 SRT |
-| 中文字幕修改 | 翻译、配音字幕烧录和成片；不重新生成 Seed 声音，除非用户改动台词正文 |
+| 变化                | 必须失效                                                                                             |
+| ------------------- | ---------------------------------------------------------------------------------------------------- |
+| 文稿/台词变化       | Seed 安排、声音导演稿、声音轨、Whisper 时间轴、SRT、分镜、分镜图、视频、editing-timeline、混音、成片 |
+| Seed 音色绑定变化   | 声音导演稿、声音轨、Whisper 时间轴、SRT、分镜及全部下游                                              |
+| 声音导演稿变化      | 声音轨、Whisper 时间轴、SRT、分镜及全部下游                                                          |
+| Seed 声音轨重新生成 | Whisper 时间轴、SRT、分镜及全部下游                                                                  |
+| 画面素材变化        | 素材 SRT、Gemini editing-timeline、画面剪辑、混音、成片；保留 Seed 声音时间轴                        |
+| 画面剪辑点滑块变化  | 画面剪辑、混音、成片；保留 Seed 声音和对白 SRT                                                       |
+| 中文字幕修改        | 翻译、配音字幕烧录和成片；不重新生成 Seed 声音，除非用户改动台词正文                                 |
 
 所有状态变化和产物引用写入当前剧集 Wiki，保留源文件哈希、生成参数、模型、时间、角色绑定和上游版本。
 

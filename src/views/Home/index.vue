@@ -252,6 +252,7 @@
         'dubbing-workspace-mode': isDubbingWorkspace && !isVideoTranslation,
         'translation-workspace-mode': isVideoTranslation,
         'translation-voice-mode': isTranslationVoiceWorkspace,
+        'translation-dubbing-mode': isTranslationSubtitleWorkspace,
         'left-collapsed': !isVideoTranslation && !leftPanelVisible,
         'right-collapsed': !isVideoTranslation && !rightPanelVisible,
       }"
@@ -287,6 +288,7 @@
         </template>
         <template v-else>
           <VideoTranslationSidebar
+            v-if="!isTranslationSubtitleWorkspace"
             :show-roles="!isTranslationSubtitleWorkspace"
             @delete-role="deleteTranslationRole"
           />
@@ -2046,9 +2048,15 @@ async function confirmTranslationSeedVoice(speakerId: string) {
     const identity = mediaStore.seedAudioRolePrompts[speakerId]?.trim()
     if (!identity) throw new Error(`请先确认 ${role.displayName} 的角色声音身份`)
     if (!role.voiceProfileId) throw new Error(`请先为 ${role.displayName} 选择参考音`)
-    role.voiceIdentityText = identity
-    role.voiceConfirmedAt = new Date().toISOString()
-    await window.electron.cloud.bindVideoTranslationVoice(mediaStore.runId, role)
+    const confirmedRole = JSON.parse(
+      JSON.stringify({
+        ...role,
+        voiceIdentityText: identity,
+        voiceConfirmedAt: new Date().toISOString(),
+      }),
+    )
+    await window.electron.cloud.bindVideoTranslationVoice(mediaStore.runId, confirmedRole)
+    Object.assign(role, confirmedRole)
     invalidateTranslationSeedPrompt()
     toast.success(`${role.displayName} 的角色声音已确认`)
   })
@@ -2345,6 +2353,7 @@ async function mixTranslationAudio() {
         targetLanguage: state.targetLanguage,
       }),
     )
+    state.finalStatus = 'stale'
     toast.success('背景声和目标语言配音已混合')
   })
 }
@@ -4582,6 +4591,9 @@ onBeforeUnmount(() => {
 }
 .workspace-grid.translation-voice-mode {
   grid-template-columns: minmax(720px, 1fr) minmax(300px, 0.42fr);
+}
+.workspace-grid.translation-dubbing-mode {
+  grid-template-columns: minmax(0, 1fr) minmax(310px, 0.42fr);
 }
 .workspace-grid.left-collapsed {
   grid-template-columns: minmax(520px, 1fr) minmax(300px, 0.52fr);

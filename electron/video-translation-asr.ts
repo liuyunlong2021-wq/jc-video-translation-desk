@@ -6,11 +6,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { app } from 'electron'
 import { executeFFmpeg } from './ffmpeg/index.ts'
-import {
-  assertVideoTranslationSource,
-  getRunDir,
-  relativeRunAsset,
-} from './media-workspace.ts'
+import { assertVideoTranslationSource, getRunDir, relativeRunAsset } from './media-workspace.ts'
 
 const runFile = promisify(execFile)
 const FUNASR_ENGINE = 'funasr-1.4.1-sensevoice-small-ct-punc-v3'
@@ -24,6 +20,7 @@ export interface FunAsrCue {
   language?: string
   emotion?: string
   audioEvent?: string
+  words?: Array<{ text: string; startMs: number; endMs: number }>
 }
 
 interface FunAsrTranscript {
@@ -117,6 +114,51 @@ function validateTranscript(value: unknown, durationMs: number): FunAsrTranscrip
   return transcript
 }
 
+async function runFunAsr(audioPath: string, durationMs: number, abortSignal?: AbortSignal) {
+  const python = pythonPath()
+  const runtime = runtimeScriptPath()
+  await Promise.all([
+    fs.promises.access(python, fs.constants.X_OK),
+    fs.promises.access(runtime),
+  ]).catch(() => {
+    throw new Error('FunASR 尚未安装，请先在项目目录运行 pnpm setup:funasr')
+  })
+  let stdout = ''
+  try {
+    ;({ stdout } = await runFile(
+      python,
+      [runtime, 'transcribe', '--model-root', modelRoot(), '--audio', audioPath],
+      {
+        maxBuffer: 64 * 1024 * 1024,
+        signal: abortSignal,
+        env: { ...process.env, PYTORCH_ENABLE_MPS_FALLBACK: '1' },
+      },
+    ))
+  } catch (error) {
+    if (abortSignal?.aborted) throw error
+    throw new Error('FunASR 识别失败，请运行 pnpm probe:funasr 检查本地环境和模型')
+  }
+  const resultLine = stdout
+    .split(/\r?\n/)
+    .reverse()
+    .find((line) => line.startsWith('FUNASR_RESULT_JSON='))
+  if (!resultLine) throw new Error('FunASR 没有返回结构化结果')
+  return validateTranscript(
+    JSON.parse(resultLine.slice('FUNASR_RESULT_JSON='.length)),
+    durationMs,
+  )
+}
+
+export async function transcribeVideoTranslationDubbingBlock(
+  audioPath: string,
+  durationMs: number,
+  abortSignal?: AbortSignal,
+) {
+  if (!(await fs.promises.stat(audioPath).catch(() => null))?.size)
+    throw new Error('完整配音块不存在')
+  return runFunAsr(audioPath, durationMs, abortSignal)
+}
+
 async function atomicWriteFiles(files: Array<{ path: string; content: string }>) {
   const temporary = files.map((file) => `${file.path}.${randomUUID()}.tmp`)
   try {
@@ -162,10 +204,11 @@ export async function transcribeVideoTranslationAudio(
     return { transcript: cached, jsonPath, srtPath }
   }
 
-  const audioFingerprint = await fs.promises
-    .readFile(audioFingerprintPath, 'utf8')
-    .catch(() => '')
-  if (!(await fs.promises.stat(audioPath).catch(() => null))?.size || audioFingerprint.trim() !== sourceHash) {
+  const audioFingerprint = await fs.promises.readFile(audioFingerprintPath, 'utf8').catch(() => '')
+  if (
+    !(await fs.promises.stat(audioPath).catch(() => null))?.size ||
+    audioFingerprint.trim() !== sourceHash
+  ) {
     reportProgress('第 1/3 步：FFmpeg 正在提取 16 kHz 单声道音频')
     await executeFFmpeg(
       ['-i', source, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-y', audioPath],
@@ -174,37 +217,10 @@ export async function transcribeVideoTranslationAudio(
     await fs.promises.writeFile(audioFingerprintPath, `${sourceHash}\n`, 'utf8')
   }
 
-  const python = pythonPath()
-  const runtime = runtimeScriptPath()
-  await Promise.all([fs.promises.access(python, fs.constants.X_OK), fs.promises.access(runtime)]).catch(
-    () => {
-      throw new Error('FunASR 尚未安装，请先在项目目录运行 pnpm setup:funasr')
-    },
-  )
   reportProgress('第 2/3 步：FunASR 正在识别文字、时间、说话人和可用情绪')
-  let stdout = ''
-  try {
-    ;({ stdout } = await runFile(
-      python,
-      [runtime, 'transcribe', '--model-root', modelRoot(), '--audio', audioPath],
-      {
-        maxBuffer: 64 * 1024 * 1024,
-        signal: abortSignal,
-        env: { ...process.env, PYTORCH_ENABLE_MPS_FALLBACK: '1' },
-      },
-    ))
-  } catch (error) {
-    if (abortSignal?.aborted) throw error
-    throw new Error('FunASR 识别失败，请运行 pnpm probe:funasr 检查本地环境和模型')
-  }
-  const resultLine = stdout
-    .split(/\r?\n/)
-    .reverse()
-    .find((line) => line.startsWith('FUNASR_RESULT_JSON='))
-  if (!resultLine) throw new Error('FunASR 没有返回结构化结果')
   const transcript = validateTranscript(
     {
-      ...JSON.parse(resultLine.slice('FUNASR_RESULT_JSON='.length)),
+      ...(await runFunAsr(audioPath, durationMs, abortSignal)),
       sourceHash,
       sourceAudioPath: relativeRunAsset(runId, audioPath),
     },

@@ -407,20 +407,17 @@ export function availableVideoTranslationActions(
   if (
     activeVersion &&
     activeVersion.finalScriptId === state.finalScriptId &&
-    activeVersion.scriptHash === state.scriptHash &&
-    !state.dubDialogueTimestampHash
+    activeVersion.scriptHash === state.scriptHash
   )
     actions.push('timestamp-target-dialogue')
   if (actionable(state.separationStatus)) actions.push('separate-source-audio')
   else if (
     state.separationStatus === 'ready' &&
     state.dubDialogueTimestampHash &&
-    state.voiceStatus === 'ready' &&
-    actionable(state.mixStatus)
+    state.voiceStatus === 'ready'
   )
     actions.push('mix-background-audio')
-  if (state.mixStatus === 'ready' && actionable(state.finalStatus))
-    actions.push('burn-subtitles-and-voice')
+  if (state.mixStatus === 'ready') actions.push('burn-subtitles-and-voice')
   return actions
 }
 

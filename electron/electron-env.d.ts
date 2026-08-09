@@ -49,8 +49,6 @@ interface Window {
       hasApiKey: () => Promise<boolean>
       saveApiKey: (apiKey: string) => Promise<boolean>
       testApiKey: () => Promise<boolean>
-      hasSeedAudioApiKey: () => Promise<boolean>
-      saveSeedAudioApiKey: (apiKey: string) => Promise<boolean>
       generateSeedAudio: (
         params: import('./seed-audio').GenerateSeedAudioParams,
       ) => Promise<{ path: string; duration: number; model: string; responseDuration?: number }>

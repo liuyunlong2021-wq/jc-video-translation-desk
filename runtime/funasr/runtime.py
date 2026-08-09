@@ -148,6 +148,13 @@ def transcribe(root: Path, audio: Path, device: str) -> dict:
         for piece, start, end in pieces:
             if start < 0 or end <= start:
                 continue
+            piece_start = next((i for i, item in enumerate(timestamps) if int(item[0]) >= start), 0)
+            piece_end = next((i for i, item in enumerate(timestamps[piece_start:], piece_start) if int(item[1]) > end), len(timestamps) - 1)
+            units = re.findall(r"[A-Za-z0-9]+|[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]|[^\s]", piece)
+            word_timestamps = [
+                {"text": token, "startMs": int(timestamps[i][0]), "endMs": int(timestamps[i][1])}
+                for i, token in zip(range(piece_start, min(piece_end + 1, len(timestamps))), units)
+            ]
             cues.append(
                 {
                     "cueId": f"cue-{len(cues) + 1:03d}",
@@ -158,6 +165,7 @@ def transcribe(root: Path, audio: Path, device: str) -> dict:
                     "language": tags[0] if tags else None,
                     "emotion": tags[1] if len(tags) > 1 else None,
                     "audioEvent": tags[2] if len(tags) > 2 else None,
+                    "words": word_timestamps,
                 }
             )
     return {

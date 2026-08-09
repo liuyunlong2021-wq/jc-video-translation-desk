@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import axios from 'axios'
-import { app, safeStorage } from 'electron'
+import { API_ORIGIN, readApiKey } from './cloud.ts'
 import { generateUniqueFileName } from './lib/tools.ts'
 import { executeFFmpeg } from './ffmpeg/index.ts'
 import {
@@ -24,50 +24,7 @@ import {
 } from '../src/runtime/seedAudio.ts'
 import type { MaterialTranscript } from '../src/runtime/productionContract.ts'
 
-const KEY_FILE = 'seed-audio-api-key.bin'
-const DEFAULT_URL = 'https://openspeech.bytedance.com/api/v3/tts/create'
 const DEFAULT_MODEL = 'seed-audio-1.0'
-let sessionApiKey = ''
-
-function keyPath() {
-  return path.join(app.getPath('userData'), KEY_FILE)
-}
-
-export async function saveSeedAudioApiKey(apiKey: string) {
-  const clean = apiKey.trim()
-  sessionApiKey = clean
-  if (!clean) {
-    await fs.promises.rm(keyPath(), { force: true })
-    return true
-  }
-  if (!safeStorage.isEncryptionAvailable()) {
-    await fs.promises.rm(keyPath(), { force: true })
-    return false
-  }
-  await fs.promises.mkdir(path.dirname(keyPath()), { recursive: true })
-  await fs.promises.writeFile(keyPath(), safeStorage.encryptString(clean), { mode: 0o600 })
-  return true
-}
-
-export async function readSeedAudioApiKey() {
-  const environmentApiKey = process.env.SEED_AUDIO_API_KEY?.trim()
-  if (environmentApiKey) return environmentApiKey
-  if (sessionApiKey) return sessionApiKey
-  const encrypted = await fs.promises.readFile(keyPath()).catch((error: any) => {
-    if (error?.code === 'ENOENT') throw new Error('请先配置 Seed Audio API Key')
-    throw error
-  })
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储不可用')
-  return safeStorage.decryptString(encrypted).trim()
-}
-
-export async function hasSeedAudioApiKey() {
-  try {
-    return Boolean(await readSeedAudioApiKey())
-  } catch {
-    return false
-  }
-}
 
 export interface GenerateSeedAudioParams {
   runId: string
@@ -121,6 +78,10 @@ function safeLanguage(value?: string) {
 }
 
 async function saveResponseAudio(data: any, target: string, abortSignal?: AbortSignal) {
+  if (Buffer.isBuffer(data) || data instanceof ArrayBuffer) {
+    await fs.promises.writeFile(target, Buffer.from(data))
+    return
+  }
   data = data?.data || data
   if (typeof data?.url === 'string' && data.url.startsWith('https://')) {
     const response = await axios.get<ArrayBuffer>(data.url, {
@@ -137,7 +98,7 @@ async function saveResponseAudio(data: any, target: string, abortSignal?: AbortS
 }
 
 export async function generateSeedAudio(params: GenerateSeedAudioParams) {
-  const apiKey = await readSeedAudioApiKey()
+  const apiKey = await readApiKey()
   const references = params.references?.length
     ? await Promise.all(
         params.references.map(async (reference) => {
@@ -160,17 +121,30 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
   await fs.promises.mkdir(directory, { recursive: true })
   let response
   try {
-    response = await axios.post(process.env.SEED_AUDIO_URL || DEFAULT_URL, payload, {
+    response = await axios.post(`${API_ORIGIN}/v1/audio/speech`, payload, {
+      responseType: 'arraybuffer',
       timeout: 300_000,
       signal: params.abortSignal,
       headers: {
-        'X-Api-Key': apiKey,
+        Authorization: `Bearer ${apiKey}`,
+        'x-api-key': apiKey,
         'Content-Type': 'application/json',
       },
     })
   } catch (error) {
     const detail = (error as any)?.response
-    if (detail?.status) throw new Error(seedAudioErrorMessage(detail.status, detail.data))
+    if (detail?.status) {
+      let body = detail.data
+      if (Buffer.isBuffer(body) || body instanceof ArrayBuffer) {
+        const text = Buffer.from(body).toString('utf8')
+        try {
+          body = JSON.parse(text)
+        } catch {
+          body = text
+        }
+      }
+      throw new Error(seedAudioErrorMessage(detail.status, body))
+    }
     throw error
   }
   const mp3Path = outputPath(params)
