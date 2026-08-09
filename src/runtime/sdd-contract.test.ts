@@ -18,6 +18,7 @@ const mediaStoreSource = read('src/store/mediaTask.ts')
 const mediaPersistence = read('src/runtime/mediaPersistence.ts')
 const productionContract = read('src/runtime/productionContract.ts')
 const materialTranscriptMain = read('electron/material-transcript.ts')
+const funAsrInstaller = read('electron/funasr-installer.ts')
 const indexTts = read('electron/index-tts.ts')
 const main = read('electron/main.ts')
 const electronI18n = read('electron/i18n/index.ts')
@@ -123,6 +124,19 @@ test('keeps the translation edition identity, settings, and user data isolated',
   assert.match(translationBuilder, /productName: '视频翻译工作台'/)
   assert.match(translationBuilder, /appId: 'com\.yils\.video-translation-workbench'/)
   assert.match(translationBuilder, /video-translation-icon\.png/)
+})
+
+test('installs the local subtitle engine from the app without terminal prerequisites', () => {
+  assert.match(ipc, /funasr-install-status/)
+  assert.match(ipc, /funasr-install-progress/)
+  assert.match(preload, /installFunAsr/)
+  assert.match(preload, /onFunAsrInstallProgress/)
+  assert.match(textUi, /本地字幕引擎/)
+  assert.match(textUi, /一键安装/)
+  assert.match(funAsrInstaller, /uv.*venv.*--python.*3\.10/s)
+  assert.match(funAsrInstaller, /funasr==1\.4\.1/)
+  assert.match(funAsrInstaller, /runtimePath\(\).*'probe'/s)
+  assert.doesNotMatch(funAsrInstaller, /git clone/)
 })
 
 test('passes all supported ratios through image, video, and final output contracts', () => {

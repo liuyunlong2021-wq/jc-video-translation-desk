@@ -31,6 +31,13 @@ contextBridge.exposeInMainWorld('electron', {
     hasApiKey: () => ipcRenderer.invoke('cloud-has-api-key'),
     saveApiKey: (apiKey: string) => ipcRenderer.invoke('cloud-save-api-key', apiKey),
     testApiKey: () => ipcRenderer.invoke('cloud-test-api-key'),
+    funAsrInstallStatus: () => ipcRenderer.invoke('funasr-install-status'),
+    installFunAsr: () => ipcRenderer.invoke('funasr-install'),
+    onFunAsrInstallProgress: (listener: (message: string) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, message: string) => listener(message)
+      ipcRenderer.on('funasr-install-progress', handler)
+      return () => ipcRenderer.off('funasr-install-progress', handler)
+    },
     generateSeedAudio: (params: import('./seed-audio').GenerateSeedAudioParams) =>
       ipcRenderer.invoke('seed-audio-generate', params),
     writeSeedAudioArrangement: (

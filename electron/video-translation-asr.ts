@@ -121,7 +121,7 @@ async function runFunAsr(audioPath: string, durationMs: number, abortSignal?: Ab
     fs.promises.access(python, fs.constants.X_OK),
     fs.promises.access(runtime),
   ]).catch(() => {
-    throw new Error('FunASR 尚未安装，请先在项目目录运行 pnpm setup:funasr')
+    throw new Error('本地字幕引擎尚未安装，请打开“生成设置”并点击“一键安装”')
   })
   let stdout = ''
   try {

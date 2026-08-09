@@ -178,6 +178,25 @@ def transcribe(root: Path, audio: Path, device: str) -> dict:
     }
 
 
+def probe(root: Path, device: str) -> None:
+    import torch
+    from funasr import AutoModel
+
+    paths = model_paths(root)
+    selected_device = "mps" if device == "auto" and torch.backends.mps.is_available() else device
+    if selected_device == "auto":
+        selected_device = "cpu"
+    AutoModel(
+        model=str(paths["asr"]),
+        vad_model=str(paths["vad"]),
+        punc_model=str(paths["punc"]),
+        spk_model=str(paths["speaker"]),
+        device=selected_device,
+        disable_update=True,
+    )
+    print("FUNASR_PROBE_OK", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -190,9 +209,16 @@ def main() -> None:
     transcribe_parser.add_argument("--audio", required=True, type=Path)
     transcribe_parser.add_argument("--device", default="auto", choices=["auto", "cpu", "mps"])
 
+    probe_parser = subparsers.add_parser("probe")
+    probe_parser.add_argument("--model-root", required=True, type=Path)
+    probe_parser.add_argument("--device", default="auto", choices=["auto", "cpu", "mps"])
+
     args = parser.parse_args()
     if args.command == "download":
         download(args.model_root)
+        return
+    if args.command == "probe":
+        probe(args.model_root, args.device)
         return
     result = transcribe(args.model_root, args.audio, args.device)
     print("FUNASR_RESULT_JSON=" + json.dumps(result, ensure_ascii=False), flush=True)

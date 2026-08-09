@@ -246,6 +246,25 @@
               >
             </div>
           </div>
+          <v-divider />
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <div class="text-subtitle-2">本地字幕引擎</div>
+              <div class="text-caption text-medium-emphasis">
+                {{ funAsrStatus?.message || '正在检查本地字幕引擎…' }}
+              </div>
+              <div v-if="funAsrProgress" class="text-caption text-medium-emphasis mt-1">
+                {{ funAsrProgress }}
+              </div>
+            </div>
+            <v-btn
+              :color="funAsrStatus?.state === 'ready' ? undefined : 'success'"
+              :variant="funAsrStatus?.state === 'ready' ? 'tonal' : 'flat'"
+              :loading="installingFunAsr"
+              :disabled="installingFunAsr || funAsrStatus?.state === 'ready'"
+              @click="installFunAsr"
+            >{{ funAsrStatus?.state === 'ready' ? '已安装' : '一键安装' }}</v-btn>
+          </div>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -263,7 +282,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useToast } from 'vue-toastification'
 import { useTranslation } from 'i18next-vue'
 import { useMediaTaskStore } from '@/store'
@@ -317,6 +336,12 @@ const sessionOnly = ref(false)
 const testing = ref(false)
 const checkingLocalVoice = ref(false)
 const changingIndexTts = ref(false)
+const installingFunAsr = ref(false)
+const funAsrProgress = ref('')
+const funAsrStatus = ref<{
+  state: 'ready' | 'missing' | 'installing' | 'failed'
+  message: string
+} | null>(null)
 const localVoiceStatus = ref<LocalVoiceStatus | IndexTtsServiceStatus | null>(null)
 const showApiKey = ref(false)
 const customDuration = ref(String(mediaStore.targetDuration))
@@ -364,11 +389,19 @@ onMounted(async () => {
   mediaStore.apiConfigured = hasApiKey.value
   if (!hasApiKey.value) configDialog.value = true
   if (mediaStore.voiceEngine === 'local') await checkLocalVoice()
+  await checkFunAsr()
 })
+
+const stopFunAsrProgress = window.electron.cloud.onFunAsrInstallProgress((message) => {
+  funAsrProgress.value = message
+})
+
+onBeforeUnmount(stopFunAsrProgress)
 
 async function openConfig() {
   configDialog.value = true
   if (mediaStore.voiceEngine === 'local') await checkLocalVoice()
+  await checkFunAsr()
 }
 
 defineExpose({ openConfig })
@@ -382,6 +415,25 @@ async function checkLocalVoice() {
         : await window.electron.cloud.localVoiceStatus()
   } finally {
     checkingLocalVoice.value = false
+  }
+}
+
+async function checkFunAsr() {
+  funAsrStatus.value = await window.electron.cloud.funAsrInstallStatus()
+}
+
+async function installFunAsr() {
+  installingFunAsr.value = true
+  funAsrProgress.value = '正在开始安装…'
+  try {
+    funAsrStatus.value = await window.electron.cloud.installFunAsr()
+    if (funAsrStatus.value.state === 'ready') toast.success('本地字幕引擎安装完成')
+    else toast.error(funAsrStatus.value.message)
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    installingFunAsr.value = false
+    funAsrProgress.value = ''
   }
 }
 

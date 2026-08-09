@@ -49,6 +49,15 @@ interface Window {
       hasApiKey: () => Promise<boolean>
       saveApiKey: (apiKey: string) => Promise<boolean>
       testApiKey: () => Promise<boolean>
+      funAsrInstallStatus: () => Promise<{
+        state: 'ready' | 'missing' | 'installing' | 'failed'
+        message: string
+      }>
+      installFunAsr: () => Promise<{
+        state: 'ready' | 'missing' | 'installing' | 'failed'
+        message: string
+      }>
+      onFunAsrInstallProgress: (listener: (message: string) => void) => () => void
       generateSeedAudio: (
         params: import('./seed-audio').GenerateSeedAudioParams,
       ) => Promise<{ path: string; duration: number; model: string; responseDuration?: number }>

@@ -107,6 +107,7 @@ import {
   writeVideoTranslationSeedPlan,
   writeTranslationVoiceBinding,
 } from './video-translation'
+import { getFunAsrInstallStatus, installFunAsr } from './funasr-installer'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let windowMaximizedByApp = false
@@ -217,6 +218,10 @@ export default function initIPC() {
   ipcMain.handle('cloud-has-api-key', () => hasApiKey())
   ipcMain.handle('cloud-save-api-key', (_event, apiKey: string) => saveApiKey(apiKey))
   ipcMain.handle('cloud-test-api-key', () => testApiKey())
+  ipcMain.handle('funasr-install-status', () => getFunAsrInstallStatus())
+  ipcMain.handle('funasr-install', (event) =>
+    installFunAsr((message) => event.sender.send('funasr-install-progress', message)),
+  )
   ipcMain.handle('seed-audio-generate', (_event, params) => generateSeedAudio(params))
   ipcMain.handle(
     'seed-audio-write-arrangement',
