@@ -879,6 +879,11 @@ async function bindSeedVoice(speakerId: string, voiceProfileId: string) {
       (item) => item.translationRoleId === speakerId,
     )
     if (!role) return
+    const profile = voiceProfiles.value.find((item) => item.voiceProfileId === voiceProfileId)
+    if (!mediaStore.seedAudioRolePrompts[speakerId]?.trim() && profile?.voiceDesignPrompt?.trim()) {
+      mediaStore.seedAudioRolePrompts[speakerId] = profile.voiceDesignPrompt.trim()
+      role.voiceIdentityText = profile.voiceDesignPrompt.trim()
+    }
     role.voiceProfileId = voiceProfileId
     role.voiceConfirmedAt = undefined
     mediaStore.invalidateTranslation('voice-binding')

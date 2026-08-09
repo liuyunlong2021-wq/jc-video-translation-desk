@@ -377,8 +377,7 @@ export function availableVideoTranslationActions(
   if (
     state.speakerStatus === 'ready' &&
     state.cues.length > 0 &&
-    state.cues.every((cue) => cue.sourceText.trim()) &&
-    actionable(state.translationStatus)
+    state.cues.every((cue) => cue.sourceText.trim())
   )
     actions.push('translate-all-subtitles')
   if (

@@ -360,7 +360,23 @@ const activeTranslationVoiceComplete = computed(() => {
   )
 })
 const globalSeedDisabledReason = computed(() => {
-  if (!allTranslationVoicesConfirmed.value) return '请先确认全部角色声音。'
+  if (!allTranslationVoicesConfirmed.value) {
+    const asset = seedCharacters.value.find((item) => {
+      const role = mediaStore.videoTranslationRoles.find(
+        (candidate) => candidate.translationRoleId === item.id,
+      )
+      return !role?.voiceProfileId || !role.voiceIdentityText?.trim() || !role.voiceConfirmedAt
+    })
+    const role = mediaStore.videoTranslationRoles.find(
+      (item) => item.translationRoleId === asset?.id,
+    )
+    const missing = !role?.voiceProfileId
+      ? '参考音'
+      : !role.voiceIdentityText?.trim()
+        ? '角色声音身份'
+        : '人工确认'
+    return `${asset?.label || '角色'}还缺：${missing}。`
+  }
   if (!mediaStore.seedAudioGlobalPrompt.trim()) return '下一步：生成全局配音提示词。'
   if (!mediaStore.seedAudioTrackPath) return '下一步：生成全局配音。'
   return ''

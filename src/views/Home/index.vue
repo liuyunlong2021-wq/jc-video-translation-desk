@@ -1711,33 +1711,44 @@ function visualPersonLabel(personId: string) {
 }
 
 async function translateVideoSubtitles() {
-  await runTranslationStep('translate-all-subtitles', 'translationStatus', async (state) => {
-    const roleById = new Map(
-      mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role.displayName]),
-    )
-    const result = await window.electron.cloud.translateVideoSubtitles({
-      runId: mediaStore.runId,
-      episodeId: mediaStore.episodeId,
-      textModel: mediaStore.textModel,
-      sourceLanguage: state.sourceLanguage,
-      targetLanguage: state.targetLanguage,
-      subtitles: state.cues.map((cue) => ({
-        cueId: cue.cueId,
-        startMs: cue.startMs,
-        endMs: cue.endMs,
-        translationRoleId: cue.translationRoleId || '',
-        roleName: cue.translationRoleId
-          ? roleById.get(cue.translationRoleId) || ''
-          : cue.proposedName || cue.speakerCluster || '',
-        performanceDirection: cue.performanceDirection || '',
-        text: cue.sourceText,
-      })),
-    })
-    const byId = new Map(result.subtitles.map((subtitle) => [subtitle.cueId, subtitle.text]))
-    state.cues.forEach((cue) => {
-      cue.translatedText = byId.get(cue.cueId) || ''
-    })
-    toast.success('目标语言字幕已生成，请人工校对')
+  await runAction('translate-all-subtitles', async () => {
+    const state = translationState()
+    const previousStatus = state.translationStatus
+    state.translationStatus = 'running'
+    try {
+      const roleById = new Map(
+        mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role.displayName]),
+      )
+      const result = await window.electron.cloud.translateVideoSubtitles({
+        runId: mediaStore.runId,
+        episodeId: mediaStore.episodeId,
+        textModel: mediaStore.textModel,
+        sourceLanguage: state.sourceLanguage,
+        targetLanguage: state.targetLanguage,
+        subtitles: state.cues.map((cue) => ({
+          cueId: cue.cueId,
+          startMs: cue.startMs,
+          endMs: cue.endMs,
+          translationRoleId: cue.translationRoleId || '',
+          roleName: cue.translationRoleId
+            ? roleById.get(cue.translationRoleId) || ''
+            : cue.proposedName || cue.speakerCluster || '',
+          performanceDirection: cue.performanceDirection || '',
+          text: cue.sourceText,
+        })),
+      })
+      const byId = new Map(result.subtitles.map((subtitle) => [subtitle.cueId, subtitle.text]))
+      const next = invalidateVideoTranslation(state, 'translation')
+      next.cues.forEach((cue) => {
+        cue.translatedText = byId.get(cue.cueId) || ''
+      })
+      next.translationStatus = 'ready'
+      Object.assign(state, next)
+      toast.success('目标语言字幕已生成，请人工校对')
+    } catch (error) {
+      state.translationStatus = previousStatus
+      throw error
+    }
   })
 }
 
@@ -1757,15 +1768,15 @@ async function confirmTranslationDialogue() {
       state.sourceFingerprint || '',
       state.sourceLanguage,
       state.targetLanguage,
-      state.cues.map((cue) => ({ ...cue })),
-      roles,
+      JSON.parse(JSON.stringify(state.cues)),
+      JSON.parse(JSON.stringify(roles)),
       state.durationMs,
     )
     state.finalScriptId = frozen.finalScriptId
     state.scriptHash = frozen.scriptHash
     state.finalScriptMarkdown = frozen.markdown
     mediaStore.videoTranslationRoles = roles
-    toast.success('角色与双语字幕已保存')
+    toast.success('翻译剧本已保存')
   })
 }
 
@@ -2160,8 +2171,7 @@ async function generateTranslationSeedPrompt(
     mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role]),
   )
   const sections: string[] = []
-  if (!state.finalScriptMarkdown || !state.finalScriptId || !state.scriptHash)
-    throw new Error('最终时间戳剧本尚未冻结')
+  if (!state.finalScriptId || !state.scriptHash) throw new Error('最终时间戳剧本尚未冻结')
   for (const block of plan.arrangement.blocks) {
     const references = block.references.map((reference, index) => ({
       translationRoleId: reference.speakerId,
@@ -2173,7 +2183,20 @@ async function generateTranslationSeedPrompt(
       referenceIndex: index + 1,
     }))
     const skillInput = {
-      finalScriptMarkdown: state.finalScriptMarkdown,
+      finalScript: {
+        finalScriptId: state.finalScriptId,
+        scriptHash: state.scriptHash,
+        targetLanguage: state.targetLanguage,
+        cues: state.cues.map((cue) => ({
+          cueId: cue.cueId,
+          translationRoleId: cue.translationRoleId,
+          roleName: roleById.get(cue.translationRoleId || '')?.displayName || '',
+          startMs: cue.startMs,
+          endMs: cue.endMs,
+          performanceDirection: cue.performanceDirection || '',
+          translatedText: cue.translatedText,
+        })),
+      },
       currentCueIds: block.cueIds,
       references,
     }

@@ -51,6 +51,7 @@ test('opens only the translation action whose dependencies are ready', () => {
   ]
   assert.ok(availableVideoTranslationActions(state, [role]).includes('calibrate-subtitles'))
   assert.ok(availableVideoTranslationActions(state, [role]).includes('calibrate-frames'))
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
   state.translationStatus = 'idle'
   assert.ok(availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
   state.cues[0].sourceText = ''
@@ -402,7 +403,12 @@ test('accepts canonical role names with optional voice traits before Seed genera
 
 test('uses voiceProfileId as the only reference voice identity', () => {
   const source = fs.readFileSync(new URL('../../src/views/Home/index.vue', import.meta.url), 'utf8')
-  assert.match(source, /finalScriptMarkdown:[\s\S]*currentCueIds:[\s\S]*references/)
+  assert.match(source, /finalScript:[\s\S]*translatedText: cue\.translatedText[\s\S]*currentCueIds:[\s\S]*references/)
+  const skillInput = source.slice(
+    source.indexOf('const skillInput = {'),
+    source.indexOf("let prompt = ''", source.indexOf('const skillInput = {')),
+  )
+  assert.doesNotMatch(skillInput, /sourceText|finalScriptMarkdown/)
   const skill = fs.readFileSync(
     new URL('../../skills/jc-doubao-seed-audio/SKILL.md', import.meta.url),
     'utf8',
@@ -416,6 +422,7 @@ test('uses voiceProfileId as the only reference voice identity', () => {
   assert.match(studioSkill, /专业的配音表演艺术家在顶级录音棚内的配音片段/)
   assert.match(studioSkill, /角色定义结束后再空一行/)
   assert.match(studioSkill, /正式译文必须逐字保留/)
+  assert.match(studioSkill, /输入不包含源语言人工确认稿/)
   assert.match(studioSkill, /不输出时间戳、时长、`cueId`、角色 ID、声音 ID/)
   assert.match(studioSkill, /最终回复只能是可直接提交给 Seed Audio 的提示词正文/)
 })
@@ -478,7 +485,7 @@ test('routes translation review through voice workbench before a role-free subti
   assert.doesNotMatch(inspector, /确认角色与字幕/)
   assert.match(home, /translation-mode/)
   assert.match(home, /openTranslationSubtitleWorkspace/)
-  assert.match(home, /state\.cues\.map\(\(cue\) => \(\{ \.\.\.cue \}\)\)/)
+  assert.match(home, /JSON\.parse\(JSON\.stringify\(state\.cues\)\)/)
   assert.doesNotMatch(inspector, /Whisper 生成时间轴|校准字幕与角色/)
   assert.doesNotMatch(inspector, /选择字幕行后设置角色声音|目标语言声音|voice-section/)
   assert.match(home, /durationMs: state\.durationMs/)
