@@ -349,7 +349,7 @@ function addManualCue() {
 function mergeWithNext() {
   try {
     state.value.cues = mergeVideoTranslationCueWithNext(state.value.cues, props.selectedCueId)
-    mediaStore.invalidateTranslation('source-dialogue')
+    mediaStore.invalidateTranslation('translation')
   } catch (error) {
     manualError.value = error instanceof Error ? error.message : String(error)
   }

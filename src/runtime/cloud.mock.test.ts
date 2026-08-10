@@ -267,17 +267,31 @@ mock.module('../../electron/video-translation-asr.ts', {
       cues: [
         {
           cueId: 'asr-001',
-          startMs: 9_500,
-          endMs: 10_000,
+          startMs: 8_000,
+          endMs: 8_500,
           recognizedText: 'Hel',
-          words: [{ text: 'Hel', startMs: 9_500, endMs: 10_000 }],
+          words: [{ text: 'Hel', startMs: 8_000, endMs: 8_500 }],
         },
         {
           cueId: 'asr-002',
+          startMs: 8_600,
+          endMs: 9_000,
+          recognizedText: 'lo',
+          words: [{ text: 'lo', startMs: 8_600, endMs: 9_000 }],
+        },
+        {
+          cueId: 'asr-003',
+          startMs: 9_500,
+          endMs: 10_000,
+          recognizedText: 'Good',
+          words: [{ text: 'Good', startMs: 9_500, endMs: 10_000 }],
+        },
+        {
+          cueId: 'asr-004',
           startMs: 10_100,
           endMs: 11_000,
-          recognizedText: 'lo',
-          words: [{ text: 'lo', startMs: 10_100, endMs: 11_000 }],
+          recognizedText: 'bye',
+          words: [{ text: 'bye', startMs: 10_100, endMs: 11_000 }],
         },
       ],
     }),
@@ -1624,6 +1638,13 @@ test('frame calibration rejects oversized cue sets early', async () => {
 })
 
 test('aligns a dubbed cue across FunASR segments and verifies the block hash', async () => {
+  assert.deepEqual(
+    cloud.alignDubbingCuesToFunAsrWords(
+      [{ cueId: 'incomplete-cue', translatedText: 'abcdefghij' }],
+      [{ words: [{ text: 'abcde', startMs: 0, endMs: 500 }] }],
+    ),
+    [{ cueId: 'incomplete-cue', startMs: 0, endMs: 500 }],
+  )
   const runId = 'translation-timestamp-run'
   await workspace.registerProjectRoot(runId, projectRoot(runId), false)
   const blockPath = path.join(
@@ -1654,6 +1675,16 @@ test('aligns a dubbed cue across FunASR segments and verifies the block hash', a
         sourceText: '你好',
         translatedText: 'Hello',
       },
+      {
+        cueId: 'cue-002',
+        translationRoleId: 'role-1',
+        roleName: '林默',
+        startMs: 3_100,
+        endMs: 4_200,
+        performanceDirection: '平静告别',
+        sourceText: '再见',
+        translatedText: 'Goodbye',
+      },
     ],
   }
   const scriptHash = createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
@@ -1666,7 +1697,7 @@ test('aligns a dubbed cue across FunASR segments and verifies the block hash', a
     blocks: [
       {
         voiceBlockId: 'voice-block-001',
-        cueIds: ['cue-001'],
+        cueIds: ['cue-001', 'cue-002'],
         audioPath: path.relative(projectRoot(runId), blockPath),
         audioHash,
         durationMs: 12_000,
@@ -1705,7 +1736,10 @@ test('aligns a dubbed cue across FunASR segments and verifies the block hash', a
       record.sourceStartMs,
       record.sourceEndMs,
     ]),
-    [['cue-001', 9420, 12000]],
+    [
+      ['cue-001', 7920, 9500],
+      ['cue-002', 9420, 12000],
+    ],
   )
   assert.ok(fs.existsSync(path.join(projectRoot(runId), result.targetVoicePath)))
   fs.writeFileSync(

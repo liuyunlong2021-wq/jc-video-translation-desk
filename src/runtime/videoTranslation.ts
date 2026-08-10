@@ -211,7 +211,7 @@ export function mergeVideoTranslationCueWithNext(cues: VideoTranslationCue[], cu
     .filter(Boolean)
     .join('；')
   current.sourceText = [current.sourceText, next.sourceText].filter(Boolean).join(' ')
-  current.translatedText = ''
+  current.translatedText = [current.translatedText, next.translatedText].filter(Boolean).join(' ')
   current.needsReview = true
   sorted.splice(index + 1, 1)
   return sorted

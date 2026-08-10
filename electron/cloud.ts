@@ -129,9 +129,8 @@ export function alignDubbingCuesToFunAsrWords(
   const aligned = cues.map((cue, cueIndex) => {
     const cueChars = expected.filter((item) => item.cueIndex === cueIndex).length
     const indices = [...matchedWords[cueIndex]].sort((left, right) => left - right)
-    if (indices.length && matchedChars[cueIndex] / cueChars < 0.35)
-      throw new Error(`FunASR 无法可靠匹配 ${cue.cueId}`)
-    return indices.length
+    const reliable = indices.length && matchedChars[cueIndex] / cueChars >= 0.6
+    return reliable
       ? {
       cueId: cue.cueId,
       startMs: words[indices[0]].startMs,
@@ -726,6 +725,7 @@ export async function generateVideoTranslationDialogueTimestamps(
   }> = []
   const blockDurationMs = new Map<string, number>()
   const blockSources = new Map<string, string>()
+  const detectedStarts = new Map<string, number>()
   for (const [blockIndex, block] of versionBlocks.entries()) {
     const blockSource = assertVideoTranslationAsset(params.runId, params.episodeId, block.audioPath)
     if ((await hashTranslationFile(blockSource)) !== block.audioHash)
@@ -753,6 +753,7 @@ export async function generateVideoTranslationDialogueTimestamps(
     const aligned = alignDubbingCuesToFunAsrWords(blockCues, transcript.cues)
     for (const item of aligned) {
       const cue = cuesById.get(item.cueId)!
+      detectedStarts.set(item.cueId, item.startMs)
       records.push({
         voiceVersionId: version.versionId,
         voiceBlockId: block.voiceBlockId,
@@ -783,7 +784,7 @@ export async function generateVideoTranslationDialogueTimestamps(
     blockRecords.forEach((record, index) => {
       const next = blockRecords[index + 1]
       record.sourceEndMs = next
-        ? Math.max(record.sourceEndMs, next.sourceStartMs)
+        ? Math.max(record.sourceEndMs, detectedStarts.get(next.cueId)!)
         : blockDurationMs.get(block.voiceBlockId)!
     })
   }

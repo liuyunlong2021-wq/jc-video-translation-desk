@@ -6,6 +6,7 @@ import {
   createVideoTranslationState,
   insertVideoTranslationCueAt,
   invalidateVideoTranslation,
+  mergeVideoTranslationCueWithNext,
   planVideoTranslationDialogueBlocks,
   splitVideoTranslationCueAt,
   setVideoTranslationCueBoundary,
@@ -234,6 +235,32 @@ test('keeps translated text for review when the role binding changes', () => {
   assert.equal(next.translationStatus, 'stale')
   assert.equal(next.reviewStatus, 'stale')
   assert.equal(next.cues[0].translatedText, 'Hello')
+})
+
+test('merges both source and translated text without relocking translation', () => {
+  const state = createVideoTranslationState()
+  state.sourceVideoPath = 'episodes/episode-001/video-translate/source.mp4'
+  state.hasAudio = true
+  state.speakerStatus = 'ready'
+  state.translationStatus = 'ready'
+  state.cues = [
+    {
+      cueId: 'cue-001', startMs: 0, endMs: 1000, recognizedText: '你好',
+      sourceText: '你好', translatedText: 'Hello', translationRoleId: role.translationRoleId,
+      performanceDirection: '问候', needsReview: false,
+    },
+    {
+      cueId: 'cue-002', startMs: 1100, endMs: 2000, recognizedText: '再见',
+      sourceText: '再见', translatedText: 'Goodbye', translationRoleId: role.translationRoleId,
+      performanceDirection: '告别', needsReview: false,
+    },
+  ]
+  state.cues = mergeVideoTranslationCueWithNext(state.cues, 'cue-001')
+  const next = invalidateVideoTranslation(state, 'translation')
+  assert.equal(next.cues[0].sourceText, '你好 再见')
+  assert.equal(next.cues[0].translatedText, 'Hello Goodbye')
+  assert.equal(next.translationStatus, 'ready')
+  assert.ok(availableVideoTranslationActions(next, [role]).includes('open-voice-workspace'))
 })
 
 test('binds one cue or one explicit speaker evidence group', () => {
