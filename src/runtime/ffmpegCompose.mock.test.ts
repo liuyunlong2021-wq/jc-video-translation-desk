@@ -153,23 +153,20 @@ test('separates, adopts and mixes audio without deleting the vocal stem', async 
   ])
 
   const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-peiyin-'))
-  const processDir = path.join(fakeRoot, 'videotrans', 'process')
-  fs.mkdirSync(processDir, { recursive: true })
-  fs.writeFileSync(path.join(fakeRoot, 'videotrans', '__init__.py'), '')
-  fs.writeFileSync(path.join(processDir, '__init__.py'), '')
-  fs.writeFileSync(path.join(processDir, '_audio_separate.py'), [
-    'import shutil',
-    'def vocal_bgm_spleeter(*, input_file, vocal_file, instr_file):',
-    '    shutil.copyfile(input_file, vocal_file)',
-    '    shutil.copyfile(input_file, instr_file)',
-    '    return True, None',
-  ].join('\n'))
-  const python = spawnSync('which', ['python3'], { encoding: 'utf8' }).stdout.trim()
-  assert.ok(python)
-  process.env.PEIYIN_PYVIDEOTRANS_ROOT = fakeRoot
+  const modelDir = path.join(fakeRoot, 'models', 'separation')
+  const python = path.join(fakeRoot, 'python')
+  fs.mkdirSync(modelDir, { recursive: true })
+  fs.writeFileSync(path.join(modelDir, 'vocals.fp16.onnx'), 'test')
+  fs.writeFileSync(path.join(modelDir, 'accompaniment.fp16.onnx'), 'test')
+  fs.writeFileSync(
+    python,
+    '#!/usr/bin/env node\nconst fs=require("node:fs"); fs.copyFileSync(process.argv[4], process.argv[5]); fs.copyFileSync(process.argv[4], process.argv[6])\n',
+    { mode: 0o755 },
+  )
+  process.env.FUNASR_HOME = fakeRoot
   process.env.PEIYIN_PYVIDEOTRANS_PYTHON = python
   const separated = await separateSourceAudio({ runId, episodeId, pictureMasterPath: pictureMaster }).finally(() => {
-    delete process.env.PEIYIN_PYVIDEOTRANS_ROOT
+    delete process.env.FUNASR_HOME
     delete process.env.PEIYIN_PYVIDEOTRANS_PYTHON
     fs.rmSync(fakeRoot, { recursive: true, force: true })
   })

@@ -243,9 +243,9 @@
           <v-divider />
           <div class="flex items-center justify-between gap-3">
             <div>
-              <div class="text-subtitle-2">本地字幕引擎</div>
+              <div class="text-subtitle-2">本地字幕与人声分离引擎</div>
               <div class="text-caption text-medium-emphasis">
-                {{ funAsrStatus?.message || '正在检查本地字幕引擎…' }}
+                {{ funAsrStatus?.message || '正在检查本地音频引擎…' }}
               </div>
               <div v-if="funAsrProgress" class="text-caption text-medium-emphasis mt-1">
                 {{ funAsrProgress }}
@@ -257,7 +257,8 @@
               :loading="installingFunAsr"
               :disabled="installingFunAsr || funAsrStatus?.state === 'ready'"
               @click="installFunAsr"
-            >{{ funAsrStatus?.state === 'ready' ? '已安装' : '一键安装' }}</v-btn>
+              >{{ funAsrStatus?.state === 'ready' ? '已安装' : '一键安装' }}</v-btn
+            >
           </div>
         </v-card-text>
         <v-card-actions>
@@ -420,7 +421,7 @@ async function installFunAsr() {
   funAsrProgress.value = '正在开始安装…'
   try {
     funAsrStatus.value = await window.electron.cloud.installFunAsr()
-    if (funAsrStatus.value.state === 'ready') toast.success('本地字幕引擎安装完成')
+    if (funAsrStatus.value.state === 'ready') toast.success('本地字幕与人声分离引擎安装完成')
     else toast.error(funAsrStatus.value.message)
   } catch (error) {
     toast.error(error instanceof Error ? error.message : String(error))

@@ -139,15 +139,20 @@ test('ships only the video translation product identity', () => {
   assert.match(translationBuilder, /video-translation-icon\.png/)
 })
 
-test('installs the local subtitle engine from the app without terminal prerequisites', () => {
+test('installs the local subtitle and source-separation engines from the app', () => {
   assert.match(ipc, /funasr-install-status/)
   assert.match(ipc, /funasr-install-progress/)
   assert.match(preload, /installFunAsr/)
   assert.match(preload, /onFunAsrInstallProgress/)
-  assert.match(textUi, /本地字幕引擎/)
+  assert.match(textUi, /本地字幕与人声分离引擎/)
   assert.match(textUi, /一键安装/)
   assert.match(funAsrInstaller, /uv.*venv.*--python.*3\.10/s)
   assert.match(funAsrInstaller, /funasr==1\.4\.1/)
+  assert.match(funAsrInstaller, /sherpa-onnx==1\.13\.4/)
+  assert.match(funAsrInstaller, /vocals\.fp16\.onnx/)
+  assert.match(funAsrInstaller, /accompaniment\.fp16\.onnx/)
+  assert.match(ffmpeg, /Scripts\/python\.exe/)
+  assert.doesNotMatch(ffmpeg, /\/Users\/by3\/Documents\/peiyin-pyvideotrans/)
   assert.match(funAsrInstaller, /runtimePath\(\).*'probe'/s)
   assert.doesNotMatch(funAsrInstaller, /git clone/)
   assert.match(videoTranslationAsr, /PYTHONIOENCODING: 'utf-8'/)

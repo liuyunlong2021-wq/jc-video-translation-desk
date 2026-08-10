@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'child_process'
+import { app } from 'electron'
 import { parseFile } from 'music-metadata'
 import type {
   ComposeGeneratedVideoParams,
@@ -224,7 +225,9 @@ export async function composePictureMaster(
   return outputPath
 }
 
-const DEFAULT_PEIYIN_ROOT = '/Users/by3/Documents/peiyin-pyvideotrans'
+function separationRoot() {
+  return process.env.FUNASR_HOME ? path.resolve(process.env.FUNASR_HOME) : app.getPath('userData')
+}
 
 export async function separateAudioStems(
   sourcePath: string,
@@ -232,21 +235,32 @@ export async function separateAudioStems(
   instrumentPath: string,
   abortSignal?: AbortSignal,
 ) {
-  const root = process.env.PEIYIN_PYVIDEOTRANS_ROOT || DEFAULT_PEIYIN_ROOT
-  const python = process.env.PEIYIN_PYVIDEOTRANS_PYTHON || path.join(root, '.venv', 'bin', 'python')
-  await fs.promises.access(python, fs.constants.X_OK).catch(() => {
-    throw new Error(`未找到人声分离运行时：${python}`)
+  const root = separationRoot()
+  const python =
+    process.env.PEIYIN_PYVIDEOTRANS_PYTHON ||
+    path.join(root, 'runtime', 'funasr-venv', isWindows ? 'Scripts/python.exe' : 'bin/python')
+  const vocalsModel = path.join(root, 'models', 'separation', 'vocals.fp16.onnx')
+  const accompanimentModel = path.join(root, 'models', 'separation', 'accompaniment.fp16.onnx')
+  await Promise.all([
+    fs.promises.access(python, fs.constants.X_OK),
+    fs.promises.access(vocalsModel),
+    fs.promises.access(accompanimentModel),
+  ]).catch(() => {
+    throw new Error('人声分离引擎尚未安装，请打开“生成设置”并点击“一键安装”')
   })
   const script = [
-    'import sys',
-    'sys.path.insert(0, sys.argv[1])',
-    'from videotrans.process._audio_separate import vocal_bgm_spleeter',
-    'ok, error = vocal_bgm_spleeter(input_file=sys.argv[2], vocal_file=sys.argv[3], instr_file=sys.argv[4])',
-    'if not ok: raise RuntimeError(error)',
+    'import sys, numpy as np, sherpa_onnx, soundfile as sf',
+    'config = sherpa_onnx.OfflineSourceSeparationConfig(model=sherpa_onnx.OfflineSourceSeparationModelConfig(spleeter=sherpa_onnx.OfflineSourceSeparationSpleeterModelConfig(vocals=sys.argv[4], accompaniment=sys.argv[5]), provider="cpu"))',
+    'if not config.validate(): raise RuntimeError("人声分离模型配置无效")',
+    'samples, rate = sf.read(sys.argv[1], dtype="float32", always_2d=True)',
+    'output = sherpa_onnx.OfflineSourceSeparation(config).process(sample_rate=rate, samples=np.ascontiguousarray(samples.T))',
+    'if len(output.stems) != 2: raise RuntimeError("人声分离未返回两个 stem")',
+    'sf.write(sys.argv[2], output.stems[0].data.T, output.sample_rate)',
+    'sf.write(sys.argv[3], output.stems[1].data.T, output.sample_rate)',
   ].join('\n')
   await executeProcess(
     python,
-    ['-c', script, root, sourcePath, vocalPath, instrumentPath],
+    ['-c', script, sourcePath, vocalPath, instrumentPath, vocalsModel, accompanimentModel],
     abortSignal,
   )
   for (const file of [vocalPath, instrumentPath])
@@ -566,7 +580,9 @@ export async function composeVideoTranslation(
 
 function executeProcess(command: string, args: string[], abortSignal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { env: process.env })
+    const child = spawn(command, args, {
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+    })
     let stderr = ''
     child.stderr.on('data', (data) => {
       stderr += data.toString()
