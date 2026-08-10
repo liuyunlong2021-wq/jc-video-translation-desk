@@ -132,9 +132,9 @@ export function alignDubbingCuesToFunAsrWords(
     const reliable = indices.length && matchedChars[cueIndex] / cueChars >= 0.6
     return reliable
       ? {
-      cueId: cue.cueId,
-      startMs: words[indices[0]].startMs,
-      endMs: words[indices.at(-1)!].endMs,
+          cueId: cue.cueId,
+          startMs: words[indices[0]].startMs,
+          endMs: words[indices.at(-1)!].endMs,
         }
       : null
   })
@@ -648,6 +648,7 @@ export async function generateVideoTranslationDialogueTimestamps(
     targetLanguage: string
     cues: Array<{
       cueId: string
+      dubbingGroupId?: string
       translationRoleId: string
       roleName: string
       startMs: number
@@ -713,6 +714,103 @@ export async function generateVideoTranslationDialogueTimestamps(
     '配音对白时间戳',
     version.versionId,
   )
+  if (version.route === 'grouped') {
+    const groupedRecords: Array<{
+      voiceVersionId: string
+      voiceBlockId: string
+      cueIds: string[]
+      sourceStartMs: number
+      sourceEndMs: number
+      targetStartMs: number
+      targetEndMs: number
+      expectedEndMs: number
+    }> = []
+    const inputs: string[] = []
+    for (const [blockIndex, block] of versionBlocks.entries()) {
+      const source = assertVideoTranslationAsset(params.runId, params.episodeId, block.audioPath)
+      if ((await hashTranslationFile(source)) !== block.audioHash)
+        throw new Error(`${block.voiceBlockId} 的音频与配音版本清单不一致`)
+      const firstCue = cuesById.get(block.cueIds[0])!
+      const lastCue = cuesById.get(block.cueIds.at(-1)!)!
+      inputs.push(source)
+      groupedRecords.push({
+        voiceVersionId: version.versionId,
+        voiceBlockId: block.voiceBlockId,
+        cueIds: [...block.cueIds],
+        sourceStartMs: 0,
+        sourceEndMs: block.durationMs,
+        targetStartMs: firstCue.startMs,
+        targetEndMs: firstCue.startMs + block.durationMs,
+        expectedEndMs: lastCue.endMs,
+      })
+      reportProgress(`配音对白时间戳：已放置配音组 ${blockIndex + 1}/${versionBlocks.length}`)
+    }
+    await fs.promises.mkdir(base, { recursive: true })
+    const mixedTarget = path.join(base, '目标语言人声.wav')
+    await executeFFmpeg(
+      [
+        ...inputs.flatMap((input) => ['-i', input]),
+        '-filter_complex',
+        `${inputs
+          .map(
+            (_, index) =>
+              `[${index}:a]adelay=${groupedRecords[index].targetStartMs}|${groupedRecords[index].targetStartMs}[a${index}]`,
+          )
+          .join(
+            ';',
+          )};${inputs.map((_, index) => `[a${index}]`).join('')}amix=inputs=${inputs.length}:duration=longest:dropout_transition=0:normalize=0[out]`,
+        '-map',
+        '[out]',
+        '-ar',
+        '48000',
+        '-ac',
+        '2',
+        '-c:a',
+        'pcm_s16le',
+        '-y',
+        mixedTarget,
+      ],
+      { abortSignal },
+    )
+    const dubDialogueTimestampHash = createHash('sha256')
+      .update(
+        JSON.stringify({
+          scriptHash: params.scriptHash,
+          voiceVersionId: version.versionId,
+          route: 'grouped',
+          records: groupedRecords,
+        }),
+      )
+      .digest('hex')
+    const wikiPath = path.join(
+      getRunDir(params.runId),
+      'wiki',
+      '翻译',
+      params.episodeId,
+      '成片',
+      '配音对白时间戳.json',
+    )
+    await atomicWriteTranslationFile(
+      wikiPath,
+      `${JSON.stringify(
+        {
+          finalScriptId: params.finalScriptId,
+          scriptHash: params.scriptHash,
+          voiceVersionId: version.versionId,
+          route: 'grouped',
+          dubDialogueTimestampHash,
+          records: groupedRecords,
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    return {
+      path: relativeRunAsset(params.runId, wikiPath),
+      hash: dubDialogueTimestampHash,
+      targetVoicePath: relativeRunAsset(params.runId, mixedTarget),
+    }
+  }
   const records: Array<{
     voiceVersionId: string
     voiceBlockId: string
@@ -1685,7 +1783,7 @@ function runJsonPath(runId: string) {
   return path.join(getRunDir(runId), 'run.json')
 }
 
-async function readPending(runId: string): Promise<PendingCloudTask[]> {
+export async function readPending(runId: string): Promise<PendingCloudTask[]> {
   try {
     const data = JSON.parse(await fs.promises.readFile(runJsonPath(runId), 'utf8'))
     const tasks = Array.isArray(data?.tasks) ? data.tasks : data?.pending
@@ -1735,7 +1833,7 @@ async function mutatePending(
   }
 }
 
-async function putPending(runId: string, task: PendingCloudTask) {
+export async function putPending(runId: string, task: PendingCloudTask) {
   await mutatePending(runId, (tasks) => {
     const current = tasks.find((item) => item.id === task.id)
     const archived =
@@ -1752,7 +1850,7 @@ async function removePending(runId: string, id: string) {
   await mutatePending(runId, (tasks) => tasks.filter((item) => item.id !== id))
 }
 
-async function updateTask(
+export async function updateTask(
   runId: string,
   id: string,
   change: (task: PendingCloudTask) => PendingCloudTask,
@@ -1779,7 +1877,7 @@ function taskControllerKey(runId: string, taskId: string) {
   return `${runId}:${taskId}`
 }
 
-async function withTaskAbort<T>(
+export async function withTaskAbort<T>(
   runId: string,
   taskId: string,
   action: (signal: AbortSignal) => Promise<T>,
@@ -1841,7 +1939,7 @@ async function finishPending(runId: string, task: PendingCloudTask, signal?: Abo
       try {
         url = await poll(
           task.pollRoute,
-          task.kind === 'voice'
+          task.kind === 'voice' || task.kind === 'dubbing'
             ? 'audio'
             : task.kind === 'storyboard' || task.kind === 'asset'
               ? 'image'

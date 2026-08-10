@@ -192,11 +192,39 @@ contextBridge.exposeInMainWorld('electron', {
         arrangement,
         promptMarkdown,
       ),
+    writeVideoTranslationGroupedPlan: (
+      runId: string,
+      episodeId: string,
+      targetLanguage: string,
+      arrangement: import('../src/runtime/videoTranslation').VideoTranslationDialogueArrangement,
+      promptMarkdown: string,
+    ) =>
+      ipcRenderer.invoke(
+        'video-translation-write-grouped-plan',
+        runId,
+        episodeId,
+        targetLanguage,
+        arrangement,
+        promptMarkdown,
+      ),
     generateVideoTranslationTargetVoice: (
       runId: string,
       episodeId: string,
       targetLanguage: string,
     ) => ipcRenderer.invoke('video-translation-generate-voice', runId, episodeId, targetLanguage),
+    generateVideoTranslationGroupedVoice: (
+      runId: string,
+      episodeId: string,
+      targetLanguage: string,
+      regenerateBlockIds: string[] = [],
+    ) =>
+      ipcRenderer.invoke(
+        'video-translation-generate-grouped-voice',
+        runId,
+        episodeId,
+        targetLanguage,
+        regenerateBlockIds,
+      ),
     listVideoTranslationVoiceVersions: (runId: string, episodeId: string, targetLanguage: string) =>
       ipcRenderer.invoke('video-translation-list-voice-versions', runId, episodeId, targetLanguage),
     generateVideoTranslationDialogueTimestamps: (

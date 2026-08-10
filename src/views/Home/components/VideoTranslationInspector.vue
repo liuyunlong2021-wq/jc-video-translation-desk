@@ -124,6 +124,20 @@
           >
           <v-btn
             variant="text"
+            prepend-icon="mdi-link-variant"
+            :disabled="!selectedCue"
+            @click="groupWithNext"
+            >与下一条组成配音组</v-btn
+          >
+          <v-btn
+            variant="text"
+            prepend-icon="mdi-link-variant-off"
+            :disabled="!selectedCue?.dubbingGroupId"
+            @click="ungroupSelected"
+            >从配音组拆出</v-btn
+          >
+          <v-btn
+            variant="text"
             prepend-icon="mdi-ray-start-arrow"
             :disabled="!selectedCue"
             @click="setBoundary('start')"
@@ -168,10 +182,12 @@ import { useMediaTaskStore } from '@/store'
 import {
   availableVideoTranslationActions,
   deleteVideoTranslationCue,
+  groupVideoTranslationCueWithNext,
   insertVideoTranslationCueAt,
   mergeVideoTranslationCueWithNext,
   setVideoTranslationCueBoundary,
   splitVideoTranslationCueAt,
+  ungroupVideoTranslationCue,
   type VideoTranslationAction,
 } from '@/runtime/videoTranslation'
 
@@ -350,6 +366,30 @@ function mergeWithNext() {
   try {
     state.value.cues = mergeVideoTranslationCueWithNext(state.value.cues, props.selectedCueId)
     mediaStore.invalidateTranslation('translation')
+  } catch (error) {
+    manualError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function groupWithNext() {
+  try {
+    state.value.cues = groupVideoTranslationCueWithNext(
+      state.value.cues,
+      props.selectedCueId,
+      `dubbing-${crypto.randomUUID()}`,
+    )
+    mediaStore.invalidateTranslation('dubbing-group')
+    manualError.value = ''
+  } catch (error) {
+    manualError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+function ungroupSelected() {
+  try {
+    state.value.cues = ungroupVideoTranslationCue(state.value.cues, props.selectedCueId)
+    mediaStore.invalidateTranslation('dubbing-group')
+    manualError.value = ''
   } catch (error) {
     manualError.value = error instanceof Error ? error.message : String(error)
   }

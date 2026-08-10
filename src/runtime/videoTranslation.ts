@@ -20,6 +20,7 @@ export interface TranslationRole {
 
 export interface VideoTranslationCue {
   cueId: string
+  dubbingGroupId?: string
   startMs: number
   endMs: number
   recognizedText: string
@@ -61,6 +62,7 @@ export interface VideoTranslationState {
   seedPromptPath?: string
   seedPromptText?: string
   seedPromptGeneratedBySkill?: boolean
+  groupedVoicePrompts?: Record<string, string>
   voiceVersions: VideoTranslationVoiceVersion[]
   activeVoiceVersionId?: string
   targetVoicePath?: string
@@ -92,12 +94,14 @@ export interface VideoTranslationVoiceVersion {
   previewPath: string
   finalScriptId?: string
   scriptHash?: string
+  route?: 'global' | 'grouped'
   blocks?: Array<{
     voiceBlockId: string
     cueIds: string[]
     audioPath: string
     audioHash: string
     durationMs: number
+    overrunMs?: number
     prompt: string
     references: Array<{
       translationRoleId: string
@@ -138,6 +142,19 @@ export interface VideoTranslationDialogueArrangement {
 
 export interface VideoTranslationDialoguePlan {
   arrangement: VideoTranslationDialogueArrangement
+}
+
+export interface VideoTranslationDubbingGroup {
+  groupId: string
+  cueIds: string[]
+  speakerId: string
+  startMs: number
+  endMs: number
+}
+
+export interface VideoTranslationGroupedPlan extends VideoTranslationDialoguePlan {
+  prompts: Record<string, string>
+  promptMarkdown: string
 }
 
 export function insertVideoTranslationCueAt(
@@ -262,6 +279,74 @@ export function deleteVideoTranslationCue(cues: VideoTranslationCue[], cueId: st
   return cues.filter((cue) => cue.cueId !== cueId).map((cue) => ({ ...cue }))
 }
 
+export function videoTranslationDubbingGroups(cues: VideoTranslationCue[]) {
+  const groups: VideoTranslationDubbingGroup[] = []
+  const closed = new Set<string>()
+  for (const cue of cues
+    .slice()
+    .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)) {
+    if (!cue.translationRoleId) throw new Error(`${cue.cueId} 尚未确认角色`)
+    const groupId = cue.dubbingGroupId?.trim() || `single-${cue.cueId}`
+    const current = groups.at(-1)
+    if (current?.groupId === groupId) {
+      if (current.speakerId !== cue.translationRoleId) throw new Error('同一配音组只能包含一个角色')
+      current.cueIds.push(cue.cueId)
+      current.endMs = cue.endMs
+      continue
+    }
+    if (closed.has(groupId)) throw new Error('同一配音组的字幕必须连续')
+    if (current) closed.add(current.groupId)
+    groups.push({
+      groupId,
+      cueIds: [cue.cueId],
+      speakerId: cue.translationRoleId,
+      startMs: cue.startMs,
+      endMs: cue.endMs,
+    })
+  }
+  return groups
+}
+
+export function groupVideoTranslationCueWithNext(
+  cues: VideoTranslationCue[],
+  cueId: string,
+  newGroupId: string,
+) {
+  const sorted = cues.map((cue) => ({ ...cue })).sort((a, b) => a.startMs - b.startMs)
+  const index = sorted.findIndex((cue) => cue.cueId === cueId)
+  const current = sorted[index]
+  const next = sorted[index + 1]
+  if (!current || !next) throw new Error('所选字幕没有下一条可组成配音组')
+  if (!current.translationRoleId || current.translationRoleId !== next.translationRoleId)
+    throw new Error('只有角色相同的相邻字幕可以组成配音组')
+  const currentGroupId = current.dubbingGroupId?.trim()
+  const nextGroupId = next.dubbingGroupId?.trim()
+  if (currentGroupId && currentGroupId === nextGroupId) return sorted
+  const groupId = currentGroupId || nextGroupId || newGroupId
+  if (!/^[A-Za-z0-9_-]+$/.test(groupId)) throw new Error('配音组 ID 无效')
+  const mergedIds = new Set([currentGroupId, nextGroupId].filter(Boolean))
+  for (const cue of sorted)
+    if (
+      cue === current ||
+      cue === next ||
+      (cue.dubbingGroupId && mergedIds.has(cue.dubbingGroupId))
+    )
+      cue.dubbingGroupId = groupId
+  videoTranslationDubbingGroups(sorted)
+  return sorted
+}
+
+export function ungroupVideoTranslationCue(cues: VideoTranslationCue[], cueId: string) {
+  const next = cues.map((cue) => ({ ...cue }))
+  const selected = next.find((cue) => cue.cueId === cueId)
+  if (!selected?.dubbingGroupId) throw new Error('所选字幕尚未加入配音组')
+  const groupId = selected.dubbingGroupId
+  selected.dubbingGroupId = undefined
+  const remaining = next.filter((cue) => cue.dubbingGroupId === groupId)
+  if (remaining.length === 1) remaining[0].dubbingGroupId = undefined
+  return next.sort((a, b) => a.startMs - b.startMs)
+}
+
 export type VideoTranslationAction =
   | 'upload-video'
   | 'upload-final-master'
@@ -287,6 +372,7 @@ export type VideoTranslationChange =
   | 'language'
   | 'voice-binding'
   | 'voice-prompt'
+  | 'dubbing-group'
   | 'target-voice'
   | 'separation'
 
@@ -317,15 +403,13 @@ export function validateVideoTranslationDialoguePrompt(
   prompt: string,
   block: VideoTranslationDialogueBlock,
 ) {
-  block.references.forEach((reference, index) => {
-    const label = reference.label?.split('·')[0]?.trim() || reference.speakerId
-    if (
-      !prompt
-        .split('\n')
-        .some((line) => line.includes(label) && line.includes(`饰演者为@音频${index + 1}`))
-    )
-      throw new Error(`${block.blockId} 缺少${label}的独立角色定义与参考音映射`)
-  })
+  parseVideoTranslationDialoguePrompt(prompt, block)
+}
+
+export function parseVideoTranslationDialoguePrompt(
+  prompt: string,
+  block: VideoTranslationDialogueBlock,
+) {
   if (/固定音色|固定声线|不能串音|声音身份|情绪变化不能改变|参考音只锁定/.test(prompt))
     throw new Error(`${block.blockId} 含有压制自然表演的角色约束`)
   if (
@@ -334,10 +418,29 @@ export function validateVideoTranslationDialoguePrompt(
     )
   )
     throw new Error(`${block.blockId} 不得包含时间戳或强度档位`)
+  const identities: Record<string, string> = {}
+  block.references.forEach((reference, index) => {
+    const label = reference.label?.split('·')[0]?.trim() || reference.speakerId
+    const definition = prompt
+      .split('\n')
+      .map((line) => line.trim())
+      .map(
+        (line) =>
+          line.match(/^(.+?)是(.+?)，饰演者为@音频(\d+)[。.]?$/) ||
+          line.match(/^(.+?)饰演者为@音频(\d+)[。.]?$/),
+      )
+      .find(
+        (match) =>
+          match?.[1].trim() === label &&
+          Number(match.length === 4 ? match[3] : match[2]) === index + 1,
+      )
+    if (!definition) throw new Error(`${block.blockId} 缺少${label}的独立角色定义与参考音映射`)
+    identities[reference.speakerId] = definition.length === 4 ? definition[2].trim() : ''
+  })
   const dialogueLines = prompt
     .split('\n')
     .map((value) => value.trim())
-    .map((value) => value.match(/^(.+?)[（(].+[）)]\s*[：:]\s*[“"](.+)[”"]$/))
+    .map((value) => value.match(/^(.+?)[（(](.+)[）)]\s*[：:]\s*[“"](.+)[”"]$/))
     .filter((value): value is RegExpMatchArray => Boolean(value))
   if (dialogueLines.length !== block.lines.length)
     throw new Error(`${block.blockId} 未按顺序逐行保留全部确认台词`)
@@ -347,10 +450,137 @@ export function validateVideoTranslationDialoguePrompt(
       ?.label?.split('·')[0]
       ?.trim()
     const output = dialogueLines[index]
-    if (output[2] !== line.text) throw new Error(`${block.blockId} 未按顺序逐字保留确认台词`)
+    if (output[3] !== line.text) throw new Error(`${block.blockId} 未按顺序逐字保留确认台词`)
     if (label && output[1].trim() !== label)
       throw new Error(`${block.blockId} 的台词缺少角色和自然表演说明：${line.cueId}`)
   })
+  return {
+    identities,
+    lines: block.lines.map((line, index) => ({
+      cueId: line.cueId,
+      performanceDirection: dialogueLines[index][2].trim(),
+      text: dialogueLines[index][3],
+    })),
+  }
+}
+
+function promptSections(markdown: string) {
+  return new Map(
+    markdown
+      .split(/^##\s+/m)
+      .slice(1)
+      .flatMap((section) => {
+        const newline = section.indexOf('\n')
+        return newline < 0
+          ? []
+          : [[section.slice(0, newline).trim(), section.slice(newline + 1).trim()]]
+      }),
+  )
+}
+
+export function validateVideoTranslationGroupedPrompt(
+  prompt: string,
+  block: VideoTranslationDialogueBlock,
+) {
+  if (block.references.length !== 1 || block.speakerIds.length !== 1)
+    throw new Error(`${block.blockId} 必须只包含一个角色参考音`)
+  const expectedSeconds = Math.max(
+    1,
+    Math.round((block.lines.at(-1)!.expectedEndMs - block.lines[0].expectedStartMs) / 1000),
+  )
+  if (
+    !prompt
+      .split('\n')[0]
+      ?.trim()
+      .match(
+        new RegExp(
+          `^这是一段时长为${expectedSeconds}秒的配音表演艺术家在顶级录音棚内的配音片段[。.]$`,
+        ),
+      )
+  )
+    throw new Error(`${block.blockId} 的分组时长提示不正确`)
+  parseVideoTranslationDialoguePrompt(prompt, block)
+}
+
+export function planVideoTranslationGroupedDialogueBlocks(
+  globalPromptMarkdown: string,
+  globalArrangement: VideoTranslationDialogueArrangement,
+  cues: VideoTranslationCue[],
+  roles: TranslationRole[],
+  references: SeedAudioReference[],
+  overrides: Record<string, string> = {},
+): VideoTranslationGroupedPlan {
+  validateConfirmedTranslation(cues, roles, globalArrangement.durationMs)
+  const sections = promptSections(globalPromptMarkdown)
+  const performanceByCue = new Map<string, string>()
+  const identityByCue = new Map<string, string>()
+  for (const block of globalArrangement.blocks) {
+    const prompt = sections.get(block.blockId)
+    if (!prompt) throw new Error(`${block.blockId} 缺少全局配音提示词`)
+    const parsed = parseVideoTranslationDialoguePrompt(prompt, block)
+    for (const line of parsed.lines) {
+      performanceByCue.set(line.cueId, line.performanceDirection)
+      const sourceLine = block.lines.find((item) => item.cueId === line.cueId)!
+      identityByCue.set(line.cueId, parsed.identities[sourceLine.speakerId] || '')
+    }
+  }
+  const cueById = new Map(cues.map((cue) => [cue.cueId, cue]))
+  const roleById = new Map(roles.map((role) => [role.translationRoleId, role]))
+  const referenceBySpeaker = new Map(
+    references.map((reference) => [reference.speakerId, reference]),
+  )
+  const prompts: Record<string, string> = {}
+  const blocks = videoTranslationDubbingGroups(cues).map((group) => {
+    const role = roleById.get(group.speakerId)
+    const reference = referenceBySpeaker.get(group.speakerId)
+    if (!role || !reference?.referenceAudioPath?.trim())
+      throw new Error(`${group.speakerId} 缺少已确认角色声音`)
+    const lines = group.cueIds.map((cueId) => {
+      const cue = cueById.get(cueId)!
+      const performanceDirection = performanceByCue.get(cueId)
+      if (!performanceDirection) throw new Error(`${cueId} 缺少全局配音表演方向`)
+      return {
+        cueId,
+        speakerId: group.speakerId,
+        text: cue.translatedText.trim(),
+        performanceEvidence: performanceDirection,
+        expectedStartMs: cue.startMs,
+        expectedEndMs: cue.endMs,
+      }
+    })
+    const identity = identityByCue.get(group.cueIds[0]) || role.voiceIdentityText?.trim()
+    if (!identity) throw new Error(`${role.displayName} 缺少全局配音角色声音身份`)
+    const block: VideoTranslationDialogueBlock = {
+      blockId: group.groupId,
+      cueIds: [...group.cueIds],
+      speakerIds: [group.speakerId],
+      references: [{ ...reference, label: role.displayName }],
+      lines,
+    }
+    const seconds = Math.max(1, Math.round((group.endMs - group.startMs) / 1000))
+    const generated = [
+      `这是一段时长为${seconds}秒的配音表演艺术家在顶级录音棚内的配音片段。`,
+      '',
+      `${role.displayName}是${identity}，饰演者为@音频1。`,
+      '',
+      ...lines.map((line) => `${role.displayName}（${line.performanceEvidence}）：“${line.text}”`),
+    ].join('\n')
+    const prompt = overrides[group.groupId]?.trim() || generated
+    validateVideoTranslationGroupedPrompt(prompt, block)
+    prompts[group.groupId] = prompt
+    return block
+  })
+  return {
+    arrangement: { ...globalArrangement, blocks },
+    prompts,
+    promptMarkdown: [
+      '# 分组克隆提示词',
+      '',
+      ...blocks.map((block) => `## ${block.blockId}\n\n${prompts[block.blockId]}`),
+    ]
+      .join('\n\n')
+      .trim(),
+  }
 }
 
 function actionable(status: ArtifactStatus) {
@@ -472,7 +702,7 @@ export function invalidateVideoTranslation(
     next.cues.forEach((cue) => {
       cue.translatedText = ''
     })
-  } else if (change === 'translation') {
+  } else if (change === 'translation' || change === 'dubbing-group') {
     next.reviewStatus = invalidate(next.reviewStatus)
   } else if (change === 'role-binding') {
     next.translationStatus = invalidate(next.translationStatus)
@@ -493,7 +723,16 @@ export function invalidateVideoTranslation(
       cue.translatedText = ''
     })
   }
-  if (['source-dialogue', 'translation', 'role-binding', 'timing', 'language'].includes(change)) {
+  if (
+    [
+      'source-dialogue',
+      'translation',
+      'role-binding',
+      'timing',
+      'language',
+      'dubbing-group',
+    ].includes(change)
+  ) {
     next.finalScriptId = undefined
     next.scriptHash = undefined
     next.finalScriptMarkdown = undefined
@@ -507,6 +746,7 @@ export function invalidateVideoTranslation(
       'language',
       'voice-binding',
       'voice-prompt',
+      'dubbing-group',
     ].includes(change)
   )
     next.arrangementStatus = invalidate(next.arrangementStatus)
@@ -519,6 +759,7 @@ export function invalidateVideoTranslation(
       'language',
       'voice-binding',
       'voice-prompt',
+      'dubbing-group',
     ].includes(change)
   )
     next.voiceStatus = invalidate(next.voiceStatus)
@@ -532,6 +773,7 @@ export function invalidateVideoTranslation(
       'voice-binding',
       'voice-prompt',
       'target-voice',
+      'dubbing-group',
     ].includes(change)
   ) {
     next.activeVoiceVersionId = undefined
@@ -539,6 +781,18 @@ export function invalidateVideoTranslation(
     next.dubDialogueTimestampPath = undefined
     next.dubDialogueTimestampHash = undefined
   }
+  if (
+    [
+      'source-dialogue',
+      'translation',
+      'role-binding',
+      'timing',
+      'language',
+      'voice-prompt',
+      'dubbing-group',
+    ].includes(change)
+  )
+    next.groupedVoicePrompts = undefined
   if (change !== 'separation') next.mixStatus = invalidate(next.mixStatus)
   if (change === 'target-voice' || change === 'separation')
     next.mixStatus = invalidate(next.mixStatus)

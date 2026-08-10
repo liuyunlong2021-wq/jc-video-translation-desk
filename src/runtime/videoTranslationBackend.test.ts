@@ -15,6 +15,11 @@ let seedDuration = 1
 mock.module('electron', {
   namedExports: {
     app: { getPath: () => root },
+    safeStorage: {
+      isEncryptionAvailable: () => false,
+      encryptString: (value: string) => Buffer.from(value),
+      decryptString: (value: Buffer) => value.toString('utf8'),
+    },
     dialog: {
       showOpenDialog: async () => ({
         canceled: !selectedFile,
@@ -99,6 +104,7 @@ mock.module('../../electron/ffmpeg/index.ts', {
 })
 const workspace = await import('../../electron/media-workspace.ts')
 const translation = await import('../../electron/video-translation.ts')
+const cloud = await import('../../electron/cloud.ts')
 const trace = await import('../../electron/video-translation-trace.ts')
 const translationAsr = await import('../../electron/video-translation-asr.ts')
 const projectId = 'translation-backend'
@@ -538,6 +544,190 @@ test('raw dubbing versions keep block order and defer timing to the final worksp
         '全局配音版本',
         version.versionId,
         '对齐.json',
+      ),
+    ),
+    false,
+  )
+  seedDuration = 1
+})
+
+test('grouped dubbing keeps successful groups and places complete audio without FunASR cutting', async () => {
+  const groupedEpisode = 'episode-grouped'
+  const role = {
+    translationRoleId: 'role-1',
+    displayName: '角色一',
+    aliases: [],
+    sourceEpisodeIds: [groupedEpisode],
+    status: 'confirmed' as const,
+  }
+  const cues = [
+    {
+      cueId: 'cue-1',
+      dubbingGroupId: 'group-1',
+      startMs: 500,
+      endMs: 1_000,
+      recognizedText: '你好',
+      sourceText: '你好',
+      translatedText: 'Hello',
+      performanceDirection: '自然问候',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+    {
+      cueId: 'cue-2',
+      dubbingGroupId: 'group-1',
+      startMs: 1_000,
+      endMs: 2_000,
+      recognizedText: '欢迎',
+      sourceText: '欢迎',
+      translatedText: 'Welcome',
+      performanceDirection: '热情欢迎',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+    {
+      cueId: 'cue-3',
+      startMs: 2_500,
+      endMs: 3_500,
+      recognizedText: '再见',
+      sourceText: '再见',
+      translatedText: 'Goodbye',
+      performanceDirection: '平静告别',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+  ]
+  const confirmed = await translation.writeConfirmedVideoTranslation(
+    projectId,
+    groupedEpisode,
+    'zh',
+    'en',
+    cues,
+    [role],
+  )
+  const reference = {
+    speakerId: role.translationRoleId,
+    referenceAudioPath: `episodes/${groupedEpisode}/video-translate/reference.wav`,
+    voiceProfileId: 'voice-1',
+    label: role.displayName,
+  }
+  const blocks = [
+    {
+      blockId: 'group-1',
+      cueIds: ['cue-1', 'cue-2'],
+      speakerIds: [role.translationRoleId],
+      references: [reference],
+      lines: cues.slice(0, 2).map((cue) => ({
+        cueId: cue.cueId,
+        speakerId: role.translationRoleId,
+        text: cue.translatedText,
+        performanceEvidence: cue.performanceDirection,
+        expectedStartMs: cue.startMs,
+        expectedEndMs: cue.endMs,
+      })),
+    },
+    {
+      blockId: 'single-cue-3',
+      cueIds: ['cue-3'],
+      speakerIds: [role.translationRoleId],
+      references: [reference],
+      lines: [
+        {
+          cueId: 'cue-3',
+          speakerId: role.translationRoleId,
+          text: 'Goodbye',
+          performanceEvidence: '平静告别',
+          expectedStartMs: 2_500,
+          expectedEndMs: 3_500,
+        },
+      ],
+    },
+  ]
+  const prompt = [
+    '## group-1',
+    '',
+    '这是一段时长为2秒的配音表演艺术家在顶级录音棚内的配音片段。',
+    '',
+    '角色一是成熟男性，饰演者为@音频1。',
+    '',
+    '角色一（自然问候）：“Hello”',
+    '角色一（热情欢迎）：“Welcome”',
+    '',
+    '## single-cue-3',
+    '',
+    '这是一段时长为1秒的配音表演艺术家在顶级录音棚内的配音片段。',
+    '',
+    '角色一是成熟男性，饰演者为@音频1。',
+    '',
+    '角色一（平静告别）：“Goodbye”',
+  ].join('\n')
+  await translation.writeVideoTranslationGroupedPlan(
+    projectId,
+    groupedEpisode,
+    'en',
+    {
+      schemaVersion: 1,
+      episodeId: groupedEpisode,
+      targetLanguage: 'en',
+      finalScriptId: confirmed.finalScriptId,
+      scriptHash: confirmed.scriptHash,
+      durationMs: 4_000,
+      blocks,
+    },
+    prompt,
+  )
+
+  seedDuration = 2
+  const seedBefore = seedCalls
+  const version = await translation.generateVideoTranslationGroupedVoice(
+    projectId,
+    groupedEpisode,
+    'en',
+  )
+  assert.equal(version.route, 'grouped')
+  assert.equal(seedCalls, seedBefore + 2)
+  assert.deepEqual(
+    version.blocks?.map((block) => block.cueIds),
+    [['cue-1', 'cue-2'], ['cue-3']],
+  )
+  assert.equal(version.blocks?.[0].overrunMs, 500)
+  assert.ok(
+    (await cloud.readPending(projectId))
+      .filter((task) => task.kind === 'dubbing')
+      .every((task) => task.status === 'success'),
+  )
+
+  const regenerated = await translation.generateVideoTranslationGroupedVoice(
+    projectId,
+    groupedEpisode,
+    'en',
+    ['group-1'],
+  )
+  assert.equal(seedCalls, seedBefore + 3)
+  assert.equal(regenerated.blocks?.length, 2)
+
+  const ffmpegBefore = ffmpegCalls
+  const timestamped = await cloud.generateVideoTranslationDialogueTimestamps({
+    runId: projectId,
+    episodeId: groupedEpisode,
+    targetLanguage: 'en',
+    finalScriptId: confirmed.finalScriptId,
+    scriptHash: confirmed.scriptHash,
+    voiceVersionId: regenerated.versionId,
+  })
+  assert.equal(ffmpegCalls, ffmpegBefore + 1)
+  assert.ok(fs.existsSync(path.join(projectRoot, timestamped.targetVoicePath)))
+  assert.equal(
+    fs.existsSync(
+      path.join(
+        projectRoot,
+        'episodes',
+        groupedEpisode,
+        'video-translate',
+        'en',
+        '配音对白时间戳',
+        regenerated.versionId,
+        'cues',
       ),
     ),
     false,

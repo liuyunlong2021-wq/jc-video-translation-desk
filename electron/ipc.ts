@@ -101,9 +101,11 @@ import {
   deleteVideoTranslationRole,
   selectVideoTranslationFinalMaster,
   selectVideoTranslationSource,
+  generateVideoTranslationGroupedVoice,
   generateVideoTranslationTargetVoice,
   listVideoTranslationVoiceVersions,
   writeConfirmedVideoTranslation,
+  writeVideoTranslationGroupedPlan,
   writeVideoTranslationSeedPlan,
   writeTranslationVoiceBinding,
 } from './video-translation'
@@ -390,6 +392,17 @@ export default function initIPC() {
       writeVideoTranslationSeedPlan(runId, episodeId, targetLanguage, arrangement, promptMarkdown),
   )
   ipcMain.handle(
+    'video-translation-write-grouped-plan',
+    (_event, runId, episodeId, targetLanguage, arrangement, promptMarkdown) =>
+      writeVideoTranslationGroupedPlan(
+        runId,
+        episodeId,
+        targetLanguage,
+        arrangement,
+        promptMarkdown,
+      ),
+  )
+  ipcMain.handle(
     'video-translation-list-voice-versions',
     (_event, runId, episodeId, targetLanguage) =>
       listVideoTranslationVoiceVersions(runId, episodeId, targetLanguage),
@@ -400,6 +413,17 @@ export default function initIPC() {
         event.sender.send('video-translation-progress', { runId, episodeId, message }),
       ),
     ),
+  )
+  ipcMain.handle(
+    'video-translation-generate-grouped-voice',
+    (event, runId, episodeId, targetLanguage, regenerateBlockIds = []) =>
+      generateVideoTranslationGroupedVoice(
+        runId,
+        episodeId,
+        targetLanguage,
+        regenerateBlockIds,
+        (message) => event.sender.send('video-translation-progress', { runId, episodeId, message }),
+      ),
   )
   ipcMain.handle('video-translation-timestamp-dialogue', (event, params) =>
     withRunAbort(params.runId, (signal) =>

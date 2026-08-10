@@ -88,20 +88,8 @@
             @click="$emit('generateAllSeedReferences')"
             >按提示词生成角色参考音</v-btn
           >
-          <v-btn
-            v-if="translationMode"
-            color="success"
-            prepend-icon="mdi-subtitles-outline"
-            :disabled="Boolean(mediaStore.busyAction) || !props.translationFinalReady"
-            :title="
-              !props.translationFinalReady ? '请先生成并选择完整的全局配音版本' : undefined
-            "
-            block
-            @click="$emit('openTranslationSubtitles')"
-            >进入成片工作台</v-btn
-          >
         </template>
-        <template v-else>
+        <template v-else-if="mediaStore.seedVoiceTab === 'global'">
           <strong>全局配音</strong>
           <small v-if="globalSeedDisabledReason" class="text-warning">{{
             globalSeedDisabledReason
@@ -144,6 +132,16 @@
             {{ progressText }}
           </v-alert>
           <v-btn
+            v-if="translationMode"
+            color="success"
+            prepend-icon="mdi-subtitles-outline"
+            :disabled="Boolean(mediaStore.busyAction) || !props.translationFinalReady"
+            :title="!props.translationFinalReady ? '请先生成并选择完整的配音版本' : undefined"
+            block
+            @click="$emit('openTranslationSubtitles')"
+            >进入成片工作台</v-btn
+          >
+          <v-btn
             v-if="!translationMode"
             color="success"
             prepend-icon="mdi-movie-edit-outline"
@@ -152,6 +150,52 @@
             block
             @click="$emit('generateShotPlan')"
             >生成分镜提示词</v-btn
+          >
+        </template>
+        <template v-else>
+          <strong>分组克隆</strong>
+          <small>批量并发生成全部配音组；失败组可单独重新生成。</small>
+          <v-btn
+            color="success"
+            prepend-icon="mdi-waveform"
+            :loading="mediaStore.busyAction === 'generate-grouped-voice'"
+            :disabled="
+              Boolean(mediaStore.busyAction) ||
+              !mediaStore.apiConfigured ||
+              !mediaStore.seedAudioGlobalPrompt.trim()
+            "
+            block
+            @click="$emit('generateGroupedSeedAudio')"
+            >批量生成全部分组</v-btn
+          >
+          <v-btn
+            color="primary"
+            variant="tonal"
+            prepend-icon="mdi-refresh"
+            :disabled="Boolean(mediaStore.busyAction) || !mediaStore.selectedAssetId"
+            block
+            @click="$emit('regenerateGroupedSeedAudio')"
+            >重新生成当前组</v-btn
+          >
+          <v-alert
+            v-if="
+              translationMode && progressText && mediaStore.busyAction === 'generate-grouped-voice'
+            "
+            type="info"
+            density="compact"
+            variant="tonal"
+          >
+            <v-progress-linear indeterminate class="mb-2" />
+            {{ progressText }}
+          </v-alert>
+          <v-btn
+            color="success"
+            prepend-icon="mdi-subtitles-outline"
+            :disabled="Boolean(mediaStore.busyAction) || !props.translationFinalReady"
+            :title="!props.translationFinalReady ? '请先生成完整的分组克隆版本' : undefined"
+            block
+            @click="$emit('openTranslationSubtitles')"
+            >进入成片工作台</v-btn
           >
         </template>
       </div>
@@ -292,6 +336,8 @@ const emit = defineEmits([
   'generateSeedTrack',
   'generateGlobalSeedPrompt',
   'generateGlobalSeedAudio',
+  'generateGroupedSeedAudio',
+  'regenerateGroupedSeedAudio',
   'openTranslationSubtitles',
   'editScriptMode',
   'generateShotPlan',

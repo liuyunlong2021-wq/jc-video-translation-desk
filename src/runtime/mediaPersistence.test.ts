@@ -53,36 +53,72 @@ test('persists managed media as paths relative to its run', () => {
 
 test('persists video translation paths without changing creative paths', () => {
   const runId = 'translation-run'
-  const persisted = JSON.parse(serializeMediaTask({
-    runId,
-    approvedScript: '创作文稿',
-    finalPath: `/Users/test/App/media-runs/${runId}/episodes/episode-001/final.mp4`,
-    videoTranslationRoles: [{ translationRoleId: 'role-1', displayName: '角色', aliases: [], sourceEpisodeIds: ['episode-001'], status: 'confirmed' }],
-    videoTranslation: {
-      sourceVideoPath: `/Users/test/App/media-runs/${runId}/episodes/episode-001/video-translate/source.mp4`,
-      targetVoicePath: `/Users/test/App/media-runs/${runId}/wiki/翻译/episode-001/en/目标人声.wav`,
-      cues: [{ voicePath: `/Users/test/App/media-runs/${runId}/wiki/翻译/episode-001/en/cue.wav` }],
-    },
-  }))
+  const persisted = JSON.parse(
+    serializeMediaTask({
+      runId,
+      approvedScript: '创作文稿',
+      finalPath: `/Users/test/App/media-runs/${runId}/episodes/episode-001/final.mp4`,
+      videoTranslationRoles: [
+        {
+          translationRoleId: 'role-1',
+          displayName: '角色',
+          aliases: [],
+          sourceEpisodeIds: ['episode-001'],
+          status: 'confirmed',
+        },
+      ],
+      videoTranslation: {
+        sourceVideoPath: `/Users/test/App/media-runs/${runId}/episodes/episode-001/video-translate/source.mp4`,
+        targetVoicePath: `/Users/test/App/media-runs/${runId}/wiki/翻译/episode-001/en/目标人声.wav`,
+        cues: [
+          { voicePath: `/Users/test/App/media-runs/${runId}/wiki/翻译/episode-001/en/cue.wav` },
+        ],
+        voiceVersions: [
+          {
+            previewPath: `/Users/test/App/media-runs/${runId}/episodes/episode-001/video-translate/en/preview.wav`,
+            blocks: [
+              {
+                audioPath: `/Users/test/App/media-runs/${runId}/episodes/episode-001/video-translate/en/group.wav`,
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  )
   assert.equal(persisted.approvedScript, '创作文稿')
   assert.equal(persisted.finalPath, 'episodes/episode-001/final.mp4')
-  assert.equal(persisted.videoTranslation.sourceVideoPath, 'episodes/episode-001/video-translate/source.mp4')
+  assert.equal(
+    persisted.videoTranslation.sourceVideoPath,
+    'episodes/episode-001/video-translate/source.mp4',
+  )
   assert.equal(persisted.videoTranslation.targetVoicePath, 'wiki/翻译/episode-001/en/目标人声.wav')
   assert.equal(persisted.videoTranslation.cues[0].voicePath, 'wiki/翻译/episode-001/en/cue.wav')
+  assert.equal(
+    persisted.videoTranslation.voiceVersions[0].previewPath,
+    'episodes/episode-001/video-translate/en/preview.wav',
+  )
+  assert.equal(
+    persisted.videoTranslation.voiceVersions[0].blocks[0].audioPath,
+    'episodes/episode-001/video-translate/en/group.wav',
+  )
 })
 
 test('makes interrupted translation steps retryable after restore', () => {
-  const state = deserializeMediaTask(JSON.stringify({
-    videoTranslation: {
-      sourceVideoPath: 'episodes/episode-001/video-translate/source.mp4',
-      transcriptStatus: 'running',
-      translationStatus: 'running',
-      finalStatus: 'ready',
-    },
-  }))
+  const state = deserializeMediaTask(
+    JSON.stringify({
+      videoTranslation: {
+        sourceVideoPath: 'episodes/episode-001/video-translate/source.mp4',
+        transcriptStatus: 'running',
+        translationStatus: 'running',
+        finalStatus: 'ready',
+      },
+    }),
+  )
   assert.equal(state.videoTranslation.transcriptStatus, 'idle')
   assert.equal(state.videoTranslation.translationStatus, 'idle')
   assert.equal(state.videoTranslation.finalStatus, 'ready')
+  assert.deepEqual(state.videoTranslation.groupedVoicePrompts, {})
 })
 
 test('clears legacy translation voice drafts so Skill output is required', () => {
@@ -92,23 +128,25 @@ test('clears legacy translation voice drafts so Skill output is required', () =>
     '只生成en的干净对白人声。禁止音乐、环境声、动作音效、旁白补写和额外台词。',
     '- 1000-2000ms | 角色: Hello!',
   ].join('\n')
-  const state = deserializeMediaTask(JSON.stringify({
-    workspaceEntry: 'video-translate',
-    seedAudioGlobalPrompt: legacyPrompt,
-    seedAudioArrangementPath: 'wiki/翻译/episode-003/en/豆包配音安排.json',
-    seedAudioTrackPath: 'wiki/翻译/episode-003/en/目标人声.wav',
-    videoTranslation: {
-      seedPromptText: legacyPrompt,
-      seedPromptPath: 'wiki/翻译/episode-003/en/豆包语音稿.md',
-      seedArrangementPath: 'wiki/翻译/episode-003/en/豆包配音安排.json',
-      targetVoicePath: 'wiki/翻译/episode-003/en/目标人声.wav',
-      arrangementStatus: 'ready',
-      voiceStatus: 'failed',
-      mixStatus: 'ready',
-      finalStatus: 'ready',
-      cues: [],
-    },
-  }))
+  const state = deserializeMediaTask(
+    JSON.stringify({
+      workspaceEntry: 'video-translate',
+      seedAudioGlobalPrompt: legacyPrompt,
+      seedAudioArrangementPath: 'wiki/翻译/episode-003/en/豆包配音安排.json',
+      seedAudioTrackPath: 'wiki/翻译/episode-003/en/目标人声.wav',
+      videoTranslation: {
+        seedPromptText: legacyPrompt,
+        seedPromptPath: 'wiki/翻译/episode-003/en/豆包语音稿.md',
+        seedArrangementPath: 'wiki/翻译/episode-003/en/豆包配音安排.json',
+        targetVoicePath: 'wiki/翻译/episode-003/en/目标人声.wav',
+        arrangementStatus: 'ready',
+        voiceStatus: 'failed',
+        mixStatus: 'ready',
+        finalStatus: 'ready',
+        cues: [],
+      },
+    }),
+  )
   assert.equal(state.seedAudioGlobalPrompt, '')
   assert.equal(state.videoTranslation.seedPromptText, '')
   assert.equal(state.videoTranslation.seedPromptGeneratedBySkill, false)
@@ -128,42 +166,51 @@ test('persists the project director gate and restores its center view', () => {
     assets: [{ id: 'asset-character-1', role: 'character', label: '主角' }],
     completeness: { narrativeSubjectRequired: true, noCharacterReason: '', warnings: [] },
   }
-  const state = deserializeMediaTask(serializeMediaTask({
-    projectDirectorDraft: null,
-    projectDirectorPlan,
-    workspaceView: 'director',
-  }))
+  const state = deserializeMediaTask(
+    serializeMediaTask({
+      projectDirectorDraft: null,
+      projectDirectorPlan,
+      workspaceView: 'director',
+    }),
+  )
   assert.deepEqual(state.projectDirectorPlan, projectDirectorPlan)
   assert.equal(state.projectDirectorDraft, null)
   assert.equal(state.workspaceView, 'director')
 })
 
 test('treats a project director plan without a supported route as unconfirmed', () => {
-  const state = deserializeMediaTask(JSON.stringify({
-    projectDirectorPlan: { project: {}, direction: {}, assets: [] },
-    projectDirectorDraft: null,
-  }))
+  const state = deserializeMediaTask(
+    JSON.stringify({
+      projectDirectorPlan: { project: {}, direction: {}, assets: [] },
+      projectDirectorDraft: null,
+    }),
+  )
   assert.equal(state.projectDirectorPlan, null)
 })
 
 test('drops assets and shot bindings without a project director identity', () => {
-  const state = deserializeMediaTask(JSON.stringify({
-    projectDirectorPlan: {
-      productionRoute: 'drama',
-      routeReason: '角色行动推动剧情',
-      assets: [
-        { id: 'asset-scene', role: 'scene', label: '工作室' },
-        { id: 'asset-character', role: 'character', label: '创作者' },
+  const state = deserializeMediaTask(
+    JSON.stringify({
+      projectDirectorPlan: {
+        productionRoute: 'drama',
+        routeReason: '角色行动推动剧情',
+        assets: [
+          { id: 'asset-scene', role: 'scene', label: '工作室' },
+          { id: 'asset-character', role: 'character', label: '创作者' },
+        ],
+      },
+      referenceAssets: [
+        { id: 'stale-asset', role: 'prop', versions: [] },
+        { id: 'asset-character', role: 'character', versions: [] },
+        { id: 'asset-scene', role: 'scene', versions: [] },
       ],
-    },
-    referenceAssets: [
-      { id: 'stale-asset', role: 'prop', versions: [] },
-      { id: 'asset-character', role: 'character', versions: [] },
-      { id: 'asset-scene', role: 'scene', versions: [] },
-    ],
-    segments: [{ index: 1, referenceAssetIds: ['asset-character', 'stale-asset'] }],
-  }))
-  assert.deepEqual(state.referenceAssets.map((asset: any) => asset.id), ['asset-scene', 'asset-character'])
+      segments: [{ index: 1, referenceAssetIds: ['asset-character', 'stale-asset'] }],
+    }),
+  )
+  assert.deepEqual(
+    state.referenceAssets.map((asset: any) => asset.id),
+    ['asset-scene', 'asset-character'],
+  )
   assert.deepEqual(state.segments[0].referenceAssetIds, ['asset-character'])
 })
 
@@ -192,14 +239,31 @@ test('migrates legacy segment durations without losing generated media', () => {
 })
 
 test('repairs Grok sequence durations that leaked into base shots', () => {
-  const state = deserializeMediaTask(JSON.stringify({
-    videoModel: 'rh-grok-image-video',
-    segments: [
-      { index: 1, playDuration: 2.5, generationDuration: 15, grokSequenceId: 'grok-sequence-1', grokSequenceLeader: true },
-      { index: 2, playDuration: 2.5, generationDuration: 15, grokSequenceId: 'grok-sequence-1', grokSequenceLeader: false },
-    ],
-  }))
-  assert.deepEqual(state.segments.map((segment: any) => segment.generationDuration), [4, 4])
+  const state = deserializeMediaTask(
+    JSON.stringify({
+      videoModel: 'rh-grok-image-video',
+      segments: [
+        {
+          index: 1,
+          playDuration: 2.5,
+          generationDuration: 15,
+          grokSequenceId: 'grok-sequence-1',
+          grokSequenceLeader: true,
+        },
+        {
+          index: 2,
+          playDuration: 2.5,
+          generationDuration: 15,
+          grokSequenceId: 'grok-sequence-1',
+          grokSequenceLeader: false,
+        },
+      ],
+    }),
+  )
+  assert.deepEqual(
+    state.segments.map((segment: any) => segment.generationDuration),
+    [4, 4],
+  )
   assert.equal('grokSequenceId' in state.segments[0], false)
   assert.equal('grokSequenceLeader' in state.segments[0], false)
 })
@@ -232,7 +296,9 @@ test('migrates legacy style and invalid target duration', () => {
 test('migrates legacy product assets to props', () => {
   const state = deserializeMediaTask(
     JSON.stringify({
-      referenceAssets: [{ id: 'legacy-product', role: 'product', status: 'prompt-ready', prompt: '旧提示词' }],
+      referenceAssets: [
+        { id: 'legacy-product', role: 'product', status: 'prompt-ready', prompt: '旧提示词' },
+      ],
     }),
   )
   assert.equal(state.referenceAssets[0].role, 'prop')
@@ -267,32 +333,41 @@ test('does not erase completed asset skills when an older design lacks project f
 })
 
 test('restores a matching generated asset version after legacy state lost its selection', () => {
-  const design = { scene: { name: '书房' }, project: { visualStyle: '电影光', aspectRatio: '9:16' } }
-  const state = deserializeMediaTask(JSON.stringify({
-    runId: 'run-1',
-    styleId: 'cinematic-contrast',
-    targetDuration: 15,
-    shotPace: 'fast',
-    voiceEngine: 'cloud',
-    textModel: 'gpt-5.6-sol',
-    videoModel: 'rh-grok-image-video',
-    workflowStep: 'assets',
-    workspaceView: 'assets',
-    mediaFilter: 'all',
-    referenceAssets: [{
-      id: 'scene-1',
-      role: 'scene',
-      status: 'design-ready',
-      design,
-      versions: [{
-        id: 'generated-1',
-        source: 'generated',
-        relativePath: 'assets/scene-1/generated.png',
-        designFingerprint: JSON.stringify({ project: design.project, scene: design.scene }),
-      }],
-    }],
-    segments: [],
-  }))
+  const design = {
+    scene: { name: '书房' },
+    project: { visualStyle: '电影光', aspectRatio: '9:16' },
+  }
+  const state = deserializeMediaTask(
+    JSON.stringify({
+      runId: 'run-1',
+      styleId: 'cinematic-contrast',
+      targetDuration: 15,
+      shotPace: 'fast',
+      voiceEngine: 'cloud',
+      textModel: 'gpt-5.6-sol',
+      videoModel: 'rh-grok-image-video',
+      workflowStep: 'assets',
+      workspaceView: 'assets',
+      mediaFilter: 'all',
+      referenceAssets: [
+        {
+          id: 'scene-1',
+          role: 'scene',
+          status: 'design-ready',
+          design,
+          versions: [
+            {
+              id: 'generated-1',
+              source: 'generated',
+              relativePath: 'assets/scene-1/generated.png',
+              designFingerprint: JSON.stringify({ project: design.project, scene: design.scene }),
+            },
+          ],
+        },
+      ],
+      segments: [],
+    }),
+  )
   assert.equal(state.referenceAssets[0].activeVersionId, 'generated-1')
   assert.equal(state.referenceAssets[0].status, 'approved')
   assert.equal(state.videoModel, 'rh-grok-image-video')
@@ -300,20 +375,22 @@ test('restores a matching generated asset version after legacy state lost its se
 
 test('defaults an unknown or missing project video model to Veo', () => {
   for (const videoModel of [undefined, 'unknown-model']) {
-    const state = deserializeMediaTask(JSON.stringify({
-      runId: 'run-video-model',
-      styleId: 'cinematic-contrast',
-      targetDuration: 15,
-      shotPace: 'auto',
-      voiceEngine: 'cloud',
-      textModel: 'gemini-3.6-flash',
-      videoModel,
-      workflowStep: 'script',
-      workspaceView: 'script',
-      mediaFilter: 'all',
-      referenceAssets: [],
-      segments: [],
-    }))
+    const state = deserializeMediaTask(
+      JSON.stringify({
+        runId: 'run-video-model',
+        styleId: 'cinematic-contrast',
+        targetDuration: 15,
+        shotPace: 'auto',
+        voiceEngine: 'cloud',
+        textModel: 'gemini-3.6-flash',
+        videoModel,
+        workflowStep: 'script',
+        workspaceView: 'script',
+        mediaFilter: 'all',
+        referenceAssets: [],
+        segments: [],
+      }),
+    )
     assert.equal(state.videoModel, 'veo-3.1-generate-preview')
   }
 })
@@ -325,20 +402,22 @@ test('keeps every supported project video model', () => {
     'rh-grok-image-video',
     'rh-seedance2',
   ]) {
-    const state = deserializeMediaTask(JSON.stringify({
-      runId: 'run-video-model',
-      styleId: 'cinematic-contrast',
-      targetDuration: 15,
-      shotPace: 'auto',
-      voiceEngine: 'cloud',
-      textModel: 'gemini-3.6-flash',
-      videoModel,
-      workflowStep: 'videos',
-      workspaceView: 'media',
-      mediaFilter: 'videos',
-      referenceAssets: [],
-      segments: [],
-    }))
+    const state = deserializeMediaTask(
+      JSON.stringify({
+        runId: 'run-video-model',
+        styleId: 'cinematic-contrast',
+        targetDuration: 15,
+        shotPace: 'auto',
+        voiceEngine: 'cloud',
+        textModel: 'gemini-3.6-flash',
+        videoModel,
+        workflowStep: 'videos',
+        workspaceView: 'media',
+        mediaFilter: 'videos',
+        referenceAssets: [],
+        segments: [],
+      }),
+    )
     assert.equal(state.videoModel, videoModel)
   }
 })

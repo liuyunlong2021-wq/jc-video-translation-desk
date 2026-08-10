@@ -4,12 +4,16 @@ import test from 'node:test'
 import {
   availableVideoTranslationActions,
   createVideoTranslationState,
+  groupVideoTranslationCueWithNext,
   insertVideoTranslationCueAt,
   invalidateVideoTranslation,
   mergeVideoTranslationCueWithNext,
   planVideoTranslationDialogueBlocks,
+  planVideoTranslationGroupedDialogueBlocks,
   splitVideoTranslationCueAt,
   setVideoTranslationCueBoundary,
+  ungroupVideoTranslationCue,
+  videoTranslationDubbingGroups,
   videoTranslationRoleBindingTargets,
   validateConfirmedTranslation,
   validateVideoTranslationDialoguePrompt,
@@ -245,14 +249,26 @@ test('merges both source and translated text without relocking translation', () 
   state.translationStatus = 'ready'
   state.cues = [
     {
-      cueId: 'cue-001', startMs: 0, endMs: 1000, recognizedText: '你好',
-      sourceText: '你好', translatedText: 'Hello', translationRoleId: role.translationRoleId,
-      performanceDirection: '问候', needsReview: false,
+      cueId: 'cue-001',
+      startMs: 0,
+      endMs: 1000,
+      recognizedText: '你好',
+      sourceText: '你好',
+      translatedText: 'Hello',
+      translationRoleId: role.translationRoleId,
+      performanceDirection: '问候',
+      needsReview: false,
     },
     {
-      cueId: 'cue-002', startMs: 1100, endMs: 2000, recognizedText: '再见',
-      sourceText: '再见', translatedText: 'Goodbye', translationRoleId: role.translationRoleId,
-      performanceDirection: '告别', needsReview: false,
+      cueId: 'cue-002',
+      startMs: 1100,
+      endMs: 2000,
+      recognizedText: '再见',
+      sourceText: '再见',
+      translatedText: 'Goodbye',
+      translationRoleId: role.translationRoleId,
+      performanceDirection: '告别',
+      needsReview: false,
     },
   ]
   state.cues = mergeVideoTranslationCueWithNext(state.cues, 'cue-001')
@@ -261,6 +277,111 @@ test('merges both source and translated text without relocking translation', () 
   assert.equal(next.cues[0].translatedText, 'Hello Goodbye')
   assert.equal(next.translationStatus, 'ready')
   assert.ok(availableVideoTranslationActions(next, [role]).includes('open-voice-workspace'))
+})
+
+test('groups adjacent same-role subtitles without merging subtitle data', () => {
+  const cues = [
+    {
+      cueId: 'cue-001',
+      startMs: 0,
+      endMs: 900,
+      recognizedText: '一',
+      sourceText: '一',
+      translatedText: 'One',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+    {
+      cueId: 'cue-002',
+      startMs: 1000,
+      endMs: 2000,
+      recognizedText: '二',
+      sourceText: '二',
+      translatedText: 'Two',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+  ]
+  const grouped = groupVideoTranslationCueWithNext(cues, 'cue-001', 'dubbing-group-1')
+  assert.deepEqual(
+    grouped.map((cue) => cue.dubbingGroupId),
+    ['dubbing-group-1', 'dubbing-group-1'],
+  )
+  assert.deepEqual(
+    grouped.map((cue) => [cue.startMs, cue.endMs, cue.translatedText]),
+    [
+      [0, 900, 'One'],
+      [1000, 2000, 'Two'],
+    ],
+  )
+  assert.deepEqual(videoTranslationDubbingGroups(grouped)[0], {
+    groupId: 'dubbing-group-1',
+    cueIds: ['cue-001', 'cue-002'],
+    speakerId: role.translationRoleId,
+    startMs: 0,
+    endMs: 2000,
+  })
+  assert.deepEqual(
+    ungroupVideoTranslationCue(grouped, 'cue-001').map((cue) => cue.dubbingGroupId),
+    [undefined, undefined],
+  )
+})
+
+test('derives strict three-part grouped prompts from the validated global prompt', () => {
+  const cues = [
+    {
+      cueId: 'cue-001',
+      dubbingGroupId: 'dubbing-group-1',
+      startMs: 0,
+      endMs: 900,
+      recognizedText: '你好',
+      sourceText: '你好',
+      translatedText: 'Hello',
+      performanceDirection: '旧方向',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+    {
+      cueId: 'cue-002',
+      dubbingGroupId: 'dubbing-group-1',
+      startMs: 1000,
+      endMs: 2400,
+      recognizedText: '再见',
+      sourceText: '再见',
+      translatedText: 'Goodbye',
+      performanceDirection: '旧方向',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+  ]
+  const reference = {
+    speakerId: role.translationRoleId,
+    voiceProfileId: role.voiceProfileId,
+    referenceAudioPath: '/tmp/reference.wav',
+    label: role.displayName,
+  }
+  const global = planVideoTranslationDialogueBlocks(
+    'episode-001',
+    3000,
+    'en',
+    cues,
+    [role],
+    [reference],
+    'script-1',
+    'a'.repeat(64),
+  ).arrangement
+  const plan = planVideoTranslationGroupedDialogueBlocks(
+    `# 全局配音提示词\n\n## voice-block-001\n\n这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。\n\n林默是成熟男性，低沉清晰，饰演者为@音频1。\n\n林默（温和开口）：“Hello”\n林默（平静告别）：“Goodbye”`,
+    global,
+    cues,
+    [role],
+    [reference],
+  )
+  assert.equal(plan.arrangement.blocks.length, 1)
+  assert.equal(
+    plan.prompts['dubbing-group-1'],
+    `这是一段时长为2秒的配音表演艺术家在顶级录音棚内的配音片段。\n\n林默是成熟男性，低沉清晰，饰演者为@音频1。\n\n林默（温和开口）：“Hello”\n林默（平静告别）：“Goodbye”`,
+  )
 })
 
 test('binds one cue or one explicit speaker evidence group', () => {

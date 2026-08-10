@@ -258,6 +258,7 @@
             @confirm-seed-voice="confirmTranslationSeedVoice"
             @edit-seed-role-prompt="editTranslationSeedRolePrompt"
             @edit-seed-global-prompt="editTranslationSeedGlobalPrompt"
+            @edit-grouped-prompt="editTranslationGroupedPrompt"
             @select-translation-voice-version="selectTranslationVoiceVersion"
           />
           <div class="inspector-column min-w-0 min-h-0 open">
@@ -268,6 +269,8 @@
               @generate-all-seed-references="generateAllTranslationSeedReferences"
               @generate-global-seed-prompt="arrangeTranslationVoice"
               @generate-global-seed-audio="generateTranslationVoice"
+              @generate-grouped-seed-audio="generateTranslationGroupedVoice"
+              @regenerate-grouped-seed-audio="regenerateTranslationGroupedVoice"
               @open-translation-subtitles="openTranslationSubtitleWorkspace"
               @request-revision="requestRevision"
               @cancel="cancelWorkflow"
@@ -439,6 +442,8 @@ import {
   createVideoTranslationState,
   invalidateVideoTranslation,
   planVideoTranslationDialogueBlocks,
+  planVideoTranslationGroupedDialogueBlocks,
+  videoTranslationDubbingGroups,
   validateVideoTranslationDialoguePrompt,
   type VideoTranslationAction,
   type VideoTranslationVoiceVersion,
@@ -521,6 +526,15 @@ watch(
   },
   { immediate: true },
 )
+watch(
+  () => mediaStore.seedVoiceTab,
+  (tab) => {
+    if (tab !== 'grouped' || !isTranslationVoiceWorkspace.value) return
+    void currentTranslationGroupedPlan().catch((error) => {
+      mediaStore.error = error instanceof Error ? error.message : String(error)
+    })
+  },
+)
 const leftPanelVisible = computed(() => mediaStore.workspaceView === 'script')
 const rightPanelVisible = computed(
   () => !isFinalWorkspace.value && (!isDubbingWorkspace.value || dubbingRightOpen.value),
@@ -601,7 +615,13 @@ function syncCompletedTasks(tasks: PendingCloudTask[]) {
 }
 
 function taskKindLabel(kind: PendingCloudTask['kind']) {
-  return { voice: '配音', asset: '资产图', storyboard: '分镜图', video: '视频' }[kind]
+  return {
+    voice: '配音',
+    dubbing: '分组配音',
+    asset: '资产图',
+    storyboard: '分镜图',
+    video: '视频',
+  }[kind]
 }
 
 function taskStatusLabel(task: PendingCloudTask) {
@@ -681,7 +701,9 @@ async function abandonTask(task: PendingCloudTask) {
 
 async function retryTask(task: PendingCloudTask) {
   try {
-    if (task.kind === 'asset') {
+    if (task.kind === 'dubbing' && task.targetId) {
+      await generateTranslationGroupedVoice([task.targetId])
+    } else if (task.kind === 'asset') {
       const asset = mediaStore.referenceAssets.find((item) => item.id === task.targetId)
       if (asset) await generateAssetVersion(asset)
     } else {
@@ -2129,6 +2151,41 @@ async function currentTranslationSeedPlan() {
   )
 }
 
+async function currentTranslationGroupedPlan() {
+  const state = translationState()
+  if (!mediaStore.seedAudioGlobalPrompt.trim()) throw new Error('请先生成全局配音提示词')
+  const globalPlan = await currentTranslationSeedPlan()
+  const grouped = planVideoTranslationGroupedDialogueBlocks(
+    mediaStore.seedAudioGlobalPrompt,
+    globalPlan.arrangement,
+    state.cues,
+    mediaStore.videoTranslationRoles,
+    globalPlan.arrangement.blocks.flatMap((block) => block.references),
+    state.groupedVoicePrompts || {},
+  )
+  state.groupedVoicePrompts = grouped.prompts
+  if (
+    !videoTranslationDubbingGroups(state.cues).some(
+      (group) => group.groupId === mediaStore.selectedAssetId,
+    )
+  )
+    mediaStore.selectedAssetId = grouped.arrangement.blocks[0]?.blockId
+  return grouped
+}
+
+function editTranslationGroupedPrompt(groupId: string, prompt: string) {
+  const state = translationState()
+  state.groupedVoicePrompts = { ...(state.groupedVoicePrompts || {}), [groupId]: prompt }
+  const active = activeTranslationVoiceVersion(state)
+  if (active?.route !== 'grouped') return
+  state.activeVoiceVersionId = undefined
+  state.targetVoicePath = undefined
+  state.dubDialogueTimestampPath = undefined
+  state.dubDialogueTimestampHash = undefined
+  if (state.mixStatus === 'ready') state.mixStatus = 'stale'
+  if (state.finalStatus === 'ready') state.finalStatus = 'stale'
+}
+
 async function saveTranslationSeedGlobalPrompt(prompt: string) {
   if (!prompt) throw new Error('全局配音提示词不能为空')
   const state = translationState()
@@ -2265,6 +2322,41 @@ async function generateTranslationVoice() {
     mediaStore.seedAudioArrangementPath = saved.arrangementPath
     toast.success('新的全局配音版本已生成并设为当前使用版本')
   })
+}
+
+async function generateTranslationGroupedVoice(regenerateBlockIds: string[] = []) {
+  await runAction('generate-grouped-voice', async () => {
+    const state = translationState()
+    const plan = await currentTranslationGroupedPlan()
+    await window.electron.cloud.writeVideoTranslationGroupedPlan(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      state.targetLanguage,
+      plan.arrangement,
+      plan.promptMarkdown,
+    )
+    try {
+      const version = await window.electron.cloud.generateVideoTranslationGroupedVoice(
+        mediaStore.runId,
+        mediaStore.episodeId,
+        state.targetLanguage,
+        regenerateBlockIds,
+      )
+      state.voiceVersions = [
+        ...state.voiceVersions.filter((item) => item.versionId !== version.versionId),
+        version,
+      ]
+      applyTranslationVoiceVersion(state, version)
+      toast.success('分组克隆已全部生成并设为当前使用版本')
+    } finally {
+      await refreshCloudTasks()
+    }
+  })
+}
+
+async function regenerateTranslationGroupedVoice() {
+  if (!mediaStore.selectedAssetId) throw new Error('请先选择配音组')
+  await generateTranslationGroupedVoice([mediaStore.selectedAssetId])
 }
 
 function applyTranslationAudio(

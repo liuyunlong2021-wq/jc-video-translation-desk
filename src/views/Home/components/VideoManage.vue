@@ -105,8 +105,84 @@
         >
           <v-btn value="roles" prepend-icon="mdi-account-voice">角色配音</v-btn>
           <v-btn value="global" prepend-icon="mdi-waveform">全局配音</v-btn>
+          <v-btn v-if="translationMode" value="grouped" prepend-icon="mdi-view-sequential"
+            >分组克隆</v-btn
+          >
         </v-btn-toggle>
-        <div class="seed-voice-main">
+        <div v-if="mediaStore.seedVoiceTab === 'grouped'" class="grouped-voice-main">
+          <video
+            v-if="mediaStore.videoTranslation?.sourceVideoPath"
+            class="grouped-source-preview"
+            :src="fileUrl(mediaStore.videoTranslation.sourceVideoPath)"
+            controls
+            preload="metadata"
+          />
+          <div class="grouped-table-wrap">
+            <table class="grouped-table">
+              <thead>
+                <tr>
+                  <th>组号</th>
+                  <th>时间轴</th>
+                  <th>角色</th>
+                  <th>包含字幕</th>
+                  <th>目标时长</th>
+                  <th>状态</th>
+                  <th>试听</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(group, index) in translationGroups"
+                  :key="group.groupId"
+                  :class="{ selected: mediaStore.selectedAssetId === group.groupId }"
+                  @click="mediaStore.selectedAssetId = group.groupId"
+                >
+                  <td>
+                    <strong>组{{ String(index + 1).padStart(2, '0') }}</strong>
+                    <small>字幕{{ cueRange(group.cueIds) }}</small>
+                  </td>
+                  <td>
+                    {{ formatTranslationTime(group.startMs) }}-{{
+                      formatTranslationTime(group.endMs)
+                    }}
+                  </td>
+                  <td>{{ translationRoleName(group.speakerId) }}</td>
+                  <td>{{ group.cueIds.length }} 条</td>
+                  <td>{{ ((group.endMs - group.startMs) / 1000).toFixed(1) }} 秒</td>
+                  <td>
+                    <v-chip size="x-small" :color="groupStatusColor(group.groupId)" variant="tonal">
+                      {{ groupStatus(group.groupId) }}
+                    </v-chip>
+                    <small v-if="groupOverrun(group.groupId)">
+                      超时 {{ (groupOverrun(group.groupId) / 1000).toFixed(1) }} 秒
+                    </small>
+                  </td>
+                  <td @click.stop>
+                    <audio
+                      v-if="groupAudioPath(group.groupId)"
+                      controls
+                      :src="fileUrl(groupAudioPath(group.groupId)!)"
+                    />
+                    <small v-else>待生成</small>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <v-textarea
+            v-if="selectedTranslationGroup"
+            :model-value="selectedGroupedPrompt"
+            rows="9"
+            no-resize
+            hide-details
+            variant="outlined"
+            :label="`组${String(selectedTranslationGroupIndex + 1).padStart(2, '0')} 三段式提示词`"
+            @update:model-value="
+              $emit('editGroupedPrompt', selectedTranslationGroup.groupId, String($event || ''))
+            "
+          />
+        </div>
+        <div v-else class="seed-voice-main">
           <nav
             class="seed-role-list"
             :aria-label="mediaStore.seedVoiceTab === 'roles' ? '角色列表' : '全局配音列表'"
@@ -648,6 +724,7 @@ import type {
 import { managedMediaUrl } from '@/runtime/managedMediaUrl'
 import { renderMarkdown, resolveWikiLink } from '@/runtime/markdown'
 import { projectDirectorMarkdown } from '@/runtime/projectDirector'
+import { videoTranslationDubbingGroups } from '@/runtime/videoTranslation'
 import WikiDocument from './WikiDocument.vue'
 import DubbingSubtitleWorkspace from './DubbingSubtitleWorkspace.vue'
 import type { VoiceProfile } from '~/electron/voice-library'
@@ -681,6 +758,7 @@ defineEmits<{
   uploadSeedReference: [speakerId: string]
   editSeedRolePrompt: [speakerId: string, prompt: string]
   editSeedGlobalPrompt: [prompt: string]
+  editGroupedPrompt: [groupId: string, prompt: string]
   generateSeedPrompt: []
   generateSeedVoiceScript: []
   saveSeedDirectorDraft: []
@@ -729,6 +807,13 @@ function translationRolePreview(id: string) {
 }
 const selectedCharacter = computed(() =>
   seedCharacters.value.find((asset) => asset.id === mediaStore.selectedAssetId),
+)
+watch(
+  () => mediaStore.seedVoiceTab,
+  (tab) => {
+    if (tab === 'roles') mediaStore.selectedAssetId = seedCharacters.value[0]?.id
+    else if (tab === 'grouped') mediaStore.selectedAssetId = translationGroups.value[0]?.groupId
+  },
 )
 const selectedSeedVoiceId = computed(() =>
   selectedCharacter.value ? voiceBindings.value[selectedCharacter.value.id] || '' : '',
@@ -1042,10 +1127,89 @@ const activeTranslationVoiceVersion = computed(() =>
 )
 const translationVoiceVersionItems = computed(() =>
   translationVoiceVersions.value.map((version, index) => ({
-    title: `全局配音 ${index + 1} · ${(version.durationMs / 1000).toFixed(1)} 秒`,
+    title: `${version.route === 'grouped' ? '分组克隆' : '全局配音'} ${index + 1} · ${(version.durationMs / 1000).toFixed(1)} 秒`,
     value: version.versionId,
   })),
 )
+const translationGroups = computed(() =>
+  mediaStore.videoTranslation
+    ? videoTranslationDubbingGroups(mediaStore.videoTranslation.cues)
+    : [],
+)
+const selectedTranslationGroupIndex = computed(() =>
+  translationGroups.value.findIndex((group) => group.groupId === mediaStore.selectedAssetId),
+)
+const selectedTranslationGroup = computed(() =>
+  selectedTranslationGroupIndex.value < 0
+    ? undefined
+    : translationGroups.value[selectedTranslationGroupIndex.value],
+)
+const selectedGroupedPrompt = computed(
+  () =>
+    (selectedTranslationGroup.value &&
+      mediaStore.videoTranslation?.groupedVoicePrompts?.[selectedTranslationGroup.value.groupId]) ||
+    '',
+)
+const latestGroupedVersion = computed(() =>
+  translationVoiceVersions.value
+    .filter(
+      (version) =>
+        version.route === 'grouped' &&
+        version.scriptHash === mediaStore.videoTranslation?.scriptHash,
+    )
+    .at(-1),
+)
+function groupedBlock(groupId: string) {
+  return latestGroupedVersion.value?.blocks?.find((block) => block.voiceBlockId === groupId)
+}
+function latestGroupTask(groupId: string) {
+  return [...mediaStore.cloudTasks]
+    .reverse()
+    .find((task) => task.kind === 'dubbing' && task.targetId === groupId)
+}
+function groupStatus(groupId: string) {
+  const status = latestGroupTask(groupId)?.status
+  if (status === 'queued') return '排队中'
+  if (status === 'generating' || status === 'downloading') return '生成中'
+  if (status === 'failed') return '生成失败'
+  if (status === 'stopped') return '已停止'
+  return groupedBlock(groupId) || status === 'success'
+    ? '已完成'
+    : '待生成'
+}
+function groupStatusColor(groupId: string) {
+  const status = groupStatus(groupId)
+  return status === '已完成'
+    ? 'success'
+    : status === '生成失败'
+      ? 'error'
+      : status === '已停止'
+        ? 'warning'
+        : 'primary'
+}
+function groupAudioPath(groupId: string) {
+  return groupedBlock(groupId)?.audioPath
+}
+function groupOverrun(groupId: string) {
+  return groupedBlock(groupId)?.overrunMs || 0
+}
+function cueRange(cueIds: string[]) {
+  const cues = mediaStore.videoTranslation?.cues || []
+  const indexes = cueIds.map((cueId) => cues.findIndex((cue) => cue.cueId === cueId) + 1)
+  return indexes.length === 1
+    ? String(indexes[0]).padStart(2, '0')
+    : `${String(indexes[0]).padStart(2, '0')}-${String(indexes.at(-1)).padStart(2, '0')}`
+}
+function translationRoleName(roleId: string) {
+  return (
+    mediaStore.videoTranslationRoles.find((role) => role.translationRoleId === roleId)
+      ?.displayName || roleId
+  )
+}
+function formatTranslationTime(ms: number) {
+  const seconds = Math.floor(ms / 1000)
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`
+}
 function statusText(status: AssetStatus) {
   return status === 'success'
     ? '已完成'
@@ -1217,6 +1381,62 @@ function openSeedVoice() {
   border: 1px solid rgba(21, 122, 53, 0.22);
   border-radius: 6px;
   overflow: hidden;
+}
+.grouped-voice-main {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-rows: minmax(150px, 32%) minmax(180px, 1fr) auto;
+  gap: 12px;
+  overflow: hidden;
+}
+.grouped-source-preview {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+  background: #111;
+  border-radius: 6px;
+}
+.grouped-table-wrap {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.grouped-table {
+  width: 100%;
+  min-width: 820px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.grouped-table th,
+.grouped-table td {
+  padding: 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  text-align: left;
+  vertical-align: top;
+}
+.grouped-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgb(var(--v-theme-surface));
+}
+.grouped-table tr {
+  cursor: pointer;
+}
+.grouped-table tr.selected {
+  background: rgba(21, 122, 53, 0.08);
+}
+.grouped-table small {
+  display: block;
+  margin-top: 4px;
+  color: rgba(0, 0, 0, 0.56);
+}
+.grouped-table audio {
+  width: 150px;
+  height: 30px;
 }
 .seed-voice-tabs {
   align-self: flex-start;

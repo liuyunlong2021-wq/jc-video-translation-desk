@@ -34,6 +34,7 @@
       <table class="translation-table">
         <thead>
           <tr>
+            <th class="sequence-column">序号</th>
             <th class="timeline-column">时间轴</th>
             <th class="preview-column">视频片段预览</th>
             <th v-if="showRoles" class="role-column">
@@ -65,16 +66,20 @@
         </thead>
         <tbody>
           <tr v-if="!state.cues.length">
-            <td :colspan="showRoles ? 6 : 5" class="empty-row">
+            <td :colspan="showRoles ? 7 : 6" class="empty-row">
               点击右栏“识别字幕”后在这里审核角色、原文和译文
             </td>
           </tr>
           <tr
-            v-for="cue in state.cues"
+            v-for="(cue, index) in state.cues"
             :key="cue.cueId"
             :class="{ selected: selectedCueId === cue.cueId }"
             @click="selectCue(cue.cueId)"
           >
+            <td class="sequence-cell">
+              <strong>#{{ String(index + 1).padStart(2, '0') }}</strong>
+              <small v-if="cue.dubbingGroupId">组{{ groupNumber(cue.dubbingGroupId) }}</small>
+            </td>
             <td>
               <strong>{{ formatTime(cue.startMs) }}</strong
               ><small>{{ formatTime(cue.endMs) }}</small>
@@ -238,6 +243,16 @@ const previewVideoPath = computed(() =>
     ? state.value.finalMasterVideoPath
     : state.value.sourceVideoPath!,
 )
+const groupedNumberById = computed(() => {
+  const ids = state.value.cues
+    .map((cue) => cue.dubbingGroupId)
+    .filter((id, index, all): id is string => Boolean(id) && all.indexOf(id) === index)
+  return new Map(ids.map((id, index) => [id, String(index + 1).padStart(2, '0')]))
+})
+
+function groupNumber(groupId: string) {
+  return groupedNumberById.value.get(groupId) || ''
+}
 
 function fileUrl(filePath: string) {
   return managedMediaUrl(mediaStore.runId, filePath)
@@ -439,6 +454,13 @@ p {
   table-layout: fixed;
   border-collapse: collapse;
   font-size: 12px;
+}
+.sequence-column {
+  width: 62px;
+}
+.sequence-cell strong,
+.sequence-cell small {
+  white-space: nowrap;
 }
 .timeline-column {
   width: 110px;

@@ -202,10 +202,23 @@ interface Window {
         arrangement: import('../src/runtime/videoTranslation').VideoTranslationDialogueArrangement,
         promptMarkdown: string,
       ) => Promise<{ arrangementPath: string; promptPath: string }>
+      writeVideoTranslationGroupedPlan: (
+        runId: string,
+        episodeId: string,
+        targetLanguage: string,
+        arrangement: import('../src/runtime/videoTranslation').VideoTranslationDialogueArrangement,
+        promptMarkdown: string,
+      ) => Promise<{ arrangementPath: string; promptPath: string }>
       generateVideoTranslationTargetVoice: (
         runId: string,
         episodeId: string,
         targetLanguage: string,
+      ) => Promise<import('../src/runtime/videoTranslation').VideoTranslationVoiceVersion>
+      generateVideoTranslationGroupedVoice: (
+        runId: string,
+        episodeId: string,
+        targetLanguage: string,
+        regenerateBlockIds?: string[],
       ) => Promise<import('../src/runtime/videoTranslation').VideoTranslationVoiceVersion>
       listVideoTranslationVoiceVersions: (
         runId: string,
