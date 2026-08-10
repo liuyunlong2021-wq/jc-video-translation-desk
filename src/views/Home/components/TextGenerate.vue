@@ -131,12 +131,6 @@
             label="模型"
             hide-details
           />
-          <v-text-field
-            :label="t('workflow.api.address')"
-            :model-value="API_URL"
-            readonly
-            hide-details
-          />
           <div class="flex gap-2 items-start">
             <v-text-field
               v-model="apiKey"
@@ -306,7 +300,6 @@ import type {
 
 defineEmits(['importMarkdown'])
 
-const API_URL = 'https://api.jiucaihezi.studio/v1'
 const KEYS_URL = 'https://api.jiucaihezi.studio/keys'
 const TEXT_MODELS = [
   'gemini-3.6-flash',
@@ -317,8 +310,8 @@ const TEXT_MODELS = [
   'deepseek-v4-pro',
 ]
 const TEXT_MODEL_ITEMS = [
-  { title: 'Gemini 3.6 Flash（韭菜盒子）', value: 'gemini-3.6-flash' },
-  { title: '豆包 Seed', value: 'doubao-seed-evolving' },
+  { title: 'Gemini 3.6 Flash', value: 'gemini-3.6-flash' },
+  { title: '豆包', value: 'doubao-seed-evolving' },
 ]
 const VIDEO_MODELS = [
   { title: 'Veo 3.1', value: 'veo-3.1-generate-preview' },
