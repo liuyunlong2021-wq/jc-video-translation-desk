@@ -387,7 +387,11 @@ function groupWithNext() {
 
 function ungroupSelected() {
   try {
-    state.value.cues = ungroupVideoTranslationCue(state.value.cues, props.selectedCueId)
+    state.value.cues = ungroupVideoTranslationCue(
+      state.value.cues,
+      props.selectedCueId,
+      `dubbing-${crypto.randomUUID()}`,
+    )
     mediaStore.invalidateTranslation('dubbing-group')
     manualError.value = ''
   } catch (error) {

@@ -322,7 +322,7 @@ export function groupVideoTranslationCueWithNext(
   const currentGroupId = current.dubbingGroupId?.trim()
   const nextGroupId = next.dubbingGroupId?.trim()
   if (currentGroupId && currentGroupId === nextGroupId) return sorted
-  const groupId = currentGroupId || nextGroupId || newGroupId
+  const groupId = newGroupId
   if (!/^[A-Za-z0-9_-]+$/.test(groupId)) throw new Error('配音组 ID 无效')
   const mergedIds = new Set([currentGroupId, nextGroupId].filter(Boolean))
   for (const cue of sorted)
@@ -336,7 +336,11 @@ export function groupVideoTranslationCueWithNext(
   return sorted
 }
 
-export function ungroupVideoTranslationCue(cues: VideoTranslationCue[], cueId: string) {
+export function ungroupVideoTranslationCue(
+  cues: VideoTranslationCue[],
+  cueId: string,
+  remainingGroupId?: string,
+) {
   const next = cues.map((cue) => ({ ...cue }))
   const selected = next.find((cue) => cue.cueId === cueId)
   if (!selected?.dubbingGroupId) throw new Error('所选字幕尚未加入配音组')
@@ -344,6 +348,7 @@ export function ungroupVideoTranslationCue(cues: VideoTranslationCue[], cueId: s
   selected.dubbingGroupId = undefined
   const remaining = next.filter((cue) => cue.dubbingGroupId === groupId)
   if (remaining.length === 1) remaining[0].dubbingGroupId = undefined
+  else if (remainingGroupId) remaining.forEach((cue) => (cue.dubbingGroupId = remainingGroupId))
   return next.sort((a, b) => a.startMs - b.startMs)
 }
 
@@ -696,13 +701,29 @@ export function invalidateVideoTranslation(
     next.originalVocalRemoved = false
     return next
   }
+  if (change === 'dubbing-group') {
+    next.groupedVoicePrompts = undefined
+    const active = next.voiceVersions.find(
+      (version) => version.versionId === next.activeVoiceVersionId,
+    )
+    if (active?.route === 'grouped') {
+      next.activeVoiceVersionId = undefined
+      next.targetVoicePath = undefined
+      next.dubDialogueTimestampPath = undefined
+      next.dubDialogueTimestampHash = undefined
+      next.voiceStatus = invalidate(next.voiceStatus)
+      next.mixStatus = invalidate(next.mixStatus)
+      next.finalStatus = invalidate(next.finalStatus)
+    }
+    return next
+  }
   if (change === 'source-dialogue') {
     next.translationStatus = invalidate(next.translationStatus)
     next.reviewStatus = invalidate(next.reviewStatus)
     next.cues.forEach((cue) => {
       cue.translatedText = ''
     })
-  } else if (change === 'translation' || change === 'dubbing-group') {
+  } else if (change === 'translation') {
     next.reviewStatus = invalidate(next.reviewStatus)
   } else if (change === 'role-binding') {
     next.translationStatus = invalidate(next.translationStatus)
@@ -723,16 +744,7 @@ export function invalidateVideoTranslation(
       cue.translatedText = ''
     })
   }
-  if (
-    [
-      'source-dialogue',
-      'translation',
-      'role-binding',
-      'timing',
-      'language',
-      'dubbing-group',
-    ].includes(change)
-  ) {
+  if (['source-dialogue', 'translation', 'role-binding', 'timing', 'language'].includes(change)) {
     next.finalScriptId = undefined
     next.scriptHash = undefined
     next.finalScriptMarkdown = undefined
@@ -746,7 +758,6 @@ export function invalidateVideoTranslation(
       'language',
       'voice-binding',
       'voice-prompt',
-      'dubbing-group',
     ].includes(change)
   )
     next.arrangementStatus = invalidate(next.arrangementStatus)
@@ -759,7 +770,6 @@ export function invalidateVideoTranslation(
       'language',
       'voice-binding',
       'voice-prompt',
-      'dubbing-group',
     ].includes(change)
   )
     next.voiceStatus = invalidate(next.voiceStatus)
@@ -773,7 +783,6 @@ export function invalidateVideoTranslation(
       'voice-binding',
       'voice-prompt',
       'target-voice',
-      'dubbing-group',
     ].includes(change)
   ) {
     next.activeVoiceVersionId = undefined
@@ -789,7 +798,6 @@ export function invalidateVideoTranslation(
       'timing',
       'language',
       'voice-prompt',
-      'dubbing-group',
     ].includes(change)
   )
     next.groupedVoicePrompts = undefined

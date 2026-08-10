@@ -325,6 +325,54 @@ test('groups adjacent same-role subtitles without merging subtitle data', () => 
     ungroupVideoTranslationCue(grouped, 'cue-001').map((cue) => cue.dubbingGroupId),
     [undefined, undefined],
   )
+
+  const extended = groupVideoTranslationCueWithNext(
+    [
+      ...grouped,
+      {
+        ...cues[1],
+        cueId: 'cue-003',
+        startMs: 2100,
+        endMs: 3000,
+      },
+    ],
+    'cue-002',
+    'dubbing-group-2',
+  )
+  assert.deepEqual(
+    extended.map((cue) => cue.dubbingGroupId),
+    ['dubbing-group-2', 'dubbing-group-2', 'dubbing-group-2'],
+  )
+})
+
+test('changing dubbing groups preserves the confirmed subtitle and global voice route', () => {
+  const state = createVideoTranslationState()
+  state.reviewStatus = 'ready'
+  state.finalScriptId = 'timestamp-script-1'
+  state.scriptHash = 'a'.repeat(64)
+  state.seedPromptText = 'global prompt'
+  state.arrangementStatus = 'ready'
+  state.voiceStatus = 'ready'
+  state.groupedVoicePrompts = { group: 'prompt' }
+  state.voiceVersions = [
+    {
+      versionId: 'global-1',
+      route: 'global',
+      createdAt: '2026-08-10T00:00:00.000Z',
+      previewPath: 'global.wav',
+      durationMs: 1_000,
+    },
+  ]
+  state.activeVoiceVersionId = 'global-1'
+
+  const next = invalidateVideoTranslation(state, 'dubbing-group')
+  assert.equal(next.reviewStatus, 'ready')
+  assert.equal(next.finalScriptId, state.finalScriptId)
+  assert.equal(next.scriptHash, state.scriptHash)
+  assert.equal(next.seedPromptText, state.seedPromptText)
+  assert.equal(next.arrangementStatus, 'ready')
+  assert.equal(next.activeVoiceVersionId, 'global-1')
+  assert.equal(next.groupedVoicePrompts, undefined)
 })
 
 test('derives strict three-part grouped prompts from the validated global prompt', () => {

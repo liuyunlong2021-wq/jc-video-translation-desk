@@ -117,52 +117,92 @@
             controls
             preload="metadata"
           />
+          <div class="grouped-actions">
+            <strong>
+              当前字幕
+              {{
+                selectedGroupedCueIndex < 0
+                  ? '未选择'
+                  : `#${String(selectedGroupedCueIndex + 1).padStart(2, '0')}`
+              }}
+            </strong>
+            <v-btn
+              size="small"
+              color="primary"
+              variant="tonal"
+              prepend-icon="mdi-link-variant"
+              :disabled="Boolean(mediaStore.busyAction) || !canGroupSelectedCue"
+              @click="groupSelectedCueWithNext"
+              >与下一条组成配音组</v-btn
+            >
+            <v-btn
+              size="small"
+              variant="text"
+              prepend-icon="mdi-link-variant-off"
+              :disabled="Boolean(mediaStore.busyAction) || !selectedGroupedCue?.dubbingGroupId"
+              @click="ungroupSelectedCue"
+              >从当前配音组拆出</v-btn
+            >
+            <small v-if="groupingError" class="grouping-error">{{ groupingError }}</small>
+          </div>
           <div class="grouped-table-wrap">
             <table class="grouped-table">
               <thead>
                 <tr>
-                  <th>组号</th>
+                  <th>序号</th>
                   <th>时间轴</th>
                   <th>角色</th>
-                  <th>包含字幕</th>
-                  <th>目标时长</th>
+                  <th>人工确认稿</th>
+                  <th>译文字幕</th>
+                  <th>配音组</th>
                   <th>状态</th>
                   <th>试听</th>
                 </tr>
               </thead>
               <tbody>
                 <tr
-                  v-for="(group, index) in translationGroups"
-                  :key="group.groupId"
-                  :class="{ selected: mediaStore.selectedAssetId === group.groupId }"
-                  @click="mediaStore.selectedAssetId = group.groupId"
+                  v-for="(cue, index) in mediaStore.videoTranslation?.cues || []"
+                  :key="cue.cueId"
+                  :class="{ selected: selectedGroupedCueId === cue.cueId }"
+                  @click="selectGroupedCue(cue.cueId)"
                 >
                   <td>
-                    <strong>组{{ String(index + 1).padStart(2, '0') }}</strong>
-                    <small>字幕{{ cueRange(group.cueIds) }}</small>
+                    <strong>#{{ String(index + 1).padStart(2, '0') }}</strong>
                   </td>
                   <td>
-                    {{ formatTranslationTime(group.startMs) }}-{{
-                      formatTranslationTime(group.endMs)
-                    }}
+                    {{ formatTranslationTime(cue.startMs) }}-{{ formatTranslationTime(cue.endMs) }}
                   </td>
-                  <td>{{ translationRoleName(group.speakerId) }}</td>
-                  <td>{{ group.cueIds.length }} 条</td>
-                  <td>{{ ((group.endMs - group.startMs) / 1000).toFixed(1) }} 秒</td>
+                  <td>{{ translationRoleName(cue.translationRoleId || '') }}</td>
+                  <td class="grouped-translation-text">{{ cue.sourceText }}</td>
+                  <td class="grouped-translation-text">{{ cue.translatedText }}</td>
                   <td>
-                    <v-chip size="x-small" :color="groupStatusColor(group.groupId)" variant="tonal">
-                      {{ groupStatus(group.groupId) }}
+                    <strong>组{{ groupNumberForCue(cue.cueId) }}</strong>
+                    <small>字幕{{ cueRange(groupForCue(cue.cueId)?.cueIds || []) }}</small>
+                  </td>
+                  <td>
+                    <v-chip
+                      size="x-small"
+                      :color="groupStatusColor(groupForCue(cue.cueId)?.groupId || '')"
+                      variant="tonal"
+                    >
+                      {{ groupStatus(groupForCue(cue.cueId)?.groupId || '') }}
                     </v-chip>
-                    <small v-if="groupOverrun(group.groupId)">
-                      超时 {{ (groupOverrun(group.groupId) / 1000).toFixed(1) }} 秒
+                    <small v-if="groupOverrun(groupForCue(cue.cueId)?.groupId || '')">
+                      超时
+                      {{ (groupOverrun(groupForCue(cue.cueId)?.groupId || '') / 1000).toFixed(1) }}
+                      秒
                     </small>
                   </td>
                   <td @click.stop>
                     <audio
-                      v-if="groupAudioPath(group.groupId)"
+                      v-if="
+                        isFirstCueInGroup(cue.cueId) &&
+                        groupAudioPath(groupForCue(cue.cueId)?.groupId || '')
+                      "
                       controls
-                      :src="fileUrl(groupAudioPath(group.groupId)!)"
+                      :src="fileUrl(groupAudioPath(groupForCue(cue.cueId)?.groupId || '')!)"
                     />
+                    <small v-else-if="!isFirstCueInGroup(cue.cueId)">同组试听见首行</small>
                     <small v-else>待生成</small>
                   </td>
                 </tr>
@@ -724,7 +764,11 @@ import type {
 import { managedMediaUrl } from '@/runtime/managedMediaUrl'
 import { renderMarkdown, resolveWikiLink } from '@/runtime/markdown'
 import { projectDirectorMarkdown } from '@/runtime/projectDirector'
-import { videoTranslationDubbingGroups } from '@/runtime/videoTranslation'
+import {
+  groupVideoTranslationCueWithNext,
+  ungroupVideoTranslationCue,
+  videoTranslationDubbingGroups,
+} from '@/runtime/videoTranslation'
 import WikiDocument from './WikiDocument.vue'
 import DubbingSubtitleWorkspace from './DubbingSubtitleWorkspace.vue'
 import type { VoiceProfile } from '~/electron/voice-library'
@@ -808,11 +852,16 @@ function translationRolePreview(id: string) {
 const selectedCharacter = computed(() =>
   seedCharacters.value.find((asset) => asset.id === mediaStore.selectedAssetId),
 )
+const selectedGroupedCueId = ref('')
+const groupingError = ref('')
 watch(
   () => mediaStore.seedVoiceTab,
   (tab) => {
     if (tab === 'roles') mediaStore.selectedAssetId = seedCharacters.value[0]?.id
-    else if (tab === 'grouped') mediaStore.selectedAssetId = translationGroups.value[0]?.groupId
+    else if (tab === 'grouped')
+      selectGroupedCue(
+        selectedGroupedCueId.value || mediaStore.videoTranslation?.cues[0]?.cueId || '',
+      )
   },
 )
 const selectedSeedVoiceId = computed(() =>
@@ -1136,6 +1185,75 @@ const translationGroups = computed(() =>
     ? videoTranslationDubbingGroups(mediaStore.videoTranslation.cues)
     : [],
 )
+const selectedGroupedCueIndex = computed(
+  () =>
+    mediaStore.videoTranslation?.cues.findIndex(
+      (cue) => cue.cueId === selectedGroupedCueId.value,
+    ) ?? -1,
+)
+const selectedGroupedCue = computed(() =>
+  mediaStore.videoTranslation?.cues.find((cue) => cue.cueId === selectedGroupedCueId.value),
+)
+function groupForCue(cueId: string) {
+  return translationGroups.value.find((group) => group.cueIds.includes(cueId))
+}
+function selectGroupedCue(cueId: string) {
+  if (!cueId) return
+  selectedGroupedCueId.value = cueId
+  mediaStore.selectedAssetId = groupForCue(cueId)?.groupId
+  groupingError.value = ''
+}
+const canGroupSelectedCue = computed(() => {
+  const cues = mediaStore.videoTranslation?.cues || []
+  const group = groupForCue(selectedGroupedCueId.value)
+  const anchorId = group?.cueIds.at(-1) || selectedGroupedCueId.value
+  const index = cues.findIndex((cue) => cue.cueId === anchorId)
+  return (
+    index >= 0 &&
+    Boolean(cues[index + 1]) &&
+    cues[index].translationRoleId === cues[index + 1].translationRoleId
+  )
+})
+function groupSelectedCueWithNext() {
+  const state = mediaStore.videoTranslation
+  if (!state) return
+  try {
+    const group = groupForCue(selectedGroupedCueId.value)
+    const anchorId = group?.cueIds.at(-1) || selectedGroupedCueId.value
+    state.cues = groupVideoTranslationCueWithNext(
+      state.cues,
+      anchorId,
+      `dubbing-${crypto.randomUUID()}`,
+    )
+    mediaStore.invalidateTranslation('dubbing-group')
+    selectGroupedCue(selectedGroupedCueId.value)
+  } catch (error) {
+    groupingError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+function ungroupSelectedCue() {
+  const state = mediaStore.videoTranslation
+  if (!state) return
+  try {
+    state.cues = ungroupVideoTranslationCue(
+      state.cues,
+      selectedGroupedCueId.value,
+      `dubbing-${crypto.randomUUID()}`,
+    )
+    mediaStore.invalidateTranslation('dubbing-group')
+    selectGroupedCue(selectedGroupedCueId.value)
+  } catch (error) {
+    groupingError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+function groupNumberForCue(cueId: string) {
+  const groupId = groupForCue(cueId)?.groupId
+  const index = translationGroups.value.findIndex((group) => group.groupId === groupId)
+  return String(index + 1).padStart(2, '0')
+}
+function isFirstCueInGroup(cueId: string) {
+  return groupForCue(cueId)?.cueIds[0] === cueId
+}
 const selectedTranslationGroupIndex = computed(() =>
   translationGroups.value.findIndex((group) => group.groupId === mediaStore.selectedAssetId),
 )
@@ -1155,7 +1273,13 @@ const latestGroupedVersion = computed(() =>
     .filter(
       (version) =>
         version.route === 'grouped' &&
-        version.scriptHash === mediaStore.videoTranslation?.scriptHash,
+        version.scriptHash === mediaStore.videoTranslation?.scriptHash &&
+        version.blocks?.length === translationGroups.value.length &&
+        version.blocks.every(
+          (block, index) =>
+            block.voiceBlockId === translationGroups.value[index].groupId &&
+            block.cueIds.join('\n') === translationGroups.value[index].cueIds.join('\n'),
+        ),
     )
     .at(-1),
 )
@@ -1173,9 +1297,7 @@ function groupStatus(groupId: string) {
   if (status === 'generating' || status === 'downloading') return '生成中'
   if (status === 'failed') return '生成失败'
   if (status === 'stopped') return '已停止'
-  return groupedBlock(groupId) || status === 'success'
-    ? '已完成'
-    : '待生成'
+  return groupedBlock(groupId) || status === 'success' ? '已完成' : '待生成'
 }
 function groupStatusColor(groupId: string) {
   const status = groupStatus(groupId)
@@ -1386,9 +1508,18 @@ function openSeedVoice() {
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-rows: minmax(150px, 32%) minmax(180px, 1fr) auto;
+  grid-template-rows: minmax(150px, 32%) auto minmax(180px, 1fr) auto;
   gap: 12px;
   overflow: hidden;
+}
+.grouped-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.grouped-actions .grouping-error {
+  color: rgb(var(--v-theme-error));
 }
 .grouped-source-preview {
   width: 100%;
@@ -1405,10 +1536,13 @@ function openSeedVoice() {
 }
 .grouped-table {
   width: 100%;
-  min-width: 820px;
+  min-width: 960px;
   table-layout: fixed;
   border-collapse: collapse;
   font-size: 12px;
+}
+.grouped-translation-text {
+  white-space: pre-wrap;
 }
 .grouped-table th,
 .grouped-table td {
