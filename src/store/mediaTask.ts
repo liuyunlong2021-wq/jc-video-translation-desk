@@ -295,6 +295,15 @@ export const useMediaTaskStore = defineStore(
     function invalidateTranslation(change: VideoTranslationChange) {
       if (videoTranslation.value)
         videoTranslation.value = invalidateVideoTranslation(videoTranslation.value, change)
+      if (['source-dialogue', 'translation', 'role-binding', 'timing', 'language'].includes(change)) {
+        seedAudioGlobalPrompt.value = ''
+        seedAudioArrangementPath.value = ''
+        seedAudioTrackPath.value = ''
+        seedAudioDialogueTimelinePath.value = ''
+        seedAudioSrtPath.value = ''
+        seedAudioDuration.value = 0
+        error.value = ''
+      }
     }
 
     function invalidateFrom(level: 'script' | 'voice' | 'images' | 'videos') {

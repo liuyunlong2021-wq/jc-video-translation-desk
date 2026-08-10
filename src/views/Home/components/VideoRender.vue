@@ -155,6 +155,9 @@
         <template v-else>
           <strong>分组克隆</strong>
           <small>批量并发生成全部配音组；失败组可单独重新生成。</small>
+          <small v-if="!mediaStore.seedAudioGlobalPrompt.trim()" class="text-warning">
+            人工确认稿已变化，请先在“全局配音”重新生成提示词。
+          </small>
           <v-btn
             color="success"
             prepend-icon="mdi-waveform"
@@ -197,6 +200,18 @@
             @click="$emit('openTranslationSubtitles')"
             >进入成片工作台</v-btn
           >
+          <v-textarea
+            v-if="selectedTranslationGroup"
+            :model-value="selectedGroupedPrompt"
+            rows="4"
+            no-resize
+            hide-details
+            variant="outlined"
+            :label="`组${String(selectedTranslationGroupIndex + 1).padStart(2, '0')} 三段式提示词`"
+            @update:model-value="
+              emit('editGroupedPrompt', selectedTranslationGroup.groupId, String($event || ''))
+            "
+          />
         </template>
       </div>
       <div v-else-if="mediaStore.workflowStep === 'voice'" class="voice-controls">
@@ -316,6 +331,7 @@ import {
   type RevisionTargetType,
 } from '@/runtime/videoWorkflow'
 import { assetVersionMatches } from '@/runtime/storyboardMarkdown'
+import { videoTranslationDubbingGroups } from '@/runtime/videoTranslation'
 
 const props = withDefaults(
   defineProps<{ translationMode?: boolean; translationFinalReady?: boolean }>(),
@@ -338,6 +354,7 @@ const emit = defineEmits([
   'generateGlobalSeedAudio',
   'generateGroupedSeedAudio',
   'regenerateGroupedSeedAudio',
+  'editGroupedPrompt',
   'openTranslationSubtitles',
   'editScriptMode',
   'generateShotPlan',
@@ -392,6 +409,25 @@ const selectedSeedCharacter = computed(() =>
   mediaStore.workspaceView === 'seed-voice' && mediaStore.seedVoiceTab === 'roles'
     ? seedCharacters.value.find((asset) => asset.id === mediaStore.selectedAssetId)
     : undefined,
+)
+const translationGroups = computed(() =>
+  mediaStore.videoTranslation
+    ? videoTranslationDubbingGroups(mediaStore.videoTranslation.cues)
+    : [],
+)
+const selectedTranslationGroupIndex = computed(() =>
+  translationGroups.value.findIndex((group) => group.groupId === mediaStore.selectedAssetId),
+)
+const selectedTranslationGroup = computed(() =>
+  selectedTranslationGroupIndex.value < 0
+    ? undefined
+    : translationGroups.value[selectedTranslationGroupIndex.value],
+)
+const selectedGroupedPrompt = computed(
+  () =>
+    (selectedTranslationGroup.value &&
+      mediaStore.videoTranslation?.groupedVoicePrompts?.[selectedTranslationGroup.value.groupId]) ||
+    '',
 )
 const allSeedRolePromptsReady = computed(
   () =>
@@ -735,7 +771,9 @@ const canStop = computed(() =>
   ].includes(mediaStore.busyAction),
 )
 const displayError = computed(() =>
-  /system cpu overloaded|cpu.*threshold/i.test(mediaStore.error)
+  /未按顺序逐行保留全部确认台词|未按顺序逐字保留确认台词/.test(mediaStore.error)
+    ? '人工确认稿已变化，请重新生成全局配音提示词。'
+    : /system cpu overloaded|cpu.*threshold/i.test(mediaStore.error)
     ? '云端当前繁忙，本次内容尚未生成，请稍后重试。'
     : /云端请求失败\s*\(524\)|\b524\b/.test(mediaStore.error)
       ? '当前模型响应超时，内容尚未生成。请重试或切换其他文本模型。'

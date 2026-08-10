@@ -110,13 +110,6 @@
           >
         </v-btn-toggle>
         <div v-if="mediaStore.seedVoiceTab === 'grouped'" class="grouped-voice-main">
-          <video
-            v-if="mediaStore.videoTranslation?.sourceVideoPath"
-            class="grouped-source-preview"
-            :src="fileUrl(mediaStore.videoTranslation.sourceVideoPath)"
-            controls
-            preload="metadata"
-          />
           <div class="grouped-actions">
             <strong>
               当前字幕
@@ -209,18 +202,6 @@
               </tbody>
             </table>
           </div>
-          <v-textarea
-            v-if="selectedTranslationGroup"
-            :model-value="selectedGroupedPrompt"
-            rows="9"
-            no-resize
-            hide-details
-            variant="outlined"
-            :label="`组${String(selectedTranslationGroupIndex + 1).padStart(2, '0')} 三段式提示词`"
-            @update:model-value="
-              $emit('editGroupedPrompt', selectedTranslationGroup.groupId, String($event || ''))
-            "
-          />
         </div>
         <div v-else class="seed-voice-main">
           <nav
@@ -802,7 +783,6 @@ defineEmits<{
   uploadSeedReference: [speakerId: string]
   editSeedRolePrompt: [speakerId: string, prompt: string]
   editSeedGlobalPrompt: [prompt: string]
-  editGroupedPrompt: [groupId: string, prompt: string]
   generateSeedPrompt: []
   generateSeedVoiceScript: []
   saveSeedDirectorDraft: []
@@ -1254,20 +1234,6 @@ function groupNumberForCue(cueId: string) {
 function isFirstCueInGroup(cueId: string) {
   return groupForCue(cueId)?.cueIds[0] === cueId
 }
-const selectedTranslationGroupIndex = computed(() =>
-  translationGroups.value.findIndex((group) => group.groupId === mediaStore.selectedAssetId),
-)
-const selectedTranslationGroup = computed(() =>
-  selectedTranslationGroupIndex.value < 0
-    ? undefined
-    : translationGroups.value[selectedTranslationGroupIndex.value],
-)
-const selectedGroupedPrompt = computed(
-  () =>
-    (selectedTranslationGroup.value &&
-      mediaStore.videoTranslation?.groupedVoicePrompts?.[selectedTranslationGroup.value.groupId]) ||
-    '',
-)
 const latestGroupedVersion = computed(() =>
   translationVoiceVersions.value
     .filter(
@@ -1508,7 +1474,7 @@ function openSeedVoice() {
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-rows: minmax(150px, 32%) auto minmax(180px, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   overflow: hidden;
 }
@@ -1520,14 +1486,6 @@ function openSeedVoice() {
 }
 .grouped-actions .grouping-error {
   color: rgb(var(--v-theme-error));
-}
-.grouped-source-preview {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  object-fit: contain;
-  background: #111;
-  border-radius: 6px;
 }
 .grouped-table-wrap {
   min-width: 0;

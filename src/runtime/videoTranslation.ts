@@ -748,6 +748,10 @@ export function invalidateVideoTranslation(
     next.finalScriptId = undefined
     next.scriptHash = undefined
     next.finalScriptMarkdown = undefined
+    next.seedArrangementPath = undefined
+    next.seedPromptPath = undefined
+    next.seedPromptText = undefined
+    next.seedPromptGeneratedBySkill = undefined
   }
   if (
     [

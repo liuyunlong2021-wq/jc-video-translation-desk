@@ -258,7 +258,6 @@
             @confirm-seed-voice="confirmTranslationSeedVoice"
             @edit-seed-role-prompt="editTranslationSeedRolePrompt"
             @edit-seed-global-prompt="editTranslationSeedGlobalPrompt"
-            @edit-grouped-prompt="editTranslationGroupedPrompt"
             @select-translation-voice-version="selectTranslationVoiceVersion"
           />
           <div class="inspector-column min-w-0 min-h-0 open">
@@ -271,6 +270,7 @@
               @generate-global-seed-audio="generateTranslationVoice"
               @generate-grouped-seed-audio="generateTranslationGroupedVoice"
               @regenerate-grouped-seed-audio="regenerateTranslationGroupedVoice"
+              @edit-grouped-prompt="editTranslationGroupedPrompt"
               @open-translation-subtitles="openTranslationSubtitleWorkspace"
               @request-revision="requestRevision"
               @cancel="cancelWorkflow"
@@ -530,6 +530,7 @@ watch(
   () => mediaStore.seedVoiceTab,
   (tab) => {
     if (tab !== 'grouped' || !isTranslationVoiceWorkspace.value) return
+    if (!mediaStore.seedAudioGlobalPrompt.trim()) return
     void currentTranslationGroupedPlan().catch((error) => {
       mediaStore.error = error instanceof Error ? error.message : String(error)
     })

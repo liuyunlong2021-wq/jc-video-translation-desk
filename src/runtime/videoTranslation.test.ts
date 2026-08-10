@@ -271,11 +271,17 @@ test('merges both source and translated text without relocking translation', () 
       needsReview: false,
     },
   ]
+  state.seedArrangementPath = 'arrangement.json'
+  state.seedPromptPath = 'prompt.md'
+  state.seedPromptText = '旧全局提示词'
   state.cues = mergeVideoTranslationCueWithNext(state.cues, 'cue-001')
   const next = invalidateVideoTranslation(state, 'translation')
   assert.equal(next.cues[0].sourceText, '你好 再见')
   assert.equal(next.cues[0].translatedText, 'Hello Goodbye')
   assert.equal(next.translationStatus, 'ready')
+  assert.equal(next.seedArrangementPath, undefined)
+  assert.equal(next.seedPromptPath, undefined)
+  assert.equal(next.seedPromptText, undefined)
   assert.ok(availableVideoTranslationActions(next, [role]).includes('open-voice-workspace'))
 })
 
