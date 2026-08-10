@@ -2,7 +2,17 @@
 
 视频翻译工作台是一款本地优先的桌面应用。它将已有视频处理成目标语言字幕、角色配音和最终成片；视频、音频、模型与项目文件保留在用户自己的电脑上，只有字幕校准、翻译和配音生成会使用你在应用中填写的韭菜盒子 API Key。
 
-> 这是源码安装版。首次安装会下载 Node 依赖、Python 独立环境和 FunASR 模型，建议预留至少 8 GB 可用磁盘并保持网络稳定。首次完成后，日常启动不再重复下载模型。
+## 直接下载 APP
+
+普通用户不需要安装 Node.js、Python、FFmpeg 或运行命令。打开 [GitHub Releases](https://github.com/liuyunlong2021-wq/jc-video-translation-desk/releases)，下载与你的电脑对应的安装包：
+
+- Apple Silicon（M1/M2/M3/M4）：下载 macOS 的 `.dmg` 文件。
+- Intel Mac：下载同一个 macOS `.dmg` 文件。
+- Windows：下载文件名包含 `win` 的安装程序（发布后提供）。
+
+安装并打开 APP 后，进入“生成设置” -> “本地字幕引擎” -> “一键安装”。APP 会自动安装 FunASR 运行环境、依赖和模型；首次安装建议预留至少 8 GB 磁盘空间并保持网络稳定。完成后日常使用不再重复下载。
+
+Linux 暂不提供桌面安装包，需要使用下面的源码安装方式。
 
 ## 能做什么
 
@@ -29,12 +39,12 @@
 
 当前已在 Apple Silicon Mac（M1/M2/M3/M4）完成真实 FunASR 探针验证。Intel Mac 和 Windows 使用同一安装脚本，但仍建议首次安装后按“检查是否安装成功”逐项确认；Intel Mac 会使用 CPU，识别速度通常比 M 系列慢。
 
-### 获取源码
+### 获取源码（开发者备用）
 
-本仓库尚未配置公开远程地址。发布到 GitHub 后，请把下面的 `你的 GitHub 用户名/仓库名` 换成 README 顶部显示的实际地址：
+本仓库的公开地址是：
 
 ```text
-https://github.com/你的 GitHub 用户名/仓库名.git
+https://github.com/liuyunlong2021-wq/jc-video-translation-desk.git
 ```
 
 如果你已经下载了 ZIP 文件，也可以解压后进入解压出来的 `jc-video-translation-desk` 文件夹，跳过 Git 安装和克隆步骤。
@@ -89,7 +99,7 @@ uv --version
 在终端依次运行。第一行的地址要换成发布后的真实 GitHub 地址：
 
 ```bash
-git clone https://github.com/你的 GitHub 用户名/仓库名.git
+git clone https://github.com/liuyunlong2021-wq/jc-video-translation-desk.git
 cd 仓库名
 corepack enable
 corepack prepare pnpm@10.12.4 --activate
@@ -169,7 +179,7 @@ uv --version
 
 ```powershell
 cd $HOME\Documents
-git clone https://github.com/你的 GitHub 用户名/仓库名.git
+git clone https://github.com/liuyunlong2021-wq/jc-video-translation-desk.git
 cd 仓库名
 corepack enable
 corepack prepare pnpm@10.12.4 --activate
@@ -228,7 +238,7 @@ pnpm test
 pnpm build:translation
 ```
 
-构建后的安装包位于 `release-translation/<版本号>/`。安装包不内置约 2 GB 的 Python 环境和 FunASR 模型，因此新电脑仍须先按本文“下载项目并安装”执行 `pnpm setup:funasr`。
+构建后的安装包位于 `release-translation/<版本号>/`。安装包不内置约 2 GB 的 Python 环境和 FunASR 模型；普通用户安装 APP 后，直接在“生成设置”中点击“一键安装”即可完成配置。
 
 ## 常见问题
 
