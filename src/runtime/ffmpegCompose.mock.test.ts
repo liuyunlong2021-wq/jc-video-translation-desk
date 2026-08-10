@@ -309,8 +309,32 @@ test('video translation audio and final output stay outside creative Wiki paths'
     voiceFile: voice, workflow: 'video-translation', targetLanguage: 'en',
   })
   assert.equal(mixed.mixedAudioPath, `wiki/翻译/${episodeId}/en/音频/mixed.wav`)
-  const mixedDuration = wavDuration(path.join(base, mixed.mixedAudioPath!))
+  const mixedPath = path.join(base, mixed.mixedAudioPath!)
+  const mixedDuration = wavDuration(mixedPath)
   assert.ok(mixedDuration >= 9.9, `mixed audio ended early: ${mixedDuration}`)
+  assert.equal((await parseBuffer(await fs.promises.readFile(mixedPath))).format.sampleRate, 48000)
+  const completedMix = fs.readFileSync(mixedPath)
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(
+    mixBackgroundAudio({
+      runId, episodeId, vocalPath: adopted.vocalPath!, instrumentPath: adopted.instrumentPath!,
+      voiceFile: voice, workflow: 'video-translation', targetLanguage: 'en',
+      abortSignal: controller.signal,
+    }),
+    /任务已停止/,
+  )
+  assert.deepEqual(fs.readFileSync(mixedPath), completedMix)
+  const runningController = new AbortController()
+  const cancelledMix = mixBackgroundAudio({
+    runId, episodeId, vocalPath: adopted.vocalPath!, instrumentPath: adopted.instrumentPath!,
+    voiceFile: voice, workflow: 'video-translation', targetLanguage: 'en',
+    abortSignal: runningController.signal,
+  })
+  setTimeout(() => runningController.abort(), 10)
+  await assert.rejects(cancelledMix, /任务已停止/)
+  assert.deepEqual(fs.readFileSync(mixedPath), completedMix)
+  assert.deepEqual(fs.readdirSync(audioDir).filter((file) => file.includes('.tmp.wav')), [])
   assert.ok(fs.existsSync(path.join(base, 'wiki', '翻译', episodeId, 'en', '音频处理.json')))
   assert.equal(fs.existsSync(path.join(base, 'wiki', '声音')), false)
 })

@@ -399,23 +399,29 @@ export async function mixBackgroundAudio(
     fs.promises.access(voice),
   ])
   const target = audioPaths(params.runId, params.episodeId, params.workflow, params.targetLanguage)
-  await executeFFmpeg(
-    [
-      '-i',
-      instrument,
-      '-i',
-      voice,
-      '-filter_complex',
-      '[0:a]aresample=48000,loudnorm=I=-24:TP=-2:LRA=7[bg];[1:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=7[voice];[bg][voice]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,alimiter=limit=0.95[out]',
-      '-map',
-      '[out]',
-      '-c:a',
-      'pcm_s16le',
-      '-y',
-      target.mixed,
-    ],
-    params,
-  )
+  const temporary = `${target.mixed}.${randomUUID()}.tmp.wav`
+  try {
+    await executeFFmpeg(
+      [
+        '-i',
+        instrument,
+        '-i',
+        voice,
+        '-filter_complex',
+        '[0:a]aresample=48000,loudnorm=I=-24:TP=-2:LRA=7,aresample=48000[bg];[1:a]aresample=48000,loudnorm=I=-18:TP=-2:LRA=7,aresample=48000[voice];[bg][voice]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[out]',
+        '-map',
+        '[out]',
+        '-c:a',
+        'pcm_s16le',
+        '-y',
+        temporary,
+      ],
+      params,
+    )
+    await fs.promises.rename(temporary, target.mixed)
+  } finally {
+    await fs.promises.rm(temporary, { force: true })
+  }
   return writeAudioProcessingRecord(params, {
     schemaVersion: 1,
     audioMode: 'replace-preserve-ambience',
@@ -630,6 +636,7 @@ export async function executeFFmpeg(
   isWindows && validateExecutables()
 
   return new Promise((resolve, reject) => {
+    if (options?.abortSignal?.aborted) return reject(new Error('任务已停止'))
     const defaultOptions = {
       cwd: process.cwd(),
       env: process.env,
@@ -637,6 +644,8 @@ export async function executeFFmpeg(
     }
 
     const child = spawn(ffmpegPath, args, defaultOptions)
+    const abort = () => child.kill('SIGTERM')
+    const clearAbort = () => options?.abortSignal?.removeEventListener('abort', abort)
 
     let stdout = ''
     let stderr = ''
@@ -656,24 +665,24 @@ export async function executeFFmpeg(
     })
 
     child.on('close', (code) => {
+      clearAbort()
       if (code === 0) {
         options?.onProgress?.(100)
         resolve({ stdout, stderr, code })
+      } else if (options?.abortSignal?.aborted) {
+        reject(new Error('任务已停止'))
       } else {
         reject(new Error(`FFmpeg exited with code ${code}: ${stderr}`))
       }
     })
 
     child.on('error', (error) => {
+      clearAbort()
       reject(new Error(`Failed to start FFmpeg: ${error.message}`))
     })
 
     // 提供取消功能
-    if (options?.abortSignal) {
-      options.abortSignal.addEventListener('abort', () => {
-        child.kill('SIGTERM')
-      })
-    }
+    options?.abortSignal?.addEventListener('abort', abort, { once: true })
   })
 }
 

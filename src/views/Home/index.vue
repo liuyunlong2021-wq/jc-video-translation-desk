@@ -1471,6 +1471,7 @@ async function runAction(name: string, action: () => Promise<void>) {
   try {
     await action()
   } catch (error) {
+    if (mediaStore.cancelRequested) return
     const message = (error instanceof Error ? error.message : String(error)).replace(
       /^Error invoking remote method '[^']+': Error:\s*/,
       '',
@@ -1515,7 +1516,7 @@ async function runTranslationStep(
       await work(state)
       state[status] = 'ready'
     } catch (error) {
-      state[status] = 'failed'
+      state[status] = mediaStore.cancelRequested ? 'stale' : 'failed'
       throw error
     }
   })
