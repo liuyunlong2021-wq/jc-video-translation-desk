@@ -30,22 +30,16 @@ const nativePath = isDev
     )
   : path.join(NATIVE_DIST, 'better-sqlite3.node')
 
-const dbPath = path.join(app.getPath('userData'), 'data.db')
-
 console.log('BetterSqlite3 path:', nativePath)
-console.log('Database path:', dbPath)
 
 class Database {
-  private db
-
-  constructor() {
-    this.db = new BetterSqlite3(dbPath, {
-      nativeBinding: nativePath,
-    })
-  }
+  private db: InstanceType<typeof BetterSqlite3> | null = null
 
   open(): Promise<void> {
     return new Promise<void>((resolve, _reject) => {
+      const dbPath = path.join(app.getPath('userData'), 'data.db')
+      console.log('Database path:', dbPath)
+      this.db = new BetterSqlite3(dbPath, { nativeBinding: nativePath })
       this.db.pragma('foreign_keys = ON')
       console.log('Connected to the database.')
       resolve()
@@ -54,7 +48,8 @@ class Database {
 
   close(): Promise<void> {
     return new Promise<void>((resolve, _reject) => {
-      this.db.close()
+      this.db?.close()
+      this.db = null
       console.log('Database closed.')
       resolve()
     })
@@ -62,7 +57,7 @@ class Database {
 
   query(param: QueryParams): Promise<any[]> {
     return new Promise<any[]>((resolve, _reject) => {
-      const stmt = this.db.prepare(param.sql)
+      const stmt = this.db!.prepare(param.sql)
       const rows = param.params ? stmt.all(...param.params) : stmt.all()
       resolve(rows)
     })
@@ -75,7 +70,7 @@ class Database {
       const placeholders = keys.map(() => '?').join(',')
       const sql = `INSERT INTO ${param.table} (${keys.join(',')}) VALUES (${placeholders})`
 
-      const stmt = this.db.prepare(sql)
+      const stmt = this.db!.prepare(sql)
       const info = stmt.run(...values)
       resolve(info.lastInsertRowid as number)
     })
@@ -94,7 +89,7 @@ class Database {
       const params = Object.values(param.data)
       const sql = `UPDATE ${param.table} SET ${entries} WHERE ${param.condition}`
 
-      const stmt = this.db.prepare(sql)
+      const stmt = this.db!.prepare(sql)
       const info = stmt.run(...params)
       resolve(info.changes)
     })
@@ -103,7 +98,7 @@ class Database {
   delete(param: DeleteParams): Promise<void> {
     return new Promise<void>((resolve, _reject) => {
       const sql = `DELETE FROM ${param.table} WHERE ${param.condition}`
-      const stmt = this.db.prepare(sql)
+      const stmt = this.db!.prepare(sql)
       stmt.run()
       resolve()
     })
@@ -120,10 +115,10 @@ class Database {
         ON CONFLICT(id) DO UPDATE SET ${updatePlaceholders}
       `
 
-      const stmt = this.db.prepare(sql)
+      const stmt = this.db!.prepare(sql)
 
       // 开始事务
-      const transaction = this.db.transaction((records) => {
+      const transaction = this.db!.transaction((records) => {
         for (const record of records) {
           stmt.run(...Object.values(record))
         }

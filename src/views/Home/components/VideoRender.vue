@@ -60,20 +60,45 @@
             color="success"
             prepend-icon="mdi-text-box-edit-outline"
             :loading="mediaStore.busyAction === 'generate-seed-role-prompts'"
-            :disabled="Boolean(mediaStore.busyAction) || !seedCharacters.length"
+            :disabled="
+              Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured || !seedCharacters.length
+            "
+            :title="!mediaStore.apiConfigured ? '请先在生成设置中配置韭菜盒子 API Key' : undefined"
             block
             @click="$emit('generateAllSeedRolePrompts')"
             >生成角色提示词</v-btn
           >
           <v-btn
-            v-if="!translationMode"
             color="success"
             prepend-icon="mdi-waveform"
             :loading="mediaStore.busyAction === 'generate-seed-references'"
-            :disabled="Boolean(mediaStore.busyAction) || !allSeedRolePromptsReady"
+            :disabled="
+              Boolean(mediaStore.busyAction) ||
+              !mediaStore.apiConfigured ||
+              !allSeedRolePromptsReady
+            "
+            :title="
+              !mediaStore.apiConfigured
+                ? '请先在生成设置中配置韭菜盒子 API Key'
+                : !allSeedRolePromptsReady
+                  ? '请先生成全部角色提示词'
+                  : undefined
+            "
             block
             @click="$emit('generateAllSeedReferences')"
             >按提示词生成角色参考音</v-btn
+          >
+          <v-btn
+            v-if="translationMode"
+            color="success"
+            prepend-icon="mdi-subtitles-outline"
+            :disabled="Boolean(mediaStore.busyAction) || !props.translationFinalReady"
+            :title="
+              !props.translationFinalReady ? '请先生成并选择完整的全局配音版本' : undefined
+            "
+            block
+            @click="$emit('openTranslationSubtitles')"
+            >进入成片工作台</v-btn
           >
         </template>
         <template v-else>
@@ -119,16 +144,7 @@
             {{ progressText }}
           </v-alert>
           <v-btn
-            v-if="translationMode"
-            color="success"
-            prepend-icon="mdi-subtitles-outline"
-            :disabled="Boolean(mediaStore.busyAction) || !activeTranslationVoiceComplete"
-            block
-            @click="$emit('openTranslationSubtitles')"
-            >进入成片工作台</v-btn
-          >
-          <v-btn
-            v-else
+            v-if="!translationMode"
             color="success"
             prepend-icon="mdi-movie-edit-outline"
             :loading="mediaStore.busyAction === 'shot-plan'"
@@ -257,9 +273,10 @@ import {
 } from '@/runtime/videoWorkflow'
 import { assetVersionMatches } from '@/runtime/storyboardMarkdown'
 
-const props = withDefaults(defineProps<{ translationMode?: boolean }>(), {
-  translationMode: false,
-})
+const props = withDefaults(
+  defineProps<{ translationMode?: boolean; translationFinalReady?: boolean }>(),
+  { translationMode: false, translationFinalReady: false },
+)
 const { translationMode } = props
 const emit = defineEmits([
   'generateScript',
@@ -349,16 +366,6 @@ const allTranslationVoicesConfirmed = computed(
       )
     }),
 )
-const activeTranslationVoiceComplete = computed(() => {
-  if (!translationMode) return true
-  const state = mediaStore.videoTranslation
-  const version = state?.voiceVersions.find((item) => item.versionId === state.activeVoiceVersionId)
-  return Boolean(
-    version?.blocks?.length &&
-      version.finalScriptId === state?.finalScriptId &&
-      version.scriptHash === state?.scriptHash,
-  )
-})
 const globalSeedDisabledReason = computed(() => {
   if (!allTranslationVoicesConfirmed.value) {
     const asset = seedCharacters.value.find((item) => {

@@ -600,7 +600,7 @@ export async function openProjectDirectory(rootPath?: string) {
     !Array.isArray(manifest.episodes) ||
     !RUN_ID.test(manifest.lastOpenedEpisodeId)
   )
-    throw new Error('所选目录不是有效的点一点项目')
+    throw new Error('所选目录不是有效的视频翻译工作台项目')
   await registerProjectRoot(manifest.projectId, resolved)
   return manifest
 }

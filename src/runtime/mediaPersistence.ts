@@ -164,7 +164,7 @@ function migrateRun(run: any) {
     ? Number(run.seedAudioDuration)
     : 0
   run.originalVocalRemoved = Boolean(run.originalVocalRemoved)
-  if (run.workspaceEntry !== 'video-translate') run.workspaceEntry = 'content-create'
+  if (run.workspaceEntry !== 'video-translate') run.workspaceEntry = 'video-translate'
   if (!Array.isArray(run.videoTranslationRoles)) run.videoTranslationRoles = []
   if (run.videoTranslation && typeof run.videoTranslation === 'object') {
     run.videoTranslation.sourceLanguage ||= 'auto'

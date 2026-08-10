@@ -240,6 +240,8 @@ pnpm build:translation
 
 构建后的安装包位于 `release-translation/<版本号>/`。安装包不内置约 2 GB 的 Python 环境和 FunASR 模型；普通用户安装 APP 后，直接在“生成设置”中点击“一键安装”即可完成配置。
 
+Windows 安装包必须在 Windows 电脑或 GitHub Actions 的 Windows Runner 上构建。不要在 Mac 上交叉构建 Windows 安装包，否则会把 Mac 版 FFmpeg 带入 Windows 包。
+
 ## 常见问题
 
 ### `pnpm` 或 `corepack` 找不到

@@ -1,6 +1,6 @@
 import i18next from 'i18next'
 import Backend from 'i18next-fs-backend'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { i18nCommonOptions } from './common-options'
@@ -15,7 +15,7 @@ export const initI18n = async () => {
     // initAsync: false,
     // debug: true,
     ...i18nCommonOptions,
-    lng: __APP_EDITION__ === 'translation' ? 'zh-CN' : app.getLocale(),
+    lng: 'zh-CN',
     backend: {
       loadPath: localesPath,
     },

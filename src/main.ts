@@ -63,7 +63,7 @@ i18nInitialized().then(() => {
     // 监听主进程切换语言
     window.i18n.onLanguageChanged(async (lng) => {
       await i18next.changeLanguage(lng)
-      document.title = __APP_EDITION__ === 'translation' ? '视频翻译工作台' : i18next.t('app.name')
+      document.title = '视频翻译工作台'
       useAppStore().updateLocale(lng)
     })
   })

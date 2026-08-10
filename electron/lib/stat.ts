@@ -5,8 +5,8 @@ import type { StatEventParams } from '../types'
 
 const STAT_API_URL = 'https://stat.yils.blog/api/send'
 const WEBSITE_ID = 'a15a52e1-e2ad-4cc7-a6f1-c0979e8dd9c7'
-const APP_HOSTNAME = 'short-video-factory.app'
-const APP_URL = 'https://short-video-factory.app/'
+const APP_HOSTNAME = 'jc-video-translation-desk'
+const APP_URL = 'https://github.com/liuyunlong2021-wq/jc-video-translation-desk'
 const DEV_MODE_REFERRER = 'https://dev.mode/'
 const PROD_MODE_REFERRER = 'https://prod.mode/'
 

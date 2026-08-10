@@ -1,36 +1,10 @@
 <template>
   <div class="layout-container" :class="{ 'is-mac': isMac }" :style="layoutStyle">
     <div class="logo" v-if="!route.meta.hideAppIcon">
-      <img :src="translationEdition ? './video-translation-icon.png' : './icon.png'" alt="" />
-      <span>{{ translationEdition ? '视频翻译工作台' : t('app.name') }}</span>
+      <img src="/video-translation-icon.png" alt="" />
+      <span>视频翻译工作台</span>
     </div>
     <div class="window-control-bar">
-      <div v-if="!translationEdition" class="window-no-drag">
-        <v-menu location="bottom right">
-          <template v-slot:activator="{ props }">
-            <div class="control-btn control-btn-translate" v-bind="props">
-              <v-icon icon="mdi-translate" size="small" />
-            </div>
-          </template>
-          <v-list
-            class="p-2 space-y-1"
-            activatable
-            :activated="i18next.language"
-            @update:activated="handleChangeLanguage"
-          >
-            <v-list-item
-              v-for="(item, index) in i18nLanguages"
-              :key="index"
-              :value="item.code"
-              color="primary"
-              density="compact"
-              rounded
-            >
-              <v-list-item-title>{{ item.name }}</v-list-item-title>
-            </v-list-item>
-          </v-list>
-        </v-menu>
-      </div>
       <div class="window-no-drag">
         <v-menu location="bottom right">
           <template v-slot:activator="{ props }">
@@ -77,17 +51,13 @@
 <script lang="ts" setup>
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { useTranslation } from 'i18next-vue'
-import { i18nLanguages } from '~/electron/i18n/common-options'
 import { useAppStore } from '@/store'
 
-const { i18next, t } = useTranslation()
 const appStore = useAppStore()
-const translationEdition = __APP_EDITION__ === 'translation'
 // const lang = ref(i18next.language)
 // console.log('i18next.language', i18next.language)
 
-document.title = translationEdition ? '视频翻译工作台' : t('app.name')
+document.title = '视频翻译工作台'
 
 const route = useRoute()
 const isMac = window.electron.platform === 'darwin'
@@ -100,13 +70,6 @@ const zoomDisplayOptions = appStore.zoomOptions.map((factor) => ({
   value: factor,
   label: `${Math.round(factor * 100)}%`,
 }))
-
-const handleChangeLanguage = (lng: unknown) => {
-  console.log('handleChangeLanguage', lng)
-  if ((lng as string[])[0]) {
-    window.i18n.changeLanguage((lng as string[])[0])
-  }
-}
 
 const handleChangeZoom = (factor: unknown) => {
   const zoomFactor = (factor as number[])[0]

@@ -115,19 +115,6 @@
         @click="showCurrentProject"
       />
       <v-btn-toggle
-        v-if="!translationEdition"
-        :model-value="mediaStore.workspaceEntry"
-        mandatory
-        density="compact"
-        color="primary"
-        :disabled="Boolean(mediaStore.busyAction) || projectSwitching"
-        aria-label="工作台入口"
-        @update:model-value="selectWorkspaceEntry"
-      >
-        <v-btn value="content-create" size="small">内容创作</v-btn>
-        <v-btn value="video-translate" size="small">视频翻译</v-btn>
-      </v-btn-toggle>
-      <v-btn-toggle
         v-if="isVideoTranslation"
         :model-value="mediaStore.workspaceView"
         mandatory
@@ -276,6 +263,7 @@
           <div class="inspector-column min-w-0 min-h-0 open">
             <VideoRender
               translation-mode
+              :translation-final-ready="translationFinalWorkspaceReady"
               @generate-all-seed-role-prompts="generateAllTranslationSeedRolePrompts"
               @generate-all-seed-references="generateAllTranslationSeedReferences"
               @generate-global-seed-prompt="arrangeTranslationVoice"
@@ -467,7 +455,6 @@ import type {
 const mediaStore = useMediaTaskStore()
 const toast = useToast()
 const { t } = useTranslation()
-const translationEdition = __APP_EDITION__ === 'translation'
 const isMac = window.electron.platform === 'darwin'
 const inspectorOpen = ref(false)
 const dubbingRightOpen = ref(true)
@@ -486,9 +473,7 @@ const currentProject = computed(() =>
 )
 const isDubbingWorkspace = computed(() => mediaStore.workspaceView === 'dubbing')
 const isFinalWorkspace = computed(() => mediaStore.workspaceView === 'final')
-const isVideoTranslation = computed(
-  () => translationEdition || mediaStore.workspaceEntry === 'video-translate',
-)
+const isVideoTranslation = computed(() => true)
 const isTranslationVoiceWorkspace = computed(
   () => isVideoTranslation.value && mediaStore.workspaceView === 'seed-voice',
 )
@@ -525,7 +510,7 @@ const translationFinalWorkspaceReady = computed(() => {
 watch(
   () => mediaStore.videoTranslation,
   (state) => {
-    if (translationEdition && !state) mediaStore.selectWorkspaceEntry('video-translate')
+    if (!state) mediaStore.selectWorkspaceEntry('video-translate')
   },
   { immediate: true, flush: 'sync' },
 )
@@ -1476,11 +1461,6 @@ async function runAction(name: string, action: () => Promise<void>) {
   } finally {
     mediaStore.busyAction = ''
   }
-}
-
-function selectWorkspaceEntry(entry: 'content-create' | 'video-translate') {
-  mediaStore.selectWorkspaceEntry(entry)
-  selectedTranslationCueId.value = mediaStore.videoTranslation?.cues[0]?.cueId || ''
 }
 
 function translationState() {

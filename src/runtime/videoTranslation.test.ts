@@ -453,7 +453,7 @@ test('routes translation review through voice workbench before a role-free subti
   const manage = read('src/views/Home/components/VideoManage.vue')
   const render = read('src/views/Home/components/VideoRender.vue')
   const home = read('src/views/Home/index.vue')
-  assert.match(home, /value="content-create"[\s\S]*value="video-translate"/)
+  assert.doesNotMatch(home, /value="content-create"/)
   assert.match(home, /VideoTranslationWorkspace/)
   assert.match(home, /VideoTranslationInspector/)
   assert.match(home, /jc-doubao-seed-audio/)
@@ -473,7 +473,7 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(inspector, /v-progress-linear/)
   assert.match(
     home,
-    /translationEdition && !state[\s\S]*selectWorkspaceEntry\('video-translate'\)[\s\S]*flush: 'sync'/,
+    /if \(!state\) mediaStore\.selectWorkspaceEntry\('video-translate'\)[\s\S]*flush: 'sync'/,
   )
   for (const column of ['时间轴', '视频片段预览', '说话角色', '原文', '字幕'])
     assert.match(workspace, new RegExp(column))
@@ -546,7 +546,13 @@ test('routes translation review through voice workbench before a role-free subti
     manage,
     /重新生成参考音|seed-voice-candidates|v-for="profile in voiceProfiles"/,
   )
-  assert.match(render, /v-if="!translationMode"[\s\S]*>按提示词生成角色参考音<\/v-btn/)
+  assert.match(render, />按提示词生成角色参考音<\/v-btn/)
+  const roleActions = render.slice(
+    render.indexOf("mediaStore.seedVoiceTab === 'roles'"),
+    render.indexOf('<template v-else>', render.indexOf("mediaStore.seedVoiceTab === 'roles'")),
+  )
+  for (const label of ['生成角色提示词', '按提示词生成角色参考音', '进入成片工作台'])
+    assert.match(roleActions, new RegExp(label))
   for (const label of ['全局配音', '全局配音提示词', '全局配音版本', '当前使用版本'])
     assert.match(manage, new RegExp(label))
   assert.match(manage, /activeTranslationVoiceVersion/)

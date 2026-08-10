@@ -7,8 +7,7 @@ import fs from 'node:fs'
 import initIPC from './ipc'
 import { initSqlite } from './sqlite'
 import i18next from 'i18next'
-import { changeAppLanguage, initI18n } from './i18n'
-import { i18nLanguages } from './i18n/common-options'
+import { initI18n } from './i18n'
 import { sendStatEvent } from './lib/stat'
 import { assertRunAsset } from './media-workspace'
 import { stopIndexTtsService } from './index-tts'
@@ -22,20 +21,34 @@ protocol.registerSchemesAsPrivileged([
 // const require = createRequire(import.meta.url)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const translationEdition = __APP_EDITION__ === 'translation'
-const appName = translationEdition ? '视频翻译工作台' : '点一点'
-const appIcon = translationEdition ? 'video-translation-icon.png' : 'icon.png'
+const appName = '视频翻译工作台'
+const appIcon = 'video-translation-icon.png'
 
-// Keep existing media and keys when the visible product name changes.
+// Copy missing app-level data once; old directories remain untouched for rollback.
 const appDataPath = app.getPath('appData')
 const previewUserData = app.commandLine.getSwitchValue('svf-user-data-dir').trim()
 if (previewUserData) app.setPath('userData', path.resolve(previewUserData))
-else if (translationEdition) app.setPath('userData', path.join(appDataPath, appName))
 else {
-  const legacyUserDataCandidates = ['短视频工厂', 'short-video-factory', 'AI Short Video Factory']
+  const userDataPath = path.join(appDataPath, 'jc-video-translation-desk')
+  fs.mkdirSync(userDataPath, { recursive: true })
+  const legacyRoots = ['视频翻译工作台', '短视频工厂', 'short-video-factory', 'AI Short Video Factory']
     .map((name) => path.join(appDataPath, name))
-    .filter((candidate) => fs.existsSync(path.join(candidate, 'media-runs')) || fs.existsSync(path.join(candidate, 'data.db')))
-  if (legacyUserDataCandidates[0]) app.setPath('userData', legacyUserDataCandidates[0])
+    .filter((candidate) => candidate !== userDataPath && fs.existsSync(candidate))
+  for (const entry of [
+    'media-projects.json',
+    'jiucai-api-key.bin',
+    'data.db',
+    'data.db-wal',
+    'data.db-shm',
+    'voice-library',
+    'local-tts',
+  ]) {
+    const target = path.join(userDataPath, entry)
+    const source = legacyRoots.map((root) => path.join(root, entry)).find(fs.existsSync)
+    if (!fs.existsSync(target) && source)
+      fs.cpSync(source, target, { recursive: true, errorOnExist: false })
+  }
+  app.setPath('userData', userDataPath)
 }
 app.setName(appName)
 
@@ -124,7 +137,7 @@ function buildMenu() {
                 label: i18next.t('menu.app.about'),
                 click: async () => {
                   const { shell } = await import('electron')
-                  await shell.openExternal('https://github.com/YILS-LIN/short-video-factory')
+                  await shell.openExternal('https://github.com/liuyunlong2021-wq/jc-video-translation-desk')
                 },
               },
               { type: 'separator' },
@@ -139,21 +152,6 @@ function buildMenu() {
           },
         ]
       : []),
-    ...(translationEdition
-      ? []
-      : [
-          {
-            label: i18next.t('menu.language'),
-            submenu: i18nLanguages.map((lng) => ({
-              label: lng.name,
-              type: 'radio',
-              checked: i18next.language === lng.code,
-              click: () => {
-                changeAppLanguage(lng.code)
-              },
-            })) as MenuItemConstructorOptions[],
-          },
-        ]),
     {
       label: i18next.t('menu.edit.root'),
       submenu: [
@@ -193,7 +191,7 @@ function buildMenu() {
           label: i18next.t('menu.help.learnMore'),
           click: async () => {
             const { shell } = await import('electron')
-            await shell.openExternal('https://github.com/YILS-LIN/short-video-factory')
+            await shell.openExternal('https://github.com/liuyunlong2021-wq/jc-video-translation-desk')
           },
         },
       ] as MenuItemConstructorOptions[],

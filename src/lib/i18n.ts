@@ -7,12 +7,7 @@ import zhCN from '../../locales/zh-CN/common.json'
 
 const i18nInitialized = async () => {
   const appStore = useAppStore()
-  if (__APP_EDITION__ === 'translation') {
-    appStore.updateLocale('zh-CN')
-  } else if (!localStorage.getItem('default-language-zh-v1')) {
-    appStore.updateLocale('zh-CN')
-    localStorage.setItem('default-language-zh-v1', '1')
-  }
+  appStore.updateLocale('zh-CN')
   if (appStore.locale) {
     await window.i18n.changeLanguage(toRaw(appStore.locale))
   } else {

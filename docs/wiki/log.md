@@ -2,6 +2,7 @@
 
 ## 2026-08-10
 
+- 完成视频翻译独立 APP 收口复检：默认开发、构建、应用身份和安装包不再暴露“点一点”；三个配音按钮使用统一 API Key/最终配音门禁；`workspaceEntry`、Electron、SQLite 与 FunASR 数据根统一；旧目录非覆盖复制缺失数据；GitHub Release 改读 `release-translation`，Windows 固定本机 Runner 构建。`200/200`、类型检查、差异检查、macOS Universal 构建与正式 APP 桌面核验通过；同一 Universal DMG 支持 Apple M 系列和 Intel Mac。
 - 沉淀整段配音对齐经验：FunASR 整块英文词级时间 + 确认英文稿字符级单调匹配 + FFmpeg 从原始高质量配音块裁句；删除固定小片和多模态猜 cue 的旧思路。极短语气词保留前后真实词之间的完整声音，低匹配度直接阻止成片。`pnpm test` `199/199`、类型检查和差异检查通过。
 - 重写 README 安装部署：说明源码安装、FunASR 环境/模型不随安装包发布，并分别给出 Apple Silicon、Intel Mac、Windows 的 Git、Node.js、uv、pnpm、模型探针和启动步骤；明确 Apple Silicon 已实测，Intel/Windows 首装仍待干净机器验收。
 

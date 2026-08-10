@@ -1,5 +1,4 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
@@ -36,17 +35,7 @@ interface FunAsrTranscript {
 
 function funAsrHome() {
   if (process.env.FUNASR_HOME) return path.resolve(process.env.FUNASR_HOME)
-  if (process.platform === 'darwin')
-    return path.join(os.homedir(), 'Library', 'Application Support', 'jc-video-translation-desk')
-  if (process.platform === 'win32')
-    return path.join(
-      process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
-      'jc-video-translation-desk',
-    )
-  return path.join(
-    process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'),
-    'jc-video-translation-desk',
-  )
+  return app.getPath('userData')
 }
 
 function pythonPath() {

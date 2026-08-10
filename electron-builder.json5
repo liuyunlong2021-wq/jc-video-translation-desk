@@ -1,11 +1,11 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   $schema: 'https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json',
-  productName: '点一点',
-  appId: 'com.yils.short-video-factory',
+  productName: '视频翻译工作台',
+  appId: 'com.yils.video-translation-workbench',
   asar: true,
   directories: {
-    output: 'release/${version}',
+    output: 'release-translation/${version}',
   },
   files: ['dist', 'dist-electron', 'dist-native', 'locales', 'skills'],
   extraResources: [
@@ -20,8 +20,8 @@
         arch: ['universal'],
       },
     ],
-    artifactName: '点一点-${version}-mac-${arch}-installer.${ext}',
-    icon: './public/icon.png',
+    artifactName: '视频翻译工作台-${version}-mac-${arch}-installer.${ext}',
+    icon: './public/video-translation-icon.png',
   },
   win: {
     target: [
@@ -29,8 +29,8 @@
         target: 'nsis',
       },
     ],
-    artifactName: '点一点-${version}-win-${arch}-setup.${ext}',
-    icon: './public/icon.png',
+    artifactName: '视频翻译工作台-${version}-win-${arch}-setup.${ext}',
+    icon: './public/video-translation-icon.png',
   },
   nsis: {
     language: '0x0804',
@@ -41,8 +41,8 @@
   },
   linux: {
     target: ['AppImage'],
-    artifactName: '点一点-${version}-linux-${arch}.${ext}',
-    icon: './public/icon.png',
+    artifactName: '视频翻译工作台-${version}-linux-${arch}.${ext}',
+    icon: './public/video-translation-icon.png',
   },
   publish: null, // disable auto publish 防止重复发版
 }

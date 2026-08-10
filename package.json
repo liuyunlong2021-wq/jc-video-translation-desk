@@ -1,5 +1,5 @@
 {
-  "name": "short-video-factory",
+  "name": "jc-video-translation-desk",
   "description": "视频翻译工作台：将已有视频制作成目标语言配音与字幕成片",
   "version": "1.2.2",
   "author": {
@@ -8,15 +8,15 @@
     "email": "yils_lin@163.com",
     "url": "https://yils.blog/"
   },
-  "homepage": "https://github.com/liuyunlong2021-wq/short-video-factory",
+  "homepage": "https://github.com/liuyunlong2021-wq/jc-video-translation-desk",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "cross-env VITE_CJS_IGNORE_WARNING=true vite",
-    "dev:translation": "cross-env APP_EDITION=translation VITE_CJS_IGNORE_WARNING=true vite",
+    "dev": "cross-env APP_EDITION=translation VITE_CJS_IGNORE_WARNING=true vite",
+    "dev:translation": "pnpm dev",
     "prebuild": "node build/scripts/clean-build.js",
-    "build": "vue-tsc && cross-env VITE_CJS_IGNORE_WARNING=true vite build && electron-builder",
+    "build": "cross-env APP_EDITION=translation vue-tsc && cross-env APP_EDITION=translation VITE_CJS_IGNORE_WARNING=true vite build && electron-builder --config electron-builder.translation.json5",
     "prebuild:translation": "node build/scripts/clean-build.js",
-    "build:translation": "cross-env APP_EDITION=translation vue-tsc && cross-env APP_EDITION=translation VITE_CJS_IGNORE_WARNING=true vite build && electron-builder --config electron-builder.translation.json5",
+    "build:translation": "pnpm build",
     "preview": "vite preview",
     "test": "node --require ./src/runtime/test-setup.cjs --experimental-test-module-mocks --test src/runtime/*.test.ts",
     "format": "prettier --write .",

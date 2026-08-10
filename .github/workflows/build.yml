@@ -77,11 +77,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/${{ env.VERSION }}/*.dmg
-            release/${{ env.VERSION }}/*.exe
-            release/${{ env.VERSION }}/*.deb
-            release/${{ env.VERSION }}/*.rpm
-            release/${{ env.VERSION }}/*.AppImage
+            release-translation/${{ env.VERSION }}/*.dmg
+            release-translation/${{ env.VERSION }}/*.exe
+            release-translation/${{ env.VERSION }}/*.deb
+            release-translation/${{ env.VERSION }}/*.rpm
+            release-translation/${{ env.VERSION }}/*.AppImage
           body: ${{ env.NOTES }}
           draft: false
           prerelease: false
