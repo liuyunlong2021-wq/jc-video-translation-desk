@@ -406,7 +406,7 @@ export async function mixBackgroundAudio(
       '-i',
       voice,
       '-filter_complex',
-      '[0:a]aresample=48000,loudnorm=I=-24:TP=-2:LRA=7[bg];[1:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=7,asplit=2[voice-side][voice-mix];[bg][voice-side]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[ducked];[ducked][voice-mix]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,alimiter=limit=0.95[out]',
+      '[0:a]aresample=48000,loudnorm=I=-24:TP=-2:LRA=7[bg];[1:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=7[voice];[bg][voice]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=7,alimiter=limit=0.95[out]',
       '-map',
       '[out]',
       '-c:a',

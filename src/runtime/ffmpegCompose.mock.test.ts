@@ -45,6 +45,19 @@ function ffmpeg(args: string[]) {
   assert.equal(result.status, 0, result.stderr)
 }
 
+function wavDuration(file: string) {
+  const wav = fs.readFileSync(file)
+  let byteRate = 0
+  for (let offset = 12; offset + 8 <= wav.length; ) {
+    const chunk = wav.toString('ascii', offset, offset + 4)
+    const size = wav.readUInt32LE(offset + 4)
+    if (chunk === 'fmt ') byteRate = wav.readUInt32LE(offset + 16)
+    if (chunk === 'data') return (size || wav.length - offset - 8) / byteRate
+    offset += 8 + size + (size % 2)
+  }
+  throw new Error('WAV data chunk missing')
+}
+
 test('composes only the unified voice and matches its real duration', async () => {
   const runId = 'compose-run'
   await ensureEpisodeDir(runId, episodeId)
@@ -280,8 +293,12 @@ test('video translation audio and final output stay outside creative Wiki paths'
   const instrument = path.join(audioDir, 'instrument.wav')
   const voice = path.join(base, 'episodes', episodeId, 'video-translate', 'en', '目标人声.wav')
   fs.mkdirSync(path.dirname(voice), { recursive: true })
-  for (const [file, frequency] of [[vocal, '220'], [instrument, '330'], [voice, '880']])
-    ffmpeg(['-f', 'lavfi', '-i', `sine=frequency=${frequency}:duration=0.4`, '-c:a', 'pcm_s16le', '-y', file])
+  for (const [file, frequency, duration] of [
+    [vocal, '220', '10'],
+    [instrument, '330', '10'],
+    [voice, '880', '5'],
+  ])
+    ffmpeg(['-f', 'lavfi', '-i', `sine=frequency=${frequency}:duration=${duration}`, '-c:a', 'pcm_s16le', '-y', file])
 
   const adopted = await removeOriginalVocal({
     runId, episodeId, vocalPath: vocal, instrumentPath: instrument,
@@ -292,6 +309,8 @@ test('video translation audio and final output stay outside creative Wiki paths'
     voiceFile: voice, workflow: 'video-translation', targetLanguage: 'en',
   })
   assert.equal(mixed.mixedAudioPath, `wiki/翻译/${episodeId}/en/音频/mixed.wav`)
+  const mixedDuration = wavDuration(path.join(base, mixed.mixedAudioPath!))
+  assert.ok(mixedDuration >= 9.9, `mixed audio ended early: ${mixedDuration}`)
   assert.ok(fs.existsSync(path.join(base, 'wiki', '翻译', episodeId, 'en', '音频处理.json')))
   assert.equal(fs.existsSync(path.join(base, 'wiki', '声音')), false)
 })
