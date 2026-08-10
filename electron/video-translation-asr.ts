@@ -120,7 +120,12 @@ async function runFunAsr(audioPath: string, durationMs: number, abortSignal?: Ab
       {
         maxBuffer: 64 * 1024 * 1024,
         signal: abortSignal,
-        env: { ...process.env, PYTORCH_ENABLE_MPS_FALLBACK: '1' },
+        env: {
+          ...process.env,
+          PYTHONIOENCODING: 'utf-8',
+          PYTHONUTF8: '1',
+          PYTORCH_ENABLE_MPS_FALLBACK: '1',
+        },
       },
     ))
   } catch (error) {

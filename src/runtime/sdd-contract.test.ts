@@ -19,6 +19,7 @@ const mediaPersistence = read('src/runtime/mediaPersistence.ts')
 const productionContract = read('src/runtime/productionContract.ts')
 const materialTranscriptMain = read('electron/material-transcript.ts')
 const funAsrInstaller = read('electron/funasr-installer.ts')
+const videoTranslationAsr = read('electron/video-translation-asr.ts')
 const indexTts = read('electron/index-tts.ts')
 const main = read('electron/main.ts')
 const electronI18n = read('electron/i18n/index.ts')
@@ -147,6 +148,8 @@ test('installs the local subtitle engine from the app without terminal prerequis
   assert.match(funAsrInstaller, /funasr==1\.4\.1/)
   assert.match(funAsrInstaller, /runtimePath\(\).*'probe'/s)
   assert.doesNotMatch(funAsrInstaller, /git clone/)
+  assert.match(videoTranslationAsr, /PYTHONIOENCODING: 'utf-8'/)
+  assert.match(videoTranslationAsr, /PYTHONUTF8: '1'/)
 })
 
 test('passes all supported ratios through image, video, and final output contracts', () => {
