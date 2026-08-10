@@ -90,6 +90,7 @@ const axios = {
   },
   async post(url: string, data: any, options: any) {
     requests.push({ method: 'POST', url, data, headers: options.headers })
+    if (url.endsWith('/v1/audio/speech')) return { data: Buffer.from('audio') }
     if (url.endsWith('/api/v3/files'))
       return { data: { id: `file-${requests.length}`, status: 'active' } }
     throw new Error(`unexpected post request: ${url}`)
@@ -300,6 +301,7 @@ mock.module('../../electron/video-translation-asr.ts', {
 
 process.env.APP_ROOT = process.cwd()
 const cloud = await import('../../electron/cloud.ts')
+const seedAudio = await import('../../electron/seed-audio.ts')
 const workspace = await import('../../electron/media-workspace.ts')
 const episodeId = 'episode-001'
 const projectRoot = (projectId: string) => path.join(userData, 'projects', projectId)
@@ -331,6 +333,7 @@ for (const projectId of [
   'translation-inline-run',
   'translation-invalid-run',
   'other-context-run',
+  'seed-record-run',
 ])
   await workspace.registerProjectRoot(projectId, projectRoot(projectId), false)
 
@@ -1760,4 +1763,34 @@ test('aligns a dubbed cue across FunASR segments and verifies the block hash', a
     }),
     /音频与配音版本清单不一致/,
   )
+})
+
+test('keeps every Seed Audio generation record when requests finish concurrently', async () => {
+  const runId = 'seed-record-run'
+  await Promise.all(
+    ['one', 'two', 'three'].map((prompt) =>
+      seedAudio.generateSeedAudio({
+        runId,
+        episodeId,
+        workflow: 'video-translation',
+        targetLanguage: 'en',
+        mode: 'dialogue-performance',
+        durationMs: 1_000,
+        language: 'en',
+        prompt,
+        outputName: prompt,
+      }),
+    ),
+  )
+  const record = JSON.parse(
+    fs.readFileSync(
+      path.join(projectRoot(runId), 'wiki', '翻译', episodeId, 'en', '连续对白生成记录.json'),
+      'utf8',
+    ),
+  )
+  assert.deepEqual(record.generations.map((item: any) => item.prompt).sort(), [
+    'one',
+    'three',
+    'two',
+  ])
 })

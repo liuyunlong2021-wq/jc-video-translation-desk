@@ -470,44 +470,47 @@ function blockPrompts(markdown: string) {
 }
 
 async function saveVideoTranslationVoiceVersion(
+  runId: string,
   wikiBase: string,
   version: VideoTranslationVoiceVersion,
 ) {
-  const versionDir = path.join(wikiBase, '全局配音版本')
-  const indexPath = path.join(versionDir, 'index.json')
-  const existing = await fs.promises
-    .readFile(indexPath, 'utf8')
-    .then((value) => JSON.parse(value).versions as VideoTranslationVoiceVersion[])
-    .catch(() => [])
-  await Promise.all([
-    atomicWrite(
-      path.join(versionDir, version.versionId, 'manifest.json'),
-      `${JSON.stringify(version, null, 2)}\n`,
-    ),
-    atomicWrite(
-      indexPath,
-      `${JSON.stringify(
-        {
-          versions: [
-            ...existing.map((item) => ({
-              versionId: item.versionId,
-              createdAt: item.createdAt,
-              durationMs: item.durationMs,
-              route: item.route,
-            })),
-            {
-              versionId: version.versionId,
-              createdAt: version.createdAt,
-              durationMs: version.durationMs,
-              route: version.route,
-            },
-          ],
-        },
-        null,
-        2,
-      )}\n`,
-    ),
-  ])
+  await serializeTranslationWrite(runId, async () => {
+    const versionDir = path.join(wikiBase, '全局配音版本')
+    const indexPath = path.join(versionDir, 'index.json')
+    const existing = await fs.promises
+      .readFile(indexPath, 'utf8')
+      .then((value) => JSON.parse(value).versions as VideoTranslationVoiceVersion[])
+      .catch(() => [])
+    await Promise.all([
+      atomicWrite(
+        path.join(versionDir, version.versionId, 'manifest.json'),
+        `${JSON.stringify(version, null, 2)}\n`,
+      ),
+      atomicWrite(
+        indexPath,
+        `${JSON.stringify(
+          {
+            versions: [
+              ...existing.map((item) => ({
+                versionId: item.versionId,
+                createdAt: item.createdAt,
+                durationMs: item.durationMs,
+                route: item.route,
+              })),
+              {
+                versionId: version.versionId,
+                createdAt: version.createdAt,
+                durationMs: version.durationMs,
+                route: version.route,
+              },
+            ],
+          },
+          null,
+          2,
+        )}\n`,
+      ),
+    ])
+  })
 }
 
 export async function listVideoTranslationVoiceVersions(
@@ -668,7 +671,7 @@ export async function generateVideoTranslationTargetVoice(
     durationMs: blocks.reduce((total, block) => total + block.durationMs, 0),
     model: 'seed-audio-1.0',
   }
-  await saveVideoTranslationVoiceVersion(wikiBase, version)
+  await saveVideoTranslationVoiceVersion(runId, wikiBase, version)
   return version
 }
 
@@ -678,6 +681,7 @@ export async function generateVideoTranslationGroupedVoice(
   targetLanguage: string,
   regenerateBlockIds: string[] = [],
   reportProgress: (message: string) => void = () => {},
+  abortSignal?: AbortSignal,
 ): Promise<VideoTranslationVoiceVersion> {
   safeId(episodeId, '剧集 ID')
   const language = safeLanguage(targetLanguage)
@@ -747,6 +751,7 @@ export async function generateVideoTranslationGroupedVoice(
   await Promise.all(
     Array.from({ length: Math.min(3, pending.length) }, async () => {
       while (cursor < pending.length) {
+        if (abortSignal?.aborted) return
         const block = pending[cursor++]
         const id = taskId(block.blockId)
         const prompt = prompts.get(block.blockId)
@@ -756,43 +761,51 @@ export async function generateVideoTranslationGroupedVoice(
           if (block.references.some((reference) => !reference.voiceProfileId))
             throw new Error(`${block.blockId} 缺少已确认 voiceProfileId`)
           validateVideoTranslationGroupedPrompt(prompt, block)
-          await withTaskAbort(runId, id, async (signal) => {
-            await updateTask(runId, id, (task) => ({
-              ...task,
-              status: 'generating',
-              startedAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-              error: undefined,
-            }))
-            reportProgress(
-              `正在生成分组克隆 ${arrangement.blocks.indexOf(block) + 1}/${arrangement.blocks.length}`,
-            )
-            const generated = await generateSeedAudio({
-              runId,
-              episodeId,
-              workflow: 'video-translation',
-              targetLanguage: language,
-              mode: 'dialogue-performance',
-              durationMs: Math.max(
-                1_000,
-                block.lines.at(-1)!.expectedEndMs - block.lines[0].expectedStartMs,
-              ),
-              prompt,
-              language: language === 'zh' ? 'zh' : 'en',
-              references: block.references,
-              outputName: `grouped-${arrangement.scriptHash!.slice(0, 12)}-${block.blockId}`,
-              abortSignal: signal,
-            })
-            await atomicCopy(assertVideoTranslationAsset(runId, episodeId, generated.path), target)
-            await updateTask(runId, id, (task) => ({
-              ...task,
-              status: 'success',
-              outputPath: relativeRunAsset(runId, target),
-              updatedAt: new Date().toISOString(),
-              finishedAt: new Date().toISOString(),
-              error: undefined,
-            }))
-          })
+          await withTaskAbort(
+            runId,
+            id,
+            async (signal) => {
+              await updateTask(runId, id, (task) => ({
+                ...task,
+                status: 'generating',
+                startedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                error: undefined,
+              }))
+              reportProgress(
+                `正在生成分组克隆 ${arrangement.blocks.indexOf(block) + 1}/${arrangement.blocks.length}`,
+              )
+              const generated = await generateSeedAudio({
+                runId,
+                episodeId,
+                workflow: 'video-translation',
+                targetLanguage: language,
+                mode: 'dialogue-performance',
+                durationMs: Math.max(
+                  1_000,
+                  block.lines.at(-1)!.expectedEndMs - block.lines[0].expectedStartMs,
+                ),
+                prompt,
+                language: language === 'zh' ? 'zh' : 'en',
+                references: block.references,
+                outputName: `grouped-${arrangement.scriptHash!.slice(0, 12)}-${block.blockId}`,
+                abortSignal: signal,
+              })
+              await atomicCopy(
+                assertVideoTranslationAsset(runId, episodeId, generated.path),
+                target,
+              )
+              await updateTask(runId, id, (task) => ({
+                ...task,
+                status: 'success',
+                outputPath: relativeRunAsset(runId, target),
+                updatedAt: new Date().toISOString(),
+                finishedAt: new Date().toISOString(),
+                error: undefined,
+              }))
+            },
+            abortSignal,
+          )
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           failures.push(`${block.blockId}：${message}`)
@@ -800,14 +813,15 @@ export async function generateVideoTranslationGroupedVoice(
           if (task?.status !== 'stopped')
             await updateTask(runId, id, (current) => ({
               ...current,
-              status: 'failed',
+              status: abortSignal?.aborted ? 'stopped' : 'failed',
               updatedAt: new Date().toISOString(),
-              error: message,
+              error: abortSignal?.aborted ? '已停止' : message,
             }))
         }
       }
     }),
   )
+  if (abortSignal?.aborted) throw new Error('任务已停止')
   if (failures.length) throw new Error(`有 ${failures.length} 个配音组生成失败`)
   const currentTasks = new Map((await readPending(runId)).map((task) => [task.id, task]))
   if (
@@ -888,7 +902,7 @@ export async function generateVideoTranslationGroupedVoice(
     durationMs: Math.round((await mediaDuration(preview)) * 1000),
     model: 'seed-audio-1.0',
   }
-  await saveVideoTranslationVoiceVersion(wikiBase, version)
+  await saveVideoTranslationVoiceVersion(runId, wikiBase, version)
   return version
 }
 

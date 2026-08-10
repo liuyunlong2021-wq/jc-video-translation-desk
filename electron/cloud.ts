@@ -1881,16 +1881,21 @@ export async function withTaskAbort<T>(
   runId: string,
   taskId: string,
   action: (signal: AbortSignal) => Promise<T>,
+  parentSignal?: AbortSignal,
 ) {
   const key = taskControllerKey(runId, taskId)
   if (taskControllers.has(key)) throw new Error('该任务正在执行')
   const controller = new AbortController()
+  const abortFromParent = () => controller.abort()
+  parentSignal?.addEventListener('abort', abortFromParent, { once: true })
+  if (parentSignal?.aborted) controller.abort()
   let finish!: () => void
   const entry = { controller, finished: new Promise<void>((resolve) => (finish = resolve)) }
   taskControllers.set(key, entry)
   try {
     return await action(controller.signal)
   } finally {
+    parentSignal?.removeEventListener('abort', abortFromParent)
     if (taskControllers.get(key) === entry) taskControllers.delete(key)
     finish()
   }

@@ -11,6 +11,7 @@ let seedCalls = 0
 let ffmpegCalls = 0
 let whisperCalls = 0
 let seedDuration = 1
+let seedWaitForAbort = false
 
 mock.module('electron', {
   namedExports: {
@@ -71,6 +72,12 @@ mock.module('../../electron/seed-audio.ts', {
   namedExports: {
     generateSeedAudio: async (params: any) => {
       seedCalls++
+      if (seedWaitForAbort)
+        return new Promise((_resolve, reject) => {
+          params.abortSignal.addEventListener('abort', () => reject(new Error('cancelled')), {
+            once: true,
+          })
+        })
       const target = path.join(
         projectRoot,
         'episodes',
@@ -424,6 +431,18 @@ test('each global dubbing click creates a new raw version without Whisper alignm
     (await translation.listVideoTranslationVoiceVersions(projectId, episodeId, 'en')).length,
     2,
   )
+
+  const versionCount = (
+    await translation.listVideoTranslationVoiceVersions(projectId, episodeId, 'en')
+  ).length
+  await Promise.all([
+    translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en'),
+    translation.generateVideoTranslationTargetVoice(projectId, episodeId, 'en'),
+  ])
+  assert.equal(
+    (await translation.listVideoTranslationVoiceVersions(projectId, episodeId, 'en')).length,
+    versionCount + 2,
+  )
 })
 
 test('ignores legacy timeline and continuous audio versions', async () => {
@@ -705,6 +724,28 @@ test('grouped dubbing keeps successful groups and places complete audio without 
   )
   assert.equal(seedCalls, seedBefore + 3)
   assert.equal(regenerated.blocks?.length, 2)
+
+  seedWaitForAbort = true
+  const controller = new AbortController()
+  const seedCallsBeforeCancel = seedCalls
+  const cancelled = translation.generateVideoTranslationGroupedVoice(
+    projectId,
+    groupedEpisode,
+    'en',
+    ['group-1'],
+    () => {},
+    controller.signal,
+  )
+  while (seedCalls === seedCallsBeforeCancel) await new Promise((resolve) => setTimeout(resolve, 0))
+  controller.abort()
+  await assert.rejects(cancelled, /任务已停止/)
+  assert.equal(
+    (await cloud.readPending(projectId)).find(
+      (task) => task.kind === 'dubbing' && task.targetId === 'group-1' && !task.id.includes('@'),
+    )?.status,
+    'stopped',
+  )
+  seedWaitForAbort = false
 
   const ffmpegBefore = ffmpegCalls
   const timestamped = await cloud.generateVideoTranslationDialogueTimestamps({

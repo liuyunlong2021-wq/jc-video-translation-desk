@@ -417,12 +417,16 @@ export default function initIPC() {
   ipcMain.handle(
     'video-translation-generate-grouped-voice',
     (event, runId, episodeId, targetLanguage, regenerateBlockIds = []) =>
-      generateVideoTranslationGroupedVoice(
-        runId,
-        episodeId,
-        targetLanguage,
-        regenerateBlockIds,
-        (message) => event.sender.send('video-translation-progress', { runId, episodeId, message }),
+      withRunAbort(runId, (signal) =>
+        generateVideoTranslationGroupedVoice(
+          runId,
+          episodeId,
+          targetLanguage,
+          regenerateBlockIds,
+          (message) =>
+            event.sender.send('video-translation-progress', { runId, episodeId, message }),
+          signal,
+        ),
       ),
   )
   ipcMain.handle('video-translation-timestamp-dialogue', (event, params) =>

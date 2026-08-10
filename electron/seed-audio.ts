@@ -25,6 +25,35 @@ import {
 import type { MaterialTranscript } from '../src/runtime/productionContract.ts'
 
 const DEFAULT_MODEL = 'seed-audio-1.0'
+const recordWrites = new Map<string, Promise<void>>()
+
+async function appendGenerationRecord(recordPath: string, generation: object) {
+  const previous = recordWrites.get(recordPath) || Promise.resolve()
+  const write = async () => {
+    const existing = await fs.promises
+      .readFile(recordPath, 'utf8')
+      .then(JSON.parse)
+      .catch(() => ({ schemaVersion: 1, generations: [] }))
+    existing.generations = [
+      ...(Array.isArray(existing.generations) ? existing.generations : []),
+      generation,
+    ]
+    await fs.promises.mkdir(path.dirname(recordPath), { recursive: true })
+    await fs.promises.writeFile(
+      `${recordPath}.tmp`,
+      `${JSON.stringify(existing, null, 2)}\n`,
+      'utf8',
+    )
+    await fs.promises.rename(`${recordPath}.tmp`, recordPath)
+  }
+  const next = previous.then(write, write)
+  recordWrites.set(recordPath, next)
+  try {
+    await next
+  } finally {
+    if (recordWrites.get(recordPath) === next) recordWrites.delete(recordPath)
+  }
+}
 
 export interface GenerateSeedAudioParams {
   runId: string
@@ -181,30 +210,20 @@ export async function generateSeedAudio(params: GenerateSeedAudioParams) {
           'seed-audio',
           '声音生成记录.json',
         )
-  const existing = await fs.promises
-    .readFile(recordPath, 'utf8')
-    .then(JSON.parse)
-    .catch(() => ({ schemaVersion: 1, generations: [] }))
-  existing.generations = [
-    ...(Array.isArray(existing.generations) ? existing.generations : []),
-    {
-      mode: params.mode,
-      prompt: params.prompt,
-      references:
-        params.references?.map(({ speakerId, voiceProfileId }) => ({
-          speakerId,
-          voiceProfileId,
-        })) || [],
-      wavPath: relativeRunAsset(params.runId, wavPath),
-      mp3Path: relativeRunAsset(params.runId, mp3Path),
-      duration,
-      model: result.model,
-      createdAt: new Date().toISOString(),
-    },
-  ]
-  await fs.promises.mkdir(path.dirname(recordPath), { recursive: true })
-  await fs.promises.writeFile(`${recordPath}.tmp`, `${JSON.stringify(existing, null, 2)}\n`, 'utf8')
-  await fs.promises.rename(`${recordPath}.tmp`, recordPath)
+  await appendGenerationRecord(recordPath, {
+    mode: params.mode,
+    prompt: params.prompt,
+    references:
+      params.references?.map(({ speakerId, voiceProfileId }) => ({
+        speakerId,
+        voiceProfileId,
+      })) || [],
+    wavPath: relativeRunAsset(params.runId, wavPath),
+    mp3Path: relativeRunAsset(params.runId, mp3Path),
+    duration,
+    model: result.model,
+    createdAt: new Date().toISOString(),
+  })
   return result
 }
 
