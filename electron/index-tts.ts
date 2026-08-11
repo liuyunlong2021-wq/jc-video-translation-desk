@@ -45,7 +45,11 @@ function serviceUrl() {
 function run(runId: string, args: string[]) {
   return new Promise<string>((resolve, reject) => {
     const output: string[] = []
-    const child = spawn(cliPath(), args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const command = cliPath()
+    const commandArgs = /\.[cm]?js$/i.test(command) ? [command, ...args] : args
+    const child = spawn(/\.[cm]?js$/i.test(command) ? process.execPath : command, commandArgs, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
     processes.set(runId, child)
     child.stdout?.on('data', (value) => output.push(String(value)))
     child.stderr?.on('data', (value) => output.push(String(value)))

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { app } from 'electron'
 import axios from 'axios'
+import { resolveBundledUvPath } from './runtime-tools.ts'
 
 export type FunAsrInstallStatus = {
   state: 'ready' | 'missing' | 'installing' | 'failed'
@@ -11,10 +12,10 @@ export type FunAsrInstallStatus = {
 }
 
 const MODEL_DIRS = [
-  'iic--SenseVoiceSmall/snapshots/master',
-  'iic--speech_fsmn_vad_zh-cn-16k-common-pytorch/snapshots/master',
-  'iic--punc_ct-transformer_cn-en-common-vocab471067-large/snapshots/master',
-  'iic--speech_campplus_sv_zh-cn_16k-common/snapshots/master',
+  'models/iic--SenseVoiceSmall/snapshots/master',
+  'models/iic--speech_fsmn_vad_zh-cn-16k-common-pytorch/snapshots/master',
+  'models/iic--punc_ct-transformer_cn-en-common-vocab471067-large/snapshots/master',
+  'models/iic--speech_campplus_sv_zh-cn_16k-common/snapshots/master',
 ]
 const SEPARATION_MODELS = {
   vocals: 'vocals.fp16.onnx',
@@ -115,6 +116,11 @@ function canRun(command: string) {
 }
 
 async function findUv(reportProgress: (message: string) => void) {
+  const bundled = resolveBundledUvPath()
+  if (bundled && (await canRun(bundled))) {
+    reportProgress(`使用安装包内置 uv：${bundled}`)
+    return bundled
+  }
   const names = process.platform === 'win32' ? ['uv.exe', 'uv'] : ['uv']
   const candidates = [
     ...names,

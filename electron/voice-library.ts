@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { app } from 'electron'
 import { parseFile } from 'music-metadata'
+import { resolveFfmpegPath } from './runtime-tools.ts'
 
 export type VoiceRights = 'commercial-cleared' | 'local-only' | 'unknown' | 'rejected'
 export interface VoiceProfile {
@@ -327,7 +328,7 @@ export async function reviewVoiceProfile(
 
 function runFfmpeg(args: string[]) {
   return new Promise<void>((resolve, reject) => {
-    const process = spawn('ffmpeg', ['-y', ...args], { stdio: 'ignore' })
+    const process = spawn(resolveFfmpegPath(), ['-y', ...args], { stdio: 'ignore' })
     process.once('error', () => reject(new Error('ffmpeg 不可用，无法生成标准化参考音频')))
     process.once('exit', (code) =>
       code === 0 ? resolve() : reject(new Error('参考音频标准化失败')),

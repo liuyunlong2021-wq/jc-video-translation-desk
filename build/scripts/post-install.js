@@ -3,8 +3,11 @@ const ffmpeg = require('ffmpeg-static')
 const fs = require('node:fs')
 
 console.log('Downloading ffmpeg...')
+const ffmpegMirror = process.env['npm_config_ffmpeg_binaries_url']
 execSync(
-  `cross-env FFMPEG_BINARIES_URL=${process.env['npm_config_ffmpeg_binaries_url']} npm rebuild ffmpeg-static`,
+  ffmpegMirror
+    ? `cross-env FFMPEG_BINARIES_URL=${ffmpegMirror} npm rebuild ffmpeg-static`
+    : 'npm rebuild ffmpeg-static',
 )
 console.log(`FFmpeg downloaded to path: ${ffmpeg}`)
 

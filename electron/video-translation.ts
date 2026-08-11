@@ -33,13 +33,14 @@ import type {
 } from './types.ts'
 import { appendVideoTranslationTrace } from './video-translation-trace.ts'
 import { putPending, readPending, updateTask, withTaskAbort } from './cloud.ts'
+import { resolveFfprobePath } from './runtime-tools.ts'
 
 const runFile = promisify(execFile)
 const translationWrites = new Map<string, Promise<unknown>>()
 
 async function probeVideo(filePath: string) {
   const { stdout } = await runFile(
-    process.env.FFPROBE_PATH || 'ffprobe',
+    resolveFfprobePath(),
     [
       '-v',
       'error',

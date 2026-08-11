@@ -9,7 +9,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'index-tts-service-'))
 const runtime = path.join(root, 'runtime')
 const model = path.join(root, 'model')
 const webui = path.join(runtime, 'webui.mjs')
-const cli = path.join(runtime, 'indextts2')
+const cli = path.join(runtime, 'indextts2.mjs')
 const port = 17860 + Math.floor(Math.random() * 1000)
 fs.mkdirSync(runtime, { recursive: true })
 fs.mkdirSync(model, { recursive: true })
@@ -24,7 +24,7 @@ fs.writeFileSync(webui, `
   server.listen(port, '127.0.0.1')
   process.on('SIGTERM', () => server.close(() => process.exit(0)))
 `)
-fs.writeFileSync(cli, `#!/usr/bin/env node
+fs.writeFileSync(cli, `
   import fs from 'node:fs'
   import path from 'node:path'
   const args = process.argv.slice(2)

@@ -7,9 +7,10 @@
   directories: {
     output: 'release-translation/${version}',
   },
-  files: ['dist', 'dist-electron', 'dist-native', 'locales', 'skills'],
+  files: ['dist', 'dist-electron', 'dist-native/better-sqlite3.node', 'locales', 'skills'],
   extraResources: [
     { from: 'runtime/funasr', to: 'funasr', filter: ['**/*', '!**/__pycache__/**', '!**/*.pyc'] },
+    { from: 'dist-native/runtime-tools', to: 'runtime-tools', filter: ['**/*'] },
   ],
   npmRebuild: false, // disable rebuild node_modules 使用包内自带预构建二进制，而不重新构建
   beforePack: './build/scripts/before-pack.js',

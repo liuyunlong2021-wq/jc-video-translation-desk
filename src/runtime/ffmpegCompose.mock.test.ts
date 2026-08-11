@@ -167,13 +167,13 @@ test('separates, adopts and mixes audio without deleting the vocal stem', async 
 
   const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-peiyin-'))
   const modelDir = path.join(fakeRoot, 'models', 'separation')
-  const python = path.join(fakeRoot, 'python')
+  const python = path.join(fakeRoot, 'python.mjs')
   fs.mkdirSync(modelDir, { recursive: true })
   fs.writeFileSync(path.join(modelDir, 'vocals.fp16.onnx'), 'test')
   fs.writeFileSync(path.join(modelDir, 'accompaniment.fp16.onnx'), 'test')
   fs.writeFileSync(
     python,
-    '#!/usr/bin/env node\nconst fs=require("node:fs"); fs.copyFileSync(process.argv[4], process.argv[5]); fs.copyFileSync(process.argv[4], process.argv[6])\n',
+    'import fs from "node:fs"; fs.copyFileSync(process.argv[4], process.argv[5]); fs.copyFileSync(process.argv[4], process.argv[6])\n',
     { mode: 0o755 },
   )
   process.env.FUNASR_HOME = fakeRoot

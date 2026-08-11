@@ -16,7 +16,6 @@ import type {
   SubtitleCue,
 } from './types.ts'
 import { generateUniqueFileName } from '../lib/tools.ts'
-import { isDev } from '../lib/is-dev.ts'
 import {
   assertEpisodeAsset,
   assertVideoTranslationAsset,
@@ -29,12 +28,10 @@ import {
   writeFinalArtifacts,
 } from '../media-workspace.ts'
 import type { AudioProcessingRecord } from '../../src/runtime/productionContract.ts'
+import { resolveFfmpegPath } from '../runtime-tools.ts'
 
 const isWindows = process.platform === 'win32'
-
-const ffmpegPath: string = isDev
-  ? require('ffmpeg-static')
-  : (require('ffmpeg-static') as string).replace('app.asar', 'app.asar.unpacked')
+const ffmpegPath = resolveFfmpegPath()
 
 const OUTPUT_SIZES = {
   '9:16': [1080, 1920],
@@ -586,7 +583,8 @@ export async function composeVideoTranslation(
 
 function executeProcess(command: string, args: string[], abortSignal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
+    const commandArgs = /\.[cm]?js$/i.test(command) ? [command, ...args] : args
+    const child = spawn(/\.[cm]?js$/i.test(command) ? process.execPath : command, commandArgs, {
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
     })
     let stderr = ''

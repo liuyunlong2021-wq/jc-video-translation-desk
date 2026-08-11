@@ -779,7 +779,8 @@ test('reference voice generation always creates from the prompt before binding',
 })
 
 test('global dialogue prompt uses the existing AI revision box without clearing voice versions', () => {
-  const read = (file: string) => fs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8')
+  const read = (file: string) =>
+    fs.readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
   const render = read('src/views/Home/components/VideoRender.vue')
   const home = read('src/views/Home/index.vue')
   assert.match(render, /translationMode &&[\s\S]*seedVoiceTab === 'global'/)
