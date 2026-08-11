@@ -8,9 +8,9 @@
 
 - Apple Silicon（M1/M2/M3/M4）：下载 macOS 的 `.dmg` 文件。
 - Intel Mac：下载同一个 macOS `.dmg` 文件。
-- Windows：下载文件名包含 `win` 的安装程序（发布后提供）。
+- Windows 10 / Windows 11：下载文件名包含 `win-x64-setup.exe` 的安装程序。
 
-安装并打开 APP 后，进入“生成设置” -> “本地字幕引擎” -> “一键安装”。APP 会自动安装 FunASR 运行环境、依赖和模型；首次安装建议预留至少 8 GB 磁盘空间并保持网络稳定。完成后日常使用不再重复下载。
+安装并打开 APP 后，进入“生成设置” -> “本地字幕引擎” -> “一键安装”。Windows 安装包已经随包提供 `ffmpeg.exe`、`ffprobe.exe` 和 `uv.exe`，不需要用户自己配置 PATH；一键安装只负责下载 Python 运行环境、FunASR 依赖、字幕模型和人声分离模型。首次安装建议预留至少 8 GB 磁盘空间并保持网络稳定。完成后日常使用不再重复下载。
 
 Linux 暂不提供桌面安装包，需要使用下面的源码安装方式。
 
@@ -33,11 +33,11 @@ Linux 暂不提供桌面安装包，需要使用下面的源码安装方式。
 
 ## 开始前
 
-你需要准备四样东西：一台电脑、稳定网络、至少 8 GB 可用磁盘空间，以及一个韭菜盒子 API Key。
+普通用户需要准备四样东西：一台电脑、稳定网络、至少 8 GB 可用磁盘空间，以及一个韭菜盒子 API Key。
 
-不需要自己安装 FFmpeg 或 Python。下面的步骤会安装项目需要的 Node、Python 独立环境、FunASR 和模型。
+安装包用户不需要自己安装 Node.js、Python、FFmpeg、ffprobe 或 uv。下面的源码安装步骤仅供开发者备用。
 
-当前已在 Apple Silicon Mac（M1/M2/M3/M4）完成真实 FunASR 探针验证。Intel Mac 和 Windows 使用同一安装脚本，但仍建议首次安装后按“检查是否安装成功”逐项确认；Intel Mac 会使用 CPU，识别速度通常比 M 系列慢。
+当前已在 Apple Silicon Mac（M1/M2/M3/M4）完成真实 FunASR 探针验证；Windows x64 安装包已完成本机构建验证，包内 `uv.exe`、`ffmpeg.exe` 和 `ffprobe.exe` 均可执行。Intel Mac 会使用 CPU，识别速度通常比 M 系列慢。
 
 ### 获取源码（开发者备用）
 
@@ -128,7 +128,7 @@ pnpm dev:translation
 
 Intel Mac 没有 M 系列的 MPS 加速，FunASR 会在 CPU 上运行。功能链路相同，但字幕识别会更慢；不要在识别过程中合盖、关机或强制退出终端。
 
-## 安装：Windows 10 / Windows 11
+## 源码安装：Windows 10 / Windows 11
 
 以下步骤使用 PowerShell。不要使用“管理员身份”打开，普通 PowerShell 即可。
 
@@ -159,7 +159,7 @@ node -v
 
 ### 第三步：安装 uv
 
-在 PowerShell 运行：
+仅源码开发需要手动安装 uv。普通安装包用户直接点击 APP 里的“一键安装”，不用执行这一步。在 PowerShell 运行：
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -195,7 +195,7 @@ pnpm setup:funasr
 pnpm dev:translation
 ```
 
-首次 Windows 安装尚未在全新电脑上完成正式验收。若 `pnpm setup:funasr` 失败，请保留 PowerShell 的完整报错并提交 Issue，不要反复删除项目文件夹。
+若 `pnpm setup:funasr` 失败，请保留 PowerShell 的完整报错并提交 Issue，不要反复删除项目文件夹。
 
 ## 检查是否安装成功
 
@@ -238,9 +238,9 @@ pnpm test
 pnpm build:translation
 ```
 
-构建后的安装包位于 `release-translation/<版本号>/`。安装包不内置约 2 GB 的 Python 环境和 FunASR 模型；普通用户安装 APP 后，直接在“生成设置”中点击“一键安装”即可完成配置。
+构建后的安装包位于 `release-translation/<版本号>/`。安装包不内置约 2 GB 的 Python 环境和 FunASR 模型；Windows 包会内置 `uv.exe`、`ffmpeg.exe` 和 `ffprobe.exe` 这些小工具。普通用户安装 APP 后，直接在“生成设置”中点击“一键安装”即可完成配置。
 
-Windows 安装包必须在 Windows 电脑或 GitHub Actions 的 Windows Runner 上构建。不要在 Mac 上交叉构建 Windows 安装包，否则会把 Mac 版 FFmpeg 带入 Windows 包。
+Windows 安装包必须在 Windows 电脑或 GitHub Actions 的 Windows Runner 上构建。不要在 Mac 上交叉构建 Windows 安装包，否则会把错误平台的媒体工具带入 Windows 包。发布前至少检查 `resources/runtime-tools/uv/x64/uv.exe --version`、`ffmpeg.exe -version` 和 `ffprobe.exe -version`。
 
 ## 常见问题
 
@@ -250,7 +250,7 @@ Windows 安装包必须在 Windows 电脑或 GitHub Actions 的 Windows Runner �
 
 ### `uv` 找不到
 
-关闭并重新打开终端或 PowerShell 后再试。仍找不到时，重新执行本文对应系统的 uv 安装命令。
+普通安装包用户不需要处理系统 `uv`，Windows 包会优先使用随包 `resources/runtime-tools/uv/x64/uv.exe`。源码开发者关闭并重新打开终端或 PowerShell 后再试；仍找不到时，重新执行本文对应系统的 uv 安装命令。
 
 ### `pnpm setup:funasr` 很久没有结束
 

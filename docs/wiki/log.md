@@ -1,5 +1,12 @@
 # Wiki Log
 
+## 2026-08-11
+
+- 修复 Windows 用户下载 APP 后点击“一键安装”出现 `spawn ffprobe ENOENT` 和 `uv.exe 安装失败` 的首装链路：安装包随包提供 `ffmpeg.exe`、`ffprobe.exe` 和按架构隔离的 `uv.exe`，大模型仍由一键安装下载，不把约 2 GB FunASR / 人声分离模型打进安装包。
+- 并发审计确认方案不过度设计，但发现 FunASR 模型目录判断与 `runtime.py` 不一致、`uv` 产物路径需按架构校验、`ffmpeg-static` 干净构建需硬校验等真实风险；已修复模型目录合同、构建前媒体工具校验、`uv --version` 校验、旧 uv 路径迁移与 postinstall 传 `undefined` 镜像变量问题。
+- Windows x64 正式构建、`207/207` 自动测试、TypeScript 类型检查和 `git diff --check` 通过；产物 smoke check 确认 `resources/runtime-tools/uv/x64/uv.exe --version`、`ffmpeg.exe -version` 和 `ffprobe.exe -version` 均可执行。提交 `979bff0 Fix Windows first-run runtime tools` 已推送到 `origin/main`。
+- 更新 README 和 [[运维/本地构建与发布]]：普通用户不再需要自行安装 Node.js、Python、FFmpeg、ffprobe 或 uv；源码安装步骤仅作为开发者备用。后续仍需锁定 `torch/torchaudio` 版本、为 ONNX 模型增加校验，并补充安装诊断报告。
+
 ## 2026-08-10
 
 - 更新 [[开发/视频翻译工作台端到端验收]]：人工确认稿固定为配音、提示词与成片字幕的唯一事实源；字幕内容、角色、时间或语种变化会废弃旧提示词和采用配音，单纯配音分组调整只影响分组配音。分组页移除重复视频预览，当前组三段式提示词移至右栏并保持可编辑。`206/206`、类型检查、macOS Universal 签名与 DMG 校验通过；用户确认本轮调整成功。
