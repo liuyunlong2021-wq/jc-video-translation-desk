@@ -168,6 +168,16 @@ test('installs the local subtitle and source-separation engines from the app', (
   assert.match(videoTranslationAsr, /PYTHONUTF8: '1'/)
 })
 
+test('frame calibration uses retryable 20-cue project task batches instead of a hard cue limit', () => {
+  assert.match(cloud, /VIDEO_TRANSLATION_FRAME_BATCH_SIZE = 20/)
+  assert.match(cloud, /kind: 'frame-calibration'/)
+  assert.match(cloud, /readFrameCalibrationBatchResult/)
+  assert.match(homeUi, /'frame-calibration': '抽帧校准'/)
+  assert.match(homeUi, /每批 20 条/)
+  assert.doesNotMatch(homeUi, /最多处理 30 条/)
+  assert.doesNotMatch(cloud, /最多处理 30 条/)
+})
+
 test('bundles Windows runtime tools and never relies on system ffmpeg or ffprobe', () => {
   assert.match(packageJson, /"ffprobe-static": "?\^?3\.1\.0"?/)
   assert.match(defaultBuilder, /dist-native\/runtime-tools/)

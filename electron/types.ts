@@ -459,7 +459,13 @@ export interface MaterialVideoAnalysisResult {
   analyses: ShotVideoAnalysisResult[]
 }
 
-export type CloudTaskKind = 'voice' | 'dubbing' | 'asset' | 'storyboard' | 'video'
+export type CloudTaskKind =
+  | 'voice'
+  | 'dubbing'
+  | 'asset'
+  | 'storyboard'
+  | 'video'
+  | 'frame-calibration'
 export type CloudTaskStatus =
   | 'queued'
   | 'generating'

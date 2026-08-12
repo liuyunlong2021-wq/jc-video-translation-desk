@@ -622,6 +622,7 @@ function taskKindLabel(kind: PendingCloudTask['kind']) {
     asset: '资产图',
     storyboard: '分镜图',
     video: '视频',
+    'frame-calibration': '抽帧校准',
   }[kind]
 }
 
@@ -1663,7 +1664,7 @@ async function calibrateTranslationSubtitles() {
 async function calibrateTranslationFrames() {
   await runTranslationStep('calibrate-frames', 'frameCalibrationStatus', async (state) => {
     if (!state.sourceVideoPath) throw new Error('请先上传识别视频')
-    if (state.cues.length > 30) throw new Error('抽帧校准单次最多处理 30 条字幕')
+    toast.info('抽帧校准会按每批 20 条处理，可在当前项目任务查看进度')
     const result = await window.electron.cloud.calibrateVideoTranslationFrames({
       runId: mediaStore.runId,
       episodeId: mediaStore.episodeId,

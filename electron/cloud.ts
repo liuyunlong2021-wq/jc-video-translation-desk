@@ -59,7 +59,7 @@ export const TEXT_MODELS: TextModel[] = [
   'gpt-5.6-sol',
   'deepseek-v4-pro',
 ]
-const VIDEO_TRANSLATION_FRAME_CUE_LIMIT = 30
+const VIDEO_TRANSLATION_FRAME_BATCH_SIZE = 20
 
 const KEY_FILE = 'jiucai-api-key.bin'
 export const VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
@@ -1094,8 +1094,6 @@ export async function calibrateVideoTranslationFrames(
     visiblePersonIds: string[]
   }>
 }> {
-  if (params?.cues?.length > VIDEO_TRANSLATION_FRAME_CUE_LIMIT)
-    throw new Error(`抽帧校准单次最多处理 ${VIDEO_TRANSLATION_FRAME_CUE_LIMIT} 条字幕`)
   if (
     !params?.runId ||
     !params.episodeId ||
@@ -1118,105 +1116,337 @@ export async function calibrateVideoTranslationFrames(
     throw new Error('抽帧校准字幕无效')
   const source = assertVideoTranslationSource(params.runId, params.episodeId, params.videoPath)
   return withRunAbort(params.runId, async (signal) => {
-    const { executeFFmpeg } = await import('./ffmpeg/index.ts')
-    const frames: Record<string, unknown>[] = []
-    const temporary: string[] = []
-    try {
-      for (const cue of params.cues) {
-        const framePath = path.join(os.tmpdir(), `video-translation-frame-${randomUUID()}.jpg`)
-        temporary.push(framePath)
-        const midpoint = (cue.startMs + cue.endMs) / 2 / 1000
-        await executeFFmpeg(
-          [
-            '-ss',
-            midpoint.toFixed(3),
-            '-i',
-            source,
-            '-frames:v',
-            '1',
-            '-vf',
-            'scale=768:-2',
-            '-q:v',
-            '3',
-            '-y',
-            framePath,
-          ],
-          { abortSignal: signal },
-        )
-        const image = await fs.promises.readFile(framePath)
-        const savedFramePath = path.join(
-          getRunDir(params.runId),
-          'episodes',
-          params.episodeId,
-          'video-translate',
-          'frames',
-          `${cue.cueId}.jpg`,
-        )
-        await fs.promises.mkdir(path.dirname(savedFramePath), { recursive: true })
-        await fs.promises.copyFile(framePath, savedFramePath)
-        frames.push({
-          cueId: cue.cueId,
-          funasrText: cue.text,
-          framePath: relativeRunAsset(params.runId, savedFramePath),
-          image: `data:image/jpeg;base64,${image.toString('base64')}`,
-        })
-        reportProgress(`抽帧校准：已处理 ${frames.length}/${params.cues.length} 条字幕`)
+    const batches = Array.from(
+      { length: Math.ceil(params.cues.length / VIDEO_TRANSLATION_FRAME_BATCH_SIZE) },
+      (_, index) => {
+        const start = index * VIDEO_TRANSLATION_FRAME_BATCH_SIZE
+        return {
+          index,
+          start,
+          cues: params.cues.slice(start, start + VIDEO_TRANSLATION_FRAME_BATCH_SIZE),
+        }
+      },
+    )
+    const persons: Array<{ visualPersonId: string; features: string }> = []
+    const subtitles: Array<{
+      cueId: string
+      text: string
+      framePath: string
+      visiblePersonIds: string[]
+    }> = []
+    const failures: string[] = []
+    for (const batch of batches) {
+      const taskId = frameCalibrationTaskId(params.episodeId, batch.start, batch.cues.length)
+      const outputPath = frameCalibrationBatchPath(params.runId, params.episodeId, batch.index)
+      const relativeOutputPath = relativeRunAsset(params.runId, outputPath)
+      const inputHash = frameCalibrationInputHash(params, source, batch.start, batch.cues)
+      const catalogHash = frameCalibrationCatalogHash(persons)
+      const existingTask = (await readPending(params.runId)).find((task) => task.id === taskId)
+      if (existingTask?.status === 'success' && fs.existsSync(outputPath)) {
+        const result = await readFrameCalibrationBatchResult(outputPath).catch(() => undefined)
+        if (result?.inputHash === inputHash && result.catalogHash === catalogHash) {
+          mergeFrameCalibrationResult(persons, subtitles, result)
+          reportProgress(`抽帧校准：已复用第 ${batch.index + 1}/${batches.length} 批`)
+          continue
+        }
       }
-      const prompt = `你是影视对白画面校准导演。逐条读取全部画面并建立整集唯一人物目录，返回严格 JSON：{"persons":[{"visualPersonId":"visual-person-N","features":"稳定外观特征"}],"subtitles":[{"cueId":"原ID","text":"画面字幕建议","visiblePersonIds":["visual-person-N"]}]}。visual-person-N 只在首次发现清晰新人物时递增，后续同一人物必须复用目录 ID；多人画面把所有能确认的人物写入 visiblePersonIds，无人或无法确认则返回空数组。人物特征只用于内部聚类。不得把视觉 ID 当作 speaker-N 或正式角色。画面字幕模糊、遮挡、无字幕时保留 FunASR 原文。不得改变 cueId、时间戳、数量或顺序，不输出解释。输入：${JSON.stringify(frames.map(({ image, ...cue }) => cue))}`
-      const content: Record<string, unknown>[] = [{ type: 'text', text: prompt }]
-      frames.forEach((frame) => {
-        content.push({ type: 'text', text: `\n画面 ${frame.cueId}：` })
-        content.push({ type: 'image_url', image_url: { url: frame.image } })
+      const now = new Date().toISOString()
+      await putPending(params.runId, {
+        id: taskId,
+        kind: 'frame-calibration',
+        index: batch.index + 1,
+        targetId: `${batch.start + 1}-${batch.start + batch.cues.length}`,
+        targetLabel: `第 ${batch.index + 1} 批 ${batch.start + 1}-${batch.start + batch.cues.length}`,
+        status: 'queued',
+        outputPath: relativeOutputPath,
+        createdAt: existingTask?.createdAt || now,
+        updatedAt: now,
       })
-      reportProgress('画面已提取，正在识别字幕和画面人物')
-      const output = await generateJsonResponse(
-        '你只输出逐条画面字幕建议和独立视觉人物证据，不输出时间戳、正式角色结论或分析过程。',
-        content,
-        params.textModel,
-        signal,
-        16_000,
-        'json',
-        VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
-      )
-      const parsed = parseJson(output)
-      const persons = Array.isArray(parsed?.persons) ? parsed.persons : []
-      const calibrated = Array.isArray(parsed?.subtitles) ? parsed.subtitles : []
-      const personIds = new Set(persons.map((item: any) => String(item?.visualPersonId || '')))
-      if (
-        personIds.size !== persons.length ||
-        persons.some(
-          (item: any) =>
-            !/^visual-person-\d+$/.test(String(item?.visualPersonId || '')) ||
-            !String(item?.features || '').trim(),
-        ) ||
-        calibrated.length !== expectedIds.length ||
-        calibrated.some(
-          (item: any, index: number) =>
-            item?.cueId !== expectedIds[index] ||
-            !String(item?.text || '').trim() ||
-            !Array.isArray(item?.visiblePersonIds) ||
-            new Set(item.visiblePersonIds).size !== item.visiblePersonIds.length ||
-            item.visiblePersonIds.some((id: unknown) => !personIds.has(String(id))),
+      try {
+        const result = await withTaskAbort(
+          params.runId,
+          taskId,
+          async (batchSignal) => {
+            await updateTask(params.runId, taskId, (task) => ({
+              ...task,
+              status: 'generating',
+              startedAt: task.startedAt || new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              error: undefined,
+            }))
+            reportProgress(`抽帧校准：正在处理第 ${batch.index + 1}/${batches.length} 批`)
+            const result = await calibrateVideoTranslationFrameBatch(
+              {
+                ...params,
+                cues: batch.cues,
+              },
+              source,
+              persons,
+              batch.start,
+              batchSignal,
+              (message) =>
+                reportProgress(`第 ${batch.index + 1}/${batches.length} 批：${message}`),
+            )
+            await fs.promises.mkdir(path.dirname(outputPath), { recursive: true })
+            const tempPath = `${outputPath}.tmp`
+            await fs.promises.writeFile(
+              tempPath,
+              JSON.stringify({ ...result, inputHash, catalogHash }, null, 2),
+              'utf8',
+            )
+            await fs.promises.rename(tempPath, outputPath)
+            await updateTask(params.runId, taskId, (task) => ({
+              ...task,
+              status: 'success',
+              outputPath: relativeOutputPath,
+              updatedAt: new Date().toISOString(),
+              finishedAt: new Date().toISOString(),
+              error: undefined,
+            }))
+            return result
+          },
+          signal,
         )
-      )
-        throw new Error('抽帧校准结果的人物目录、cue 引用、顺序、数量或正文不一致')
-      const byId = new Map(frames.map((item: any) => [item.cueId, item]))
-      return {
-        persons: persons.map((item: any) => ({
-          visualPersonId: String(item.visualPersonId),
-          features: String(item.features).trim(),
-        })),
-        subtitles: calibrated.map((item: any) => ({
-          cueId: item.cueId,
-          text: String(item.text).trim(),
-          framePath: byId.get(item.cueId)?.framePath,
-          visiblePersonIds: item.visiblePersonIds.map(String),
-        })),
+        mergeFrameCalibrationResult(persons, subtitles, result)
+      } catch (error) {
+        const task = (await readPending(params.runId)).find((item) => item.id === taskId)
+        const message = error instanceof Error ? error.message : String(error)
+        failures.push(`${batch.start + 1}-${batch.start + batch.cues.length}：${message}`)
+        if (task?.status !== 'stopped')
+          await updateTask(params.runId, taskId, (current) => ({
+            ...current,
+            status: signal.aborted ? 'stopped' : 'failed',
+            updatedAt: new Date().toISOString(),
+            error: signal.aborted ? '已停止' : message,
+          }))
+        break
       }
-    } finally {
-      await Promise.all(temporary.map((file) => fs.promises.rm(file, { force: true })))
+    }
+    if (signal.aborted) throw new Error('任务已停止')
+    if (failures.length)
+      throw new Error(`有 ${failures.length} 个抽帧校准批次失败；已成功批次会保留，重新执行会跳过成功批次`)
+    const subtitleById = new Map(subtitles.map((subtitle) => [subtitle.cueId, subtitle]))
+    return {
+      persons,
+      subtitles: expectedIds.map((cueId) => {
+        const subtitle = subtitleById.get(cueId)
+        if (!subtitle) throw new Error(`抽帧校准缺少 ${cueId} 的结果`)
+        return subtitle
+      }),
     }
   })
+}
+
+function frameCalibrationTaskId(episodeId: string, start: number, count: number) {
+  return `${episodeId}:frame-calibration:${start + 1}-${start + count}`
+}
+
+function frameCalibrationBatchPath(runId: string, episodeId: string, batchIndex: number) {
+  return path.join(
+    getRunDir(runId),
+    'episodes',
+    episodeId,
+    'video-translate',
+    'frame-calibration',
+    'batches',
+    `${String(batchIndex + 1).padStart(3, '0')}.json`,
+  )
+}
+
+function frameCalibrationInputHash(
+  params: import('./types.ts').CalibrateVideoTranslationFramesParams,
+  source: string,
+  batchStart: number,
+  cues: import('./types.ts').CalibrateVideoTranslationFramesParams['cues'],
+) {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        episodeId: params.episodeId,
+        source: relativeRunAsset(params.runId, source),
+        textModel: params.textModel,
+        batchStart,
+        cues,
+      }),
+    )
+    .digest('hex')
+}
+
+function frameCalibrationCatalogHash(
+  persons: Array<{ visualPersonId: string; features: string }>,
+) {
+  return createHash('sha256').update(JSON.stringify(persons)).digest('hex')
+}
+
+async function readFrameCalibrationBatchResult(filePath: string) {
+  const data = JSON.parse(await fs.promises.readFile(filePath, 'utf8'))
+  return {
+    inputHash: typeof data?.inputHash === 'string' ? data.inputHash : undefined,
+    catalogHash: typeof data?.catalogHash === 'string' ? data.catalogHash : undefined,
+    persons: Array.isArray(data?.persons)
+      ? data.persons.map((item: any) => ({
+          visualPersonId: String(item.visualPersonId),
+          features: String(item.features || '').trim(),
+        }))
+      : [],
+    subtitles: Array.isArray(data?.subtitles)
+      ? data.subtitles.map((item: any) => ({
+          cueId: String(item.cueId),
+          text: String(item.text || '').trim(),
+          framePath: String(item.framePath || ''),
+          visiblePersonIds: Array.isArray(item.visiblePersonIds)
+            ? item.visiblePersonIds.map(String)
+            : [],
+        }))
+      : [],
+  }
+}
+
+function mergeFrameCalibrationResult(
+  persons: Array<{ visualPersonId: string; features: string }>,
+  subtitles: Array<{
+    cueId: string
+    text: string
+    framePath: string
+    visiblePersonIds: string[]
+  }>,
+  result: {
+    persons: Array<{ visualPersonId: string; features: string }>
+    subtitles: Array<{
+      cueId: string
+      text: string
+      framePath: string
+      visiblePersonIds: string[]
+    }>
+  },
+) {
+  const personById = new Map(persons.map((person) => [person.visualPersonId, person]))
+  for (const person of result.persons) {
+    if (!personById.has(person.visualPersonId)) {
+      personById.set(person.visualPersonId, person)
+      persons.push(person)
+    }
+  }
+  subtitles.push(...result.subtitles)
+}
+
+async function calibrateVideoTranslationFrameBatch(
+  params: import('./types.ts').CalibrateVideoTranslationFramesParams,
+  source: string,
+  existingPersons: Array<{ visualPersonId: string; features: string }>,
+  batchStart: number,
+  signal: AbortSignal,
+  reportProgress: (message: string) => void,
+) {
+  const expectedIds = params.cues.map((cue) => cue.cueId)
+  const { executeFFmpeg } = await import('./ffmpeg/index.ts')
+  const frames: Record<string, unknown>[] = []
+  const temporary: string[] = []
+  try {
+    for (const cue of params.cues) {
+      const framePath = path.join(os.tmpdir(), `video-translation-frame-${randomUUID()}.jpg`)
+      temporary.push(framePath)
+      const midpoint = (cue.startMs + cue.endMs) / 2 / 1000
+      await executeFFmpeg(
+        [
+          '-ss',
+          midpoint.toFixed(3),
+          '-i',
+          source,
+          '-frames:v',
+          '1',
+          '-vf',
+          'scale=768:-2',
+          '-q:v',
+          '3',
+          '-y',
+          framePath,
+        ],
+        { abortSignal: signal },
+      )
+      const image = await fs.promises.readFile(framePath)
+      const savedFramePath = path.join(
+        getRunDir(params.runId),
+        'episodes',
+        params.episodeId,
+        'video-translate',
+        'frames',
+        `${cue.cueId}.jpg`,
+      )
+      await fs.promises.mkdir(path.dirname(savedFramePath), { recursive: true })
+      await fs.promises.copyFile(framePath, savedFramePath)
+      frames.push({
+        cueId: cue.cueId,
+        funasrText: cue.text,
+        framePath: relativeRunAsset(params.runId, savedFramePath),
+        image: `data:image/jpeg;base64,${image.toString('base64')}`,
+      })
+      reportProgress(`已抽取 ${frames.length}/${params.cues.length} 条字幕画面`)
+    }
+    const nextPersonNumber =
+      Math.max(
+        0,
+        ...existingPersons.map((person) => Number(person.visualPersonId.match(/\d+$/)?.[0] || 0)),
+      ) + 1
+    const prompt = `你是影视对白画面校准导演。逐条读取本批画面，并沿用已有整集唯一人物目录。返回严格 JSON：{"persons":[{"visualPersonId":"visual-person-N","features":"稳定外观特征"}],"subtitles":[{"cueId":"原ID","text":"画面字幕建议","visiblePersonIds":["visual-person-N"]}]}。已有人物目录：${JSON.stringify(existingPersons)}。如识别为已有人物，必须复用已有 visualPersonId；如首次发现清晰新人物，从 visual-person-${nextPersonNumber} 开始递增。多人画面把所有能确认的人物写入 visiblePersonIds，无人或无法确认则返回空数组。人物特征只用于内部聚类。不得把视觉 ID 当作 speaker-N 或正式角色。画面字幕模糊、遮挡、无字幕时保留 FunASR 原文。不得改变 cueId、时间戳、数量或顺序，不输出解释。本批从全局第 ${batchStart + 1} 条开始。输入：${JSON.stringify(frames.map(({ image, ...cue }) => cue))}`
+    const content: Record<string, unknown>[] = [{ type: 'text', text: prompt }]
+    frames.forEach((frame) => {
+      content.push({ type: 'text', text: `\n画面 ${frame.cueId}：` })
+      content.push({ type: 'image_url', image_url: { url: frame.image } })
+    })
+    reportProgress('画面已提取，正在识别字幕和画面人物')
+    const output = await generateJsonResponse(
+      '你只输出逐条画面字幕建议和独立视觉人物证据，不输出时间戳、正式角色结论或分析过程。',
+      content,
+      params.textModel,
+      signal,
+      16_000,
+      'json',
+      VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
+    )
+    const parsed = parseJson(output)
+    const persons = Array.isArray(parsed?.persons) ? parsed.persons : []
+    const calibrated = Array.isArray(parsed?.subtitles) ? parsed.subtitles : []
+    const knownPersonIds = new Set(existingPersons.map((person) => person.visualPersonId))
+    const personIds = new Set([
+      ...knownPersonIds,
+      ...persons.map((item: any) => String(item?.visualPersonId || '')),
+    ])
+    if (
+      new Set(persons.map((item: any) => String(item?.visualPersonId || ''))).size !==
+        persons.length ||
+      persons.some(
+        (item: any) =>
+          !/^visual-person-\d+$/.test(String(item?.visualPersonId || '')) ||
+          !String(item?.features || '').trim(),
+      ) ||
+      calibrated.length !== expectedIds.length ||
+      calibrated.some(
+        (item: any, index: number) =>
+          item?.cueId !== expectedIds[index] ||
+          !String(item?.text || '').trim() ||
+          !Array.isArray(item?.visiblePersonIds) ||
+          new Set(item.visiblePersonIds).size !== item.visiblePersonIds.length ||
+          item.visiblePersonIds.some((id: unknown) => !personIds.has(String(id))),
+      )
+    )
+      throw new Error('抽帧校准结果的人物目录、cue 引用、顺序、数量或正文不一致')
+    const byId = new Map(frames.map((item: any) => [item.cueId, item]))
+    return {
+      persons: persons.map((item: any) => ({
+        visualPersonId: String(item.visualPersonId),
+        features: String(item.features).trim(),
+      })),
+      subtitles: calibrated.map((item: any) => ({
+        cueId: item.cueId,
+        text: String(item.text).trim(),
+        framePath: byId.get(item.cueId)?.framePath,
+        visiblePersonIds: item.visiblePersonIds.map(String),
+      })),
+    }
+  } finally {
+    await Promise.all(temporary.map((file) => fs.promises.rm(file, { force: true })))
+  }
 }
 
 export async function analyzeMaterialVideo(

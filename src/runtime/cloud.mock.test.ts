@@ -1620,24 +1620,97 @@ test('semantic calibration retries invalid output and returns text only', async 
   assert.doesNotMatch(JSON.stringify(calls), /file_data|video_url|startMs|endMs/)
 })
 
-test('frame calibration rejects oversized cue sets early', async () => {
-  const cue = { cueId: 'cue-001', startMs: 0, endMs: 1000, text: '你好' }
-  await assert.rejects(
-    cloud.calibrateVideoTranslationFrames(
-      {
-        runId: 'translation-context-run',
-        episodeId,
-        videoPath: 'unused.mp4',
-        textModel: 'gemini-3.6-flash',
-        cues: Array.from({ length: 31 }, (_, index) => ({
-          ...cue,
-          cueId: `cue-${String(index + 1).padStart(3, '0')}`,
-        })),
-      },
-      () => {},
-    ),
-    /最多处理 30 条/,
+test('frame calibration splits long cue sets into visible retryable batches', async () => {
+  const runId = 'translation-context-run'
+  const sourcePath = path.join(
+    projectRoot(runId),
+    'episodes',
+    episodeId,
+    'video-translate',
+    'source.mp4',
   )
+  fs.mkdirSync(path.dirname(sourcePath), { recursive: true })
+  fs.writeFileSync(sourcePath, 'video')
+  const cues = Array.from({ length: 45 }, (_, index) => ({
+    cueId: `cue-${String(index + 1).padStart(3, '0')}`,
+    startMs: index * 1000,
+    endMs: index * 1000 + 800,
+    text: `字幕 ${index + 1}`,
+  }))
+  const requestStart = requests.length
+  chatOutputs.push(
+    ...[0, 20, 40].map((start) =>
+      JSON.stringify({
+        persons: start === 0 ? [{ visualPersonId: 'visual-person-1', features: '黑发青年' }] : [],
+        subtitles: cues.slice(start, start + 20).map((cue) => ({
+          cueId: cue.cueId,
+          text: `${cue.text} 校准`,
+          visiblePersonIds: ['visual-person-1'],
+        })),
+      }),
+    ),
+  )
+  const result = await cloud.calibrateVideoTranslationFrames(
+    {
+      runId,
+      episodeId,
+      videoPath: sourcePath,
+      textModel: 'gemini-3.6-flash',
+      cues,
+    },
+    () => {},
+  )
+  assert.equal(result.subtitles.length, 45)
+  assert.equal(result.persons.length, 1)
+  assert.equal(
+    requests
+      .slice(requestStart)
+      .filter((request) => request.url.endsWith('/v1/chat/completions')).length,
+    3,
+  )
+  const tasks = await cloud.listCloudTasks(runId)
+  const frameTasks = tasks.filter((task) => task.kind === 'frame-calibration')
+  assert.deepEqual(
+    frameTasks.map((task) => [task.targetId, task.status]),
+    [
+      ['1-20', 'success'],
+      ['21-40', 'success'],
+      ['41-45', 'success'],
+    ],
+  )
+  const rerunRequestStart = requests.length
+  const changedCues = cues.map((cue, index) =>
+    index === 0 ? { ...cue, text: '修改后的字幕' } : cue,
+  )
+  chatOutputs.push(
+    ...[0, 20, 40].map((start) =>
+      JSON.stringify({
+        persons: start === 0 ? [{ visualPersonId: 'visual-person-1', features: '黑发青年' }] : [],
+        subtitles: changedCues.slice(start, start + 20).map((cue) => ({
+          cueId: cue.cueId,
+          text: `${cue.text} 校准`,
+          visiblePersonIds: ['visual-person-1'],
+        })),
+      }),
+    ),
+  )
+  const rerunResult = await cloud.calibrateVideoTranslationFrames(
+    {
+      runId,
+      episodeId,
+      videoPath: sourcePath,
+      textModel: 'gemini-3.6-flash',
+      cues: changedCues,
+    },
+    () => {},
+  )
+  assert.equal(
+    requests
+      .slice(rerunRequestStart)
+      .filter((request) => request.url.endsWith('/v1/chat/completions')).length,
+    1,
+  )
+  assert.equal(rerunResult.subtitles[0].text, '修改后的字幕 校准')
 })
 
 test('aligns a dubbed cue across FunASR segments and verifies the block hash', async () => {
