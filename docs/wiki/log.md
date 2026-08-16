@@ -1,5 +1,12 @@
 # Wiki Log
 
+## 2026-08-16
+
+- 更新 [[开发/视频翻译工作台端到端验收]]：字幕来源收口为 `导入SRT`、`上传有字幕视频`、`上传无字幕视频`。已有 SRT 直接作为权威字幕；有字幕视频使用 `VideoSubFinder -> RapidOCR/RapidVideOCR -> SRT`；无字幕视频继续走 FunASR ASR。
+- 记录 Windows 硬字幕 OCR 真实样片经验：VideoSubFinder 默认底部区域会漏掉竖屏短剧嵌入横屏画面的字幕，已增加有效非黑画面区域检测和中下区域 RapidOCR 兜底；用户确认本轮测试结果“非常成功”。
+- 更新 [[运维/本地构建与发布]]：沉淀 RapidOCR/RapidVideOCR/VideoSubFinder 一键安装与扫描复用经验，记录 SourceForge 下载需明确 zip、设置 User-Agent、校验 zip 魔数，VideoSubFinder 运行目录和 Windows 异常退出码不能作为唯一失败依据。
+- 本轮版本号已提升到 `1.2.3`，但按测试策略未重新打包安装包；已验证 `pnpm exec vue-tsc --noEmit`、`pnpm test` 和 `python -m py_compile .\runtime\funasr\runtime.py`。后续待做两个小优化：OCR 进度文案简化和 OCR 截图区域调窄。
+
 ## 2026-08-11
 
 - 修复 Windows 用户下载 APP 后点击“一键安装”出现 `spawn ffprobe ENOENT` 和 `uv.exe 安装失败` 的首装链路：安装包随包提供 `ffmpeg.exe`、`ffprobe.exe` 和按架构隔离的 `uv.exe`，大模型仍由一键安装下载，不把约 2 GB FunASR / 人声分离模型打进安装包。

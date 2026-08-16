@@ -26,7 +26,9 @@
     <v-select
       v-model="mediaStore.textModel"
       class="text-model-select"
-      :items="TEXT_MODELS"
+      :items="TEXT_MODEL_ITEMS"
+      item-title="title"
+      item-value="value"
       label="文本模型"
       density="compact"
       hide-details
@@ -302,17 +304,17 @@ import type {
 defineEmits(['importMarkdown'])
 
 const KEYS_URL = 'https://api.jiucaihezi.studio/keys'
-const TEXT_MODELS = [
-  'gemini-3.6-flash',
-  'doubao-seed-evolving',
-  'claude-fable-5',
-  'claude-opus-5',
-  'gpt-5.6-sol',
-  'deepseek-v4-pro',
-]
 const TEXT_MODEL_ITEMS = [
   { title: 'Gemini 3.6 Flash', value: 'gemini-3.6-flash' },
+  { title: 'Gemini 3.7 Flash', value: 'gemini-3.7-flash' },
+  { title: 'Gemini 3.1 Pro Preview', value: 'gemini-3.1-pro-preview' },
   { title: '豆包', value: 'doubao-seed-evolving' },
+  { title: 'Claude Fable 5', value: 'claude-fable-5' },
+  { title: 'Claude Opus 5', value: 'claude-opus-5' },
+  { title: 'Claude Sonnet 5', value: 'claude-sonnet-5' },
+  { title: 'GPT 5.6 Sol', value: 'gpt-5.6-sol' },
+  { title: 'Grok 4.5', value: 'grok-4.5' },
+  { title: 'DeepSeek V4 Pro', value: 'deepseek-v4-pro' },
 ]
 const VIDEO_MODELS = [
   { title: 'Veo 3.1', value: 'veo-3.1-generate-preview' },

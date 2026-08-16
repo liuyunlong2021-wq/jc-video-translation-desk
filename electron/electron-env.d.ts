@@ -148,7 +148,21 @@ interface Window {
         episodeId: string,
         sourceVideoPath: string,
       ) => Promise<import('./types').VideoTranslationMasterUploadResult | null>
+      importVideoTranslationSrt: (
+        runId: string,
+        episodeId: string,
+        durationMs: number,
+      ) => Promise<{
+        srtPath: string
+        jsonPath: string
+        cues: Array<{ cueId: string; startMs: number; endMs: number; text: string }>
+      } | null>
       identifyVideoTranslationSpeakers: (
+        params: import('./types').IdentifyVideoTranslationSpeakersParams,
+      ) => Promise<{
+        speakers: import('./types').VideoTranslationSpeakerDraft[]
+      }>
+      ocrVideoTranslationSubtitles: (
         params: import('./types').IdentifyVideoTranslationSpeakersParams,
       ) => Promise<{
         speakers: import('./types').VideoTranslationSpeakerDraft[]

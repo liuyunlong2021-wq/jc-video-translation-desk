@@ -22,7 +22,10 @@ const materialTranscriptMain = read('electron/material-transcript.ts')
 const funAsrInstaller = read('electron/funasr-installer.ts')
 const runtimeTools = read('electron/runtime-tools.ts')
 const videoTranslationAsr = read('electron/video-translation-asr.ts')
+const videoTranslationOcr = read('electron/video-translation-ocr.ts')
 const videoTranslationMain = read('electron/video-translation.ts')
+const funAsrRuntime = read('runtime/funasr/runtime.py')
+const videoSubFinder = read('electron/video-subfinder.ts')
 const indexTts = read('electron/index-tts.ts')
 const main = read('electron/main.ts')
 const beforePack = read('build/scripts/before-pack.js')
@@ -51,9 +54,13 @@ const propSdd = read('docs/道具提示词参考搜索与资产生成P0-SDD.md')
 test('locks the API and selectable text and video models to the SDD values', () => {
   for (const model of [
     'gemini-3.6-flash',
+    'gemini-3.7-flash',
+    'gemini-3.1-pro-preview',
     'claude-fable-5',
     'claude-opus-5',
+    'claude-sonnet-5',
     'gpt-5.6-sol',
+    'grok-4.5',
     'deepseek-v4-pro',
   ]) {
     assert.match(cloud, new RegExp(model))
@@ -157,6 +164,19 @@ test('installs the local subtitle and source-separation engines from the app', (
   assert.match(funAsrInstaller, /uv.*venv.*--python.*3\.10/s)
   assert.match(funAsrInstaller, /funasr==1\.4\.1/)
   assert.match(funAsrInstaller, /sherpa-onnx==1\.13\.4/)
+  assert.match(funAsrInstaller, /rapidocr/)
+  assert.match(funAsrInstaller, /rapid-videocr==3\.1\.1/)
+  assert.match(funAsrInstaller, /onnxruntime/)
+  assert.match(funAsrInstaller, /opencv-python-headless/)
+  assert.match(funAsrInstaller, /VIDEO_SUB_FINDER_URL/)
+  assert.match(funAsrInstaller, /VideoSubFinder_6\.10_x64\.zip/)
+  assert.match(funAsrInstaller, /assertZipArchive/)
+  assert.match(funAsrInstaller, /VideoSubFinderWXW\.exe/)
+  assert.match(funAsrInstaller, /resolveVideoSubFinderPath/)
+  assert.match(videoSubFinder, /resolveVideoSubFinderPath/)
+  assert.match(videoSubFinder, /Downloads/)
+  assert.match(videoSubFinder, /cachedPath/)
+  assert.match(funAsrInstaller, /import rapidocr, rapid_videocr, cv2, onnxruntime/)
   assert.match(funAsrInstaller, /vocals\.fp16\.onnx/)
   assert.match(funAsrInstaller, /accompaniment\.fp16\.onnx/)
   assert.match(funAsrInstaller, /models\/iic--SenseVoiceSmall\/snapshots\/master/)
@@ -166,14 +186,27 @@ test('installs the local subtitle and source-separation engines from the app', (
   assert.doesNotMatch(funAsrInstaller, /git clone/)
   assert.match(videoTranslationAsr, /PYTHONIOENCODING: 'utf-8'/)
   assert.match(videoTranslationAsr, /PYTHONUTF8: '1'/)
+  assert.match(videoTranslationOcr, /--vsf-exe/)
+  assert.match(videoTranslationOcr, /resolveVideoSubFinderPath/)
+  assert.match(videoTranslationOcr, /未检测到清晰硬字幕/)
+  assert.match(videoTranslationOcr, /本地硬字幕识别工具缺失/)
+  assert.match(videoTranslationOcr, /rapid-videocr-3\.1\.1-rapidocr-vsf/)
+  assert.match(funAsrRuntime, /from rapid_videocr import RapidVideOCR, RapidVideOCRInput/)
+  assert.match(funAsrRuntime, /run_videosubfinder/)
+  assert.match(funAsrRuntime, /parse_srt/)
+  assert.match(funAsrRuntime, /RGBImages/)
+  assert.doesNotMatch(funAsrRuntime, /rapidocr-frame-sampler-fallback/)
+  assert.match(homeUi, /ocrVideoTranslationSubtitles/)
+  assert.doesNotMatch(homeUi, /视频硬字幕识别正在接入/)
 })
 
 test('frame calibration uses retryable 20-cue project task batches instead of a hard cue limit', () => {
   assert.match(cloud, /VIDEO_TRANSLATION_FRAME_BATCH_SIZE = 20/)
   assert.match(cloud, /kind: 'frame-calibration'/)
   assert.match(cloud, /readFrameCalibrationBatchResult/)
-  assert.match(homeUi, /'frame-calibration': '抽帧校准'/)
-  assert.match(homeUi, /每批 20 条/)
+  assert.match(homeUi, /'frame-calibration': '画面识别人物'/)
+  assert.match(homeUi, /画面识别人物会按每批 20 条/)
+  assert.doesNotMatch(homeUi, />抽帧校准</)
   assert.doesNotMatch(homeUi, /最多处理 30 条/)
   assert.doesNotMatch(cloud, /最多处理 30 条/)
 })
@@ -187,6 +220,8 @@ test('bundles Windows runtime tools and never relies on system ffmpeg or ffprobe
   assert.match(runtimeTools, /resolveFfmpegPath/)
   assert.match(runtimeTools, /resolveFfprobePath/)
   assert.match(ffmpeg, /resolveFfmpegPath/)
+  assert.match(workspace, /resolveFfprobePath/)
+  assert.match(workspace, /show_entries', 'format=duration'/)
   assert.match(videoTranslationMain, /resolveFfprobePath\(\)/)
   assert.doesNotMatch(videoTranslationMain, /'ffprobe'/)
   assert.doesNotMatch(videoTranslationMain, /"ffprobe"/)

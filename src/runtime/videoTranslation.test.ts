@@ -36,9 +36,12 @@ test('opens only the translation action whose dependencies are ready', () => {
   assert.deepEqual(availableVideoTranslationActions(state, []), ['upload-video'])
   state.sourceVideoPath = 'episodes/episode-001/video-translate/source.mp4'
   state.hasAudio = true
-  assert.ok(availableVideoTranslationActions(state, []).includes('reverse-video'))
+  assert.ok(availableVideoTranslationActions(state, []).includes('get-subtitles'))
+  state.hasAudio = false
+  assert.ok(availableVideoTranslationActions(state, []).includes('get-subtitles'))
+  state.hasAudio = true
   state.speakerStatus = 'ready'
-  assert.ok(availableVideoTranslationActions(state, []).includes('reverse-video'))
+  assert.ok(availableVideoTranslationActions(state, []).includes('get-subtitles'))
   state.translationStatus = 'ready'
   state.reviewStatus = 'ready'
   state.cues = [
@@ -55,7 +58,7 @@ test('opens only the translation action whose dependencies are ready', () => {
     },
   ]
   assert.ok(availableVideoTranslationActions(state, [role]).includes('calibrate-subtitles'))
-  assert.ok(availableVideoTranslationActions(state, [role]).includes('calibrate-frames'))
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('identify-visual-people'))
   assert.ok(availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
   state.translationStatus = 'idle'
   assert.ok(availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
@@ -696,7 +699,12 @@ test('routes translation review through voice workbench before a role-free subti
   for (const action of [
     '上传识别视频',
     '上传无字幕成片母版',
-    '识别字幕',
+    '字幕来源',
+    '导入 SRT',
+    '上传有字幕视频',
+    '上传无字幕视频',
+    '获取字幕',
+    '画面识别人物',
     '大模型语义校准',
     '翻译所有字幕',
     '进入配音工作台',

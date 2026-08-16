@@ -124,9 +124,14 @@ contextBridge.exposeInMainWorld('electron', {
         episodeId,
         sourceVideoPath,
       ),
+    importVideoTranslationSrt: (runId: string, episodeId: string, durationMs: number) =>
+      ipcRenderer.invoke('video-translation-import-srt', runId, episodeId, durationMs),
     identifyVideoTranslationSpeakers: (
       params: import('./types').IdentifyVideoTranslationSpeakersParams,
     ) => ipcRenderer.invoke('video-translation-identify-speakers', params),
+    ocrVideoTranslationSubtitles: (
+      params: import('./types').IdentifyVideoTranslationSpeakersParams,
+    ) => ipcRenderer.invoke('video-translation-ocr-subtitles', params),
     calibrateVideoTranslationSubtitles: (
       params: import('./types').CalibrateVideoTranslationSubtitlesParams,
     ) => ipcRenderer.invoke('video-translation-calibrate-subtitles', params),

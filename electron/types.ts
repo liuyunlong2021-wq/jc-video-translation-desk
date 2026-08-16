@@ -62,10 +62,14 @@ export type VideoModel =
   | 'rh-seedance2'
 export type TextModel =
   | 'gemini-3.6-flash'
+  | 'gemini-3.7-flash'
+  | 'gemini-3.1-pro-preview'
   | 'doubao-seed-evolving'
   | 'claude-fable-5'
   | 'claude-opus-5'
+  | 'claude-sonnet-5'
   | 'gpt-5.6-sol'
+  | 'grok-4.5'
   | 'deepseek-v4-pro'
 
 export interface EpisodeManifest {

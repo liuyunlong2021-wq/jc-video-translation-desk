@@ -92,7 +92,7 @@
                 v-if="cue.framePath"
                 class="frame-preview"
                 :src="fileUrl(cue.framePath)"
-                alt="抽帧校准画面"
+                alt="画面识别人物参考帧"
                 @error="cue.framePath = undefined"
               />
               <video
@@ -138,11 +138,6 @@
                 v-if="cue.calibrationSuggestion && cue.calibrationSuggestion !== cue.sourceText"
                 class="calibration-suggestion"
                 >建议：{{ cue.calibrationSuggestion }}</small
-              >
-              <small
-                v-if="cue.frameSuggestion && cue.frameSuggestion !== cue.sourceText"
-                class="calibration-suggestion"
-                >画面建议：{{ cue.frameSuggestion }}</small
               >
             </td>
             <td @click.stop="selectCue(cue.cueId)">

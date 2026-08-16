@@ -6,15 +6,15 @@
     output: 'release-translation/${version}',
   },
   mac: {
-    artifactName: '视频翻译工作台-${version}-mac-${arch}-installer.${ext}',
+    artifactName: 'video-translation-workbench-${version}-mac-${arch}-installer.${ext}',
     icon: './public/video-translation-icon.png',
   },
   win: {
-    artifactName: '视频翻译工作台-${version}-win-${arch}-setup.${ext}',
+    artifactName: 'video-translation-workbench-${version}-win-${arch}-setup.${ext}',
     icon: './public/video-translation-icon.png',
   },
   linux: {
-    artifactName: '视频翻译工作台-${version}-linux-${arch}.${ext}',
+    artifactName: 'video-translation-workbench-${version}-linux-${arch}.${ext}',
     icon: './public/video-translation-icon.png',
   },
 }

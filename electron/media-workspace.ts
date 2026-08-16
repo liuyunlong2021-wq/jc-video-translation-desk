@@ -1,9 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { app, dialog, net } from 'electron'
 import { parseBuffer } from 'music-metadata'
 import { generateUniqueFileName } from './lib/tools.ts'
+import { resolveFfprobePath } from './runtime-tools.ts'
 import { projectDirectorMarkdown } from '../src/runtime/projectDirector.ts'
 import type {
   AssetVersion,
@@ -17,6 +20,7 @@ import { validateEditingTimeline } from '../src/runtime/editingTimeline.ts'
 
 const RUN_ID = /^[A-Za-z0-9_-]+$/
 const stateWrites = new Map<string, Promise<void>>()
+const runFile = promisify(execFile)
 const WIKI_VERSION = 2 as const
 const PROJECT_SCHEMA_VERSION = 1 as const
 const PROJECT_REGISTRY_VERSION = 1 as const
@@ -1363,6 +1367,17 @@ export async function writeDataUrl(dataUrl: string, outputPath: string) {
 }
 
 export async function mediaDuration(filePath: string) {
+  try {
+    const { stdout } = await runFile(
+      resolveFfprobePath(),
+      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', filePath],
+      { maxBuffer: 1024 * 1024 },
+    )
+    const duration = Number(JSON.parse(stdout)?.format?.duration)
+    if (duration && Number.isFinite(duration)) return duration
+  } catch {
+    // Fall through to music-metadata for formats ffprobe cannot inspect in this runtime.
+  }
   const buffer = await fs.promises.readFile(filePath)
   const metadata = await parseBuffer(buffer)
   const duration = metadata.format.duration

@@ -35,6 +35,7 @@ import {
   translateSubtitles,
   translateVideoSubtitles,
   identifyVideoTranslationSpeakers,
+  ocrVideoTranslationSubtitles,
   calibrateVideoTranslationSubtitles,
   calibrateVideoTranslationFrames,
   generateVideoTranslationDialogueTimestamps,
@@ -99,6 +100,7 @@ import {
 } from './seed-audio'
 import {
   deleteVideoTranslationRole,
+  importVideoTranslationSrt,
   selectVideoTranslationFinalMaster,
   selectVideoTranslationSource,
   generateVideoTranslationGroupedVoice,
@@ -332,8 +334,20 @@ export default function initIPC() {
   ipcMain.handle('video-translation-select-final-master', (_event, runId, episodeId, sourcePath) =>
     selectVideoTranslationFinalMaster(runId, episodeId, sourcePath),
   )
+  ipcMain.handle('video-translation-import-srt', (_event, runId, episodeId, durationMs) =>
+    importVideoTranslationSrt(runId, episodeId, durationMs),
+  )
   ipcMain.handle('video-translation-identify-speakers', (event, params) =>
     identifyVideoTranslationSpeakers(params, (message) =>
+      event.sender.send('video-translation-progress', {
+        runId: params.runId,
+        episodeId: params.episodeId,
+        message,
+      }),
+    ),
+  )
+  ipcMain.handle('video-translation-ocr-subtitles', (event, params) =>
+    ocrVideoTranslationSubtitles(params, (message) =>
       event.sender.send('video-translation-progress', {
         runId: params.runId,
         episodeId: params.episodeId,

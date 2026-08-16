@@ -172,6 +172,12 @@ function migrateRun(run: any) {
   if (run.videoTranslation && typeof run.videoTranslation === 'object') {
     run.videoTranslation.sourceLanguage ||= 'auto'
     run.videoTranslation.targetLanguage ||= 'en'
+    if (
+      !['import-srt', 'subtitled-video', 'plain-video'].includes(
+        run.videoTranslation.subtitleSourceMode,
+      )
+    )
+      run.videoTranslation.subtitleSourceMode = 'plain-video'
     run.videoTranslation.durationMs = Number.isFinite(Number(run.videoTranslation.durationMs))
       ? Number(run.videoTranslation.durationMs)
       : 0
@@ -229,10 +235,14 @@ function migrateRun(run: any) {
   if (
     ![
       'gemini-3.6-flash',
+      'gemini-3.7-flash',
+      'gemini-3.1-pro-preview',
       'doubao-seed-evolving',
       'claude-fable-5',
       'claude-opus-5',
+      'claude-sonnet-5',
       'gpt-5.6-sol',
+      'grok-4.5',
       'deepseek-v4-pro',
     ].includes(run.textModel)
   )

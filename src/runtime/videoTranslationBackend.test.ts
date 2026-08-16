@@ -160,6 +160,29 @@ test('FunASR SRT formatter preserves cue timestamps exactly', () => {
   )
 })
 
+test('imports an existing SRT as the authoritative video translation subtitles', async () => {
+  selectedFile = path.join(root, 'imported.srt')
+  fs.writeFileSync(
+    selectedFile,
+    '1\n00:00:00,100 --> 00:00:01,000\n你好\n\n2\n00:00:01,100 --> 00:00:01,900\n欢迎回来\n',
+    'utf8',
+  )
+  const result = await translation.importVideoTranslationSrt(projectId, episodeId, 2_000)
+  assert.deepEqual(result?.cues, [
+    { cueId: 'cue-001', startMs: 100, endMs: 1000, text: '你好' },
+    { cueId: 'cue-002', startMs: 1100, endMs: 1900, text: '欢迎回来' },
+  ])
+  assert.match(
+    fs.readFileSync(path.join(projectRoot, 'wiki', '翻译', episodeId, '原始字幕.srt'), 'utf8'),
+    /00:00:01,100 --> 00:00:01,900\n欢迎回来/,
+  )
+  const json = JSON.parse(
+    fs.readFileSync(path.join(projectRoot, 'wiki', '翻译', episodeId, '原始转写.json'), 'utf8'),
+  )
+  assert.equal(json.engine, 'imported-srt')
+  assert.equal(json.cues[0].recognizedText, '你好')
+})
+
 test('archives a matching clean final master and rejects a different edit', async () => {
   const sourcePath = 'episodes/episode-001/video-translate/source.mp4'
   selectedFile = path.join(root, 'clean-master.mp4')

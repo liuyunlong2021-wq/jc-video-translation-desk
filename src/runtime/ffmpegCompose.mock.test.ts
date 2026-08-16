@@ -339,10 +339,10 @@ test('video translation audio and final output stay outside creative Wiki paths'
   assert.equal(fs.existsSync(path.join(base, 'wiki', '声音')), false)
 })
 
-test('burns translation subtitles on the complete uploaded source without creative final artifacts', async () => {
+test('burns translation subtitles on a QuickTime source without creative final artifacts', async () => {
   const runId = 'translation-compose-run'
   const base = projectRoot(runId)
-  const source = path.join(base, 'episodes', episodeId, 'video-translate', 'source.mp4')
+  const source = path.join(base, 'episodes', episodeId, 'video-translate', 'source.mov')
   const mixed = path.join(base, 'wiki', '翻译', episodeId, 'en', '音频', 'mixed.wav')
   fs.mkdirSync(path.dirname(source), { recursive: true })
   fs.mkdirSync(path.dirname(mixed), { recursive: true })

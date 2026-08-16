@@ -622,7 +622,7 @@ function taskKindLabel(kind: PendingCloudTask['kind']) {
     asset: '资产图',
     storyboard: '分镜图',
     video: '视频',
-    'frame-calibration': '抽帧校准',
+    'frame-calibration': '画面识别人物',
   }[kind]
 }
 
@@ -1530,8 +1530,8 @@ async function runTranslationAction(action: VideoTranslationAction) {
   }
   if (action === 'upload-video') return uploadTranslationVideo()
   if (action === 'upload-final-master') return uploadTranslationFinalMaster()
-  if (action === 'reverse-video') return reverseTranslationVideo()
-  if (action === 'calibrate-frames') return calibrateTranslationFrames()
+  if (action === 'get-subtitles') return getTranslationSubtitles()
+  if (action === 'identify-visual-people') return identifyVisualPeople()
   if (action === 'calibrate-subtitles') return calibrateTranslationSubtitles()
   if (action === 'translate-all-subtitles') return translateVideoSubtitles()
   if (action === 'open-voice-workspace') return openTranslationVoiceWorkspace()
@@ -1555,6 +1555,7 @@ async function uploadTranslationVideo() {
     const next = createVideoTranslationState()
     next.sourceLanguage = current.sourceLanguage
     next.targetLanguage = current.targetLanguage
+    next.subtitleSourceMode = current.subtitleSourceMode || 'plain-video'
     next.sourceVideoPath = result.sourceVideoPath
     next.sourceFingerprint = result.sourceFingerprint
     next.durationMs = result.durationMs
@@ -1566,6 +1567,102 @@ async function uploadTranslationVideo() {
     mediaStore.selectView('script')
     selectedTranslationCueId.value = ''
     toast.success('翻译原片已归档')
+  })
+}
+
+async function getTranslationSubtitles() {
+  const state = translationState()
+  if (state.subtitleSourceMode === 'import-srt') return importTranslationSrt()
+  if (state.subtitleSourceMode === 'subtitled-video') return ocrTranslationSubtitles()
+  if (!state.hasAudio) {
+    toast.warning('当前视频没有可识别音轨，请选择“导入 SRT”或“上传有字幕视频”。')
+    return
+  }
+  return reverseTranslationVideo()
+}
+
+async function ocrTranslationSubtitles() {
+  await runAction('get-subtitles', async () => {
+    const state = translationState()
+    if (!state.sourceVideoPath) throw new Error('请先上传视频')
+    state.speakerStatus = 'running'
+    try {
+      const result = await window.electron.cloud.ocrVideoTranslationSubtitles({
+        runId: mediaStore.runId,
+        episodeId: mediaStore.episodeId,
+        videoPath: state.sourceVideoPath,
+        durationMs: state.durationMs,
+      })
+      state.cues = result.speakers.map((speaker) => ({
+        cueId: speaker.cueId,
+        startMs: speaker.startMs,
+        endMs: speaker.endMs,
+        recognizedText: speaker.recognizedText,
+        sourceText: speaker.correctedText,
+        subtitleSourceKind: 'video-ocr',
+        translatedText: '',
+        performanceDirection: speaker.performanceDirection,
+        translationRoleId: speaker.proposedRoleId,
+        proposedName: speaker.proposedName,
+        confidence: speaker.confidence,
+        evidence: speaker.evidence,
+        needsReview: speaker.needsReview,
+      }))
+      Object.assign(state, invalidateVideoTranslation(state, 'source-dialogue'))
+      state.speakerStatus = 'ready'
+      state.frameCalibrationStatus = 'idle'
+      state.calibrationStatus = 'idle'
+      state.calibrationApplied = true
+      selectedTranslationCueId.value = state.cues[0]?.cueId || ''
+      mediaStore.selectView('script')
+      toast.success('视频字幕 OCR 完成，请检查字幕后继续翻译')
+    } catch (error) {
+      state.speakerStatus = 'failed'
+      throw error
+    }
+  })
+}
+
+async function importTranslationSrt() {
+  await runAction('get-subtitles', async () => {
+    const state = translationState()
+    if (!state.sourceVideoPath) throw new Error('请先上传识别视频')
+    state.speakerStatus = 'running'
+    try {
+      const result = await window.electron.cloud.importVideoTranslationSrt(
+        mediaStore.runId,
+        mediaStore.episodeId,
+        state.durationMs,
+      )
+      if (!result) {
+        state.speakerStatus = state.cues.length ? 'ready' : 'idle'
+        return
+      }
+      state.cues = result.cues.map((cue) => ({
+        cueId: cue.cueId,
+        startMs: cue.startMs,
+        endMs: cue.endMs,
+        recognizedText: cue.text,
+        sourceText: cue.text,
+        subtitleSourceKind: 'imported-srt',
+        subtitleSourcePath: result.srtPath,
+        translatedText: '',
+        needsReview: false,
+      }))
+      state.calibrationStatus = 'idle'
+      state.frameCalibrationStatus = 'idle'
+      state.speakerStatus = 'ready'
+      state.calibrationApplied = true
+      Object.assign(state, invalidateVideoTranslation(state, 'source-dialogue'))
+      state.speakerStatus = 'ready'
+      state.calibrationStatus = 'idle'
+      state.frameCalibrationStatus = 'idle'
+      selectedTranslationCueId.value = state.cues[0]?.cueId || ''
+      toast.success('SRT 已导入，请检查字幕后继续翻译')
+    } catch (error) {
+      state.speakerStatus = 'failed'
+      throw error
+    }
   })
 }
 
@@ -1592,7 +1689,7 @@ async function uploadTranslationFinalMaster() {
 }
 
 async function reverseTranslationVideo() {
-  await runAction('reverse-video', async () => {
+  await runAction('get-subtitles', async () => {
     const state = translationState()
     if (!state.sourceVideoPath) throw new Error('请先上传视频')
     state.speakerStatus = 'running'
@@ -1609,6 +1706,7 @@ async function reverseTranslationVideo() {
         endMs: speaker.endMs,
         recognizedText: speaker.recognizedText,
         sourceText: speaker.correctedText,
+        subtitleSourceKind: 'audio-asr',
         translatedText: '',
         performanceDirection: speaker.performanceDirection,
         translationRoleId: speaker.proposedRoleId,
@@ -1646,7 +1744,6 @@ async function calibrateTranslationSubtitles() {
       cues: state.cues.map((cue) => ({
         cueId: cue.cueId,
         text: cue.recognizedText || cue.sourceText,
-        frameSuggestion: cue.frameSuggestion,
         speakerCluster: cue.speakerCluster,
         emotion: cue.emotion,
       })),
@@ -1661,10 +1758,10 @@ async function calibrateTranslationSubtitles() {
   })
 }
 
-async function calibrateTranslationFrames() {
-  await runTranslationStep('calibrate-frames', 'frameCalibrationStatus', async (state) => {
+async function identifyVisualPeople() {
+  await runTranslationStep('identify-visual-people', 'frameCalibrationStatus', async (state) => {
     if (!state.sourceVideoPath) throw new Error('请先上传识别视频')
-    toast.info('抽帧校准会按每批 20 条处理，可在当前项目任务查看进度')
+    toast.info('画面识别人物会按每批 20 条处理，可在当前项目任务查看进度')
     const result = await window.electron.cloud.calibrateVideoTranslationFrames({
       runId: mediaStore.runId,
       episodeId: mediaStore.episodeId,
@@ -1700,16 +1797,14 @@ async function calibrateTranslationFrames() {
     )
     state.cues.forEach((cue) => {
       const suggestion = byId.get(cue.cueId)
-      cue.frameSuggestion = suggestion?.text || ''
       cue.framePath = suggestion?.framePath
       cue.visiblePersonIds = suggestion?.visiblePersonIds
       cue.translationRoleId =
         suggestion?.visiblePersonIds?.length === 1
           ? visualRoleByPerson.get(suggestion.visiblePersonIds[0])
           : undefined
-      cue.frameCalibrationBackupText = undefined
     })
-    toast.success('抽帧校准建议已生成，请对照后应用')
+    toast.success('画面人物识别完成，请检查角色绑定')
   })
 }
 

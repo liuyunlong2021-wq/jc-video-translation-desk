@@ -5,6 +5,11 @@ import { spawn } from 'node:child_process'
 import { app } from 'electron'
 import axios from 'axios'
 import { resolveBundledUvPath } from './runtime-tools.ts'
+import {
+  clearVideoSubFinderPathCache,
+  defaultVideoSubFinderRoot,
+  resolveVideoSubFinderPath,
+} from './video-subfinder.ts'
 
 export type FunAsrInstallStatus = {
   state: 'ready' | 'missing' | 'installing' | 'failed'
@@ -23,6 +28,8 @@ const SEPARATION_MODELS = {
 } as const
 const SEPARATION_MODEL_URL =
   'https://www.modelscope.cn/models/himyworld/videotrans/resolve/master/onnx/'
+const VIDEO_SUB_FINDER_URL =
+  'https://downloads.sourceforge.net/project/videosubfinder/VideoSubFinder_6.10_x64.zip'
 
 let installing: Promise<FunAsrInstallStatus> | null = null
 
@@ -69,7 +76,10 @@ async function downloadFile(
   destination: string,
   reportProgress: (message: string) => void,
 ) {
-  const response = await axios.get<NodeJS.ReadableStream>(url, { responseType: 'stream' })
+  const response = await axios.get<NodeJS.ReadableStream>(url, {
+    responseType: 'stream',
+    headers: { 'User-Agent': 'Wget/1.21.4' },
+  })
   await fs.promises.mkdir(path.dirname(destination), { recursive: true })
   const temporary = `${destination}.tmp`
   const file = fs.createWriteStream(temporary)
@@ -85,6 +95,18 @@ async function downloadFile(
     file.end(resolve)
   })
   await fs.promises.rename(temporary, destination)
+}
+
+async function assertZipArchive(filePath: string, label: string) {
+  const handle = await fs.promises.open(filePath, 'r')
+  try {
+    const buffer = Buffer.alloc(4)
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+    if (bytesRead < 4 || buffer[0] !== 0x50 || buffer[1] !== 0x4b)
+      throw new Error(`${label} 下载结果不是有效 zip，请检查网络或稍后重试`)
+  } finally {
+    await handle.close()
+  }
 }
 
 function sendProgress(reportProgress: (message: string) => void, data: Buffer) {
@@ -113,6 +135,87 @@ function canRun(command: string) {
     child.once('error', () => resolve(false))
     child.once('close', (code) => resolve(code === 0))
   })
+}
+
+async function findFileByName(root: string, names: string[]) {
+  const pending = [root]
+  while (pending.length) {
+    const current = pending.pop()!
+    for (const entry of await fs.promises.readdir(current, { withFileTypes: true })) {
+      const fullPath = path.join(current, entry.name)
+      if (entry.isDirectory()) pending.push(fullPath)
+      else if (names.includes(entry.name)) return fullPath
+    }
+  }
+  return null
+}
+
+async function installVideoSubFinder(reportProgress: (message: string) => void) {
+  if (process.platform !== 'win32') return
+  const existing = await resolveVideoSubFinderPath()
+  if (existing) {
+    reportProgress(`已发现本机 VideoSubFinder：${existing}`)
+    return
+  }
+  const root = defaultVideoSubFinderRoot()
+  const zipPath = path.join(root, 'videosubfinder.zip')
+  const extractDir = path.join(root, 'extract')
+  await fs.promises.mkdir(root, { recursive: true })
+  reportProgress('正在下载视频硬字幕关键帧提取工具…')
+  await downloadFile(VIDEO_SUB_FINDER_URL, zipPath, reportProgress)
+  await assertZipArchive(zipPath, 'VideoSubFinder')
+  await fs.promises.rm(extractDir, { recursive: true, force: true })
+  await fs.promises.mkdir(extractDir, { recursive: true })
+  reportProgress('正在解压 VideoSubFinder…')
+  await run(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'ByPass',
+      '-Command',
+      `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${extractDir.replace(/'/g, "''")}' -Force`,
+    ],
+    reportProgress,
+  )
+  const exe = await findFileByName(extractDir, ['VideoSubFinderWXW.exe', 'VideoSubFinder.exe'])
+  if (!exe) throw new Error('VideoSubFinder 下载后未找到可执行文件')
+  const packageDir = path.dirname(exe)
+  for (const entry of await fs.promises.readdir(packageDir)) {
+    const source = path.join(packageDir, entry)
+    const target = path.join(root, entry)
+    await fs.promises.rm(target, { recursive: true, force: true })
+    await fs.promises.cp(source, target, { recursive: true })
+  }
+  await fs.promises.rm(extractDir, { recursive: true, force: true })
+  await fs.promises.rm(zipPath, { force: true })
+  clearVideoSubFinderPathCache()
+}
+
+function pythonCanImportOcrRuntime() {
+  return new Promise<boolean>((resolve) => {
+    if (!fs.existsSync(pythonPath())) {
+      resolve(false)
+      return
+    }
+    const child = spawn(
+      pythonPath(),
+      ['-c', 'import rapidocr, rapid_videocr, cv2, onnxruntime, shapely; print("OCR_OK")'],
+      { stdio: 'ignore' },
+    )
+    child.once('error', () => resolve(false))
+    child.once('close', (code) => resolve(code === 0))
+  })
+}
+
+async function localEnginesReady() {
+  return (
+    fs.existsSync(pythonPath()) &&
+    modelsInstalled() &&
+    separationModelsInstalled() &&
+    (process.platform !== 'win32' || Boolean(await resolveVideoSubFinderPath())) &&
+    (await pythonCanImportOcrRuntime())
+  )
 }
 
 async function findUv(reportProgress: (message: string) => void) {
@@ -159,7 +262,7 @@ async function findUv(reportProgress: (message: string) => void) {
 
 export async function getFunAsrInstallStatus(): Promise<FunAsrInstallStatus> {
   if (installing) return { state: 'installing', message: '正在安装本地音频引擎…' }
-  if (fs.existsSync(pythonPath()) && modelsInstalled() && separationModelsInstalled())
+  if (await localEnginesReady())
     return { state: 'ready', message: '本地字幕与人声分离引擎已就绪' }
   return { state: 'missing', message: '首次使用需下载本地字幕、人声分离引擎和模型（约 2 GB）' }
 }
@@ -168,7 +271,7 @@ export async function installFunAsr(reportProgress: (message: string) => void) {
   if (installing) return installing
   installing = (async () => {
     try {
-      if (fs.existsSync(pythonPath()) && modelsInstalled() && separationModelsInstalled())
+      if (await localEnginesReady())
         return { state: 'ready' as const, message: '本地字幕与人声分离引擎已就绪' }
       const root = dataRoot()
       const venv = path.dirname(path.dirname(pythonPath()))
@@ -189,9 +292,15 @@ export async function installFunAsr(reportProgress: (message: string) => void) {
           'funasr==1.4.1',
           'sherpa-onnx==1.13.4',
           'soundfile==0.13.1',
+          'rapidocr',
+          'rapid-videocr==3.1.1',
+          'onnxruntime',
+          'opencv-python-headless',
+          'shapely',
         ],
         reportProgress,
       )
+      await installVideoSubFinder(reportProgress)
       reportProgress('正在下载字幕识别模型，请保持网络连接…')
       await run(
         pythonPath(),

@@ -46,6 +46,7 @@ import {
   transcribeVideoTranslationAudio,
   transcribeVideoTranslationDubbingBlock,
 } from './video-translation-asr.ts'
+import { recognizeVideoTranslationHardSubtitles } from './video-translation-ocr.ts'
 
 export const API_ORIGIN = 'https://api.jiucaihezi.studio'
 const DOUBAO_AUDIO_MODEL = 'doubao-seed-2-0-lite-260428' as const
@@ -53,10 +54,14 @@ export const OPENAI_BASE_URL = `${API_ORIGIN}/v1`
 export const API_KEYS_URL = `${API_ORIGIN}/keys`
 export const TEXT_MODELS: TextModel[] = [
   'gemini-3.6-flash',
+  'gemini-3.7-flash',
+  'gemini-3.1-pro-preview',
   'doubao-seed-evolving',
   'claude-fable-5',
   'claude-opus-5',
+  'claude-sonnet-5',
   'gpt-5.6-sol',
+  'grok-4.5',
   'deepseek-v4-pro',
 ]
 const VIDEO_TRANSLATION_FRAME_BATCH_SIZE = 20
@@ -1028,6 +1033,49 @@ export async function identifyVideoTranslationSpeakers(
         speakerCluster: cue.speakerCluster,
         emotion: cue.emotion,
         audioEvent: cue.audioEvent,
+      })),
+    }
+  })
+}
+
+export async function ocrVideoTranslationSubtitles(
+  params: IdentifyVideoTranslationSpeakersParams,
+  reportProgress: (message: string) => void,
+): Promise<{
+  speakers: VideoTranslationSpeakerDraft[]
+}> {
+  if (!params?.runId || !params.episodeId || !params.videoPath || !Number.isFinite(params.durationMs))
+    throw new Error('视频字幕 OCR 参数无效')
+  return withRunAbort(params.runId, async (signal) => {
+    const { transcript, srtPath } = await recognizeVideoTranslationHardSubtitles(
+      params.runId,
+      params.episodeId,
+      params.videoPath,
+      params.durationMs,
+      reportProgress,
+      signal,
+    )
+    await appendVideoTranslationTrace(
+      params.runId,
+      params.episodeId,
+      '视频字幕 OCR',
+      'rapidocr',
+      [{ target: srtPath, label: 'OCR SRT' }],
+      transcript.cues.length ? '视频字幕 OCR 完成，请检查字幕' : '画面中没有识别到字幕',
+    )
+    return {
+      speakers: transcript.cues.map((cue) => ({
+        cueId: cue.cueId,
+        startMs: cue.startMs,
+        endMs: cue.endMs,
+        recognizedText: cue.recognizedText,
+        correctedText: cue.recognizedText,
+        performanceDirection: '',
+        proposedName: '',
+        confidence: 0.8,
+        evidence: '视频硬字幕 OCR',
+        ocrText: cue.recognizedText,
+        needsReview: false,
       })),
     }
   })

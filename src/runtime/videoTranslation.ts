@@ -25,6 +25,9 @@ export interface VideoTranslationCue {
   endMs: number
   recognizedText: string
   sourceText: string
+  subtitleSourceKind?: 'imported-srt' | 'video-ocr' | 'audio-asr'
+  subtitleSourcePath?: string
+  subtitleConfidence?: number
   translatedText: string
   performanceDirection?: string
   translationRoleId?: string
@@ -49,6 +52,7 @@ export interface VideoTranslationCue {
 export interface VideoTranslationState {
   sourceVideoPath?: string
   sourceFingerprint?: string
+  subtitleSourceMode: 'import-srt' | 'subtitled-video' | 'plain-video'
   finalMasterVideoPath?: string
   finalMasterFingerprint?: string
   sourceLanguage: string
@@ -355,9 +359,9 @@ export function ungroupVideoTranslationCue(
 export type VideoTranslationAction =
   | 'upload-video'
   | 'upload-final-master'
-  | 'reverse-video'
+  | 'get-subtitles'
   | 'calibrate-subtitles'
-  | 'calibrate-frames'
+  | 'identify-visual-people'
   | 'translate-all-subtitles'
   | 'open-voice-workspace'
   | 'arrange-doubao-voice'
@@ -385,6 +389,7 @@ export function createVideoTranslationState(): VideoTranslationState {
   return {
     sourceLanguage: 'auto',
     targetLanguage: 'en',
+    subtitleSourceMode: 'plain-video',
     durationMs: 0,
     hasAudio: false,
     cues: [],
@@ -605,10 +610,10 @@ export function availableVideoTranslationActions(
   const actions: VideoTranslationAction[] = ['upload-video']
   if (!state.sourceVideoPath) return actions
   actions.push('upload-final-master')
-  if (!state.hasAudio) return actions
-  actions.push('reverse-video')
+  actions.push('get-subtitles')
+  if (!state.hasAudio && state.speakerStatus !== 'ready') return actions
   if (state.speakerStatus !== 'ready') return actions
-  if (state.cues.length) actions.push('calibrate-frames', 'calibrate-subtitles')
+  if (state.cues.length) actions.push('identify-visual-people', 'calibrate-subtitles')
   if (
     state.speakerStatus === 'ready' &&
     state.cues.length > 0 &&

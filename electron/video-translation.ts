@@ -227,6 +227,117 @@ export async function selectVideoTranslationFinalMaster(
   }
 }
 
+function parseSrtTime(value: string) {
+  const match = value.trim().match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/)
+  if (!match) throw new Error(`SRT 时间格式无效：${value}`)
+  const [, hours, minutes, seconds, millis] = match
+  return (
+    Number(hours) * 3_600_000 +
+    Number(minutes) * 60_000 +
+    Number(seconds) * 1_000 +
+    Number(millis)
+  )
+}
+
+function formatSrtTime(milliseconds: number) {
+  const hours = Math.floor(milliseconds / 3_600_000)
+  const minutes = Math.floor((milliseconds % 3_600_000) / 60_000)
+  const seconds = Math.floor((milliseconds % 60_000) / 1_000)
+  const millis = Math.floor(milliseconds % 1_000)
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`
+}
+
+function parseImportedSrt(content: string, durationMs: number) {
+  const blocks = content
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n/g, '\n')
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+  if (!blocks.length) throw new Error('SRT 文件为空')
+  const cues: Array<{ cueId: string; startMs: number; endMs: number; text: string }> = []
+  for (const block of blocks) {
+    const lines = block.split('\n').map((line) => line.trimEnd())
+    const timeIndex = lines.findIndex((line) => line.includes('-->'))
+    if (timeIndex < 0) throw new Error('SRT 缺少时间轴')
+    const [startRaw, endRaw] = lines[timeIndex].split('-->').map((part) => part.trim().split(/\s+/)[0])
+    const startMs = parseSrtTime(startRaw)
+    const endMs = parseSrtTime(endRaw)
+    const text = lines.slice(timeIndex + 1).join('\n').trim()
+    if (!text) throw new Error('SRT 存在空字幕')
+    if (endMs <= startMs) throw new Error('SRT 字幕结束时间必须晚于开始时间')
+    if (cues.at(-1) && startMs < cues.at(-1)!.endMs) throw new Error('SRT 字幕时间重叠')
+    if (Number.isFinite(durationMs) && endMs > durationMs + 500)
+      throw new Error('SRT 字幕时间超过视频时长')
+    cues.push({
+      cueId: `cue-${String(cues.length + 1).padStart(3, '0')}`,
+      startMs,
+      endMs,
+      text,
+    })
+  }
+  return cues
+}
+
+function writeSrt(cues: Array<{ startMs: number; endMs: number; text: string }>) {
+  return cues
+    .map(
+      (cue, index) =>
+        `${index + 1}\n${formatSrtTime(cue.startMs)} --> ${formatSrtTime(cue.endMs)}\n${cue.text}\n`,
+    )
+    .join('\n')
+}
+
+export async function importVideoTranslationSrt(
+  runId: string,
+  episodeId: string,
+  durationMs: number,
+) {
+  safeId(episodeId, '剧集 ID')
+  const selected = await dialog.showOpenDialog({
+    title: '导入 SRT 字幕',
+    properties: ['openFile'],
+    filters: [{ name: 'SRT 字幕', extensions: ['srt'] }],
+  })
+  const source = selected.filePaths[0]
+  if (selected.canceled || !source) return null
+  const content = await fs.promises.readFile(source, 'utf8')
+  const cues = parseImportedSrt(content, durationMs)
+  const translationRoot = path.join(getRunDir(runId), 'wiki', '翻译', episodeId)
+  const srtPath = path.join(translationRoot, '原始字幕.srt')
+  const jsonPath = path.join(translationRoot, '原始转写.json')
+  await fs.promises.mkdir(translationRoot, { recursive: true })
+  await fs.promises.writeFile(`${srtPath}.tmp`, writeSrt(cues), 'utf8')
+  await fs.promises.rename(`${srtPath}.tmp`, srtPath)
+  await fs.promises.writeFile(
+    `${jsonPath}.tmp`,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        engine: 'imported-srt',
+        device: 'file',
+        sourceHash: createHash('sha256').update(content).digest('hex'),
+        sourceAudioPath: '',
+        cues: cues.map((cue) => ({
+          cueId: cue.cueId,
+          startMs: cue.startMs,
+          endMs: cue.endMs,
+          recognizedText: cue.text,
+        })),
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  )
+  await fs.promises.rename(`${jsonPath}.tmp`, jsonPath)
+  return {
+    srtPath: relativeRunAsset(runId, srtPath),
+    jsonPath: relativeRunAsset(runId, jsonPath),
+    cues,
+  }
+}
+
 function roleMarkdown(role: TranslationRole) {
   return `---\ntranslationRoleId: ${role.translationRoleId}\nstatus: confirmed${role.screenshotId ? `\nscreenshotId: ${role.screenshotId}` : ''}${role.linkedCreativeRoleId ? `\nlinkedCreativeRoleId: ${role.linkedCreativeRoleId}` : ''}\n---\n\n# ${role.displayName}\n\n- 别名：${role.aliases.join('、') || '无'}\n- 来源剧集：${role.sourceEpisodeIds.join('、')}${role.description ? `\n- 角色说明：${role.description}` : ''}\n`
 }

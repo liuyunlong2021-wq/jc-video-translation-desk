@@ -7,6 +7,17 @@
         }}</strong>
       </header>
       <div class="actions">
+        <v-select
+          v-if="mediaStore.workspaceView === 'script' && state.sourceVideoPath"
+          v-model="state.subtitleSourceMode"
+          :items="subtitleSourceItems"
+          item-title="title"
+          item-value="value"
+          label="字幕来源"
+          density="compact"
+          hide-details
+          :disabled="Boolean(mediaStore.busyAction) || state.speakerStatus === 'running'"
+        />
         <template v-for="action in actions" :key="action.key">
           <v-btn
             class="translation-action"
@@ -24,7 +35,7 @@
           >
           <v-alert
             v-if="
-              ['reverse-video', 'timestamp-target-dialogue'].includes(action.key) &&
+              ['get-subtitles', 'timestamp-target-dialogue'].includes(action.key) &&
               mediaStore.busyAction === action.key
             "
             type="info"
@@ -46,30 +57,6 @@
           >打开翻译成片</v-btn
         >
       </div>
-      <section
-        v-if="mediaStore.workspaceView === 'script' && state.speakerStatus === 'ready'"
-        class="semantic-calibration"
-      >
-        <strong>抽帧校准确认</strong>
-        <small>画面字幕只是辅助建议，最终以人工确认稿为准。</small>
-        <v-btn
-          block
-          color="primary"
-          variant="tonal"
-          prepend-icon="mdi-check"
-          :disabled="!hasFrameSuggestion"
-          @click="applyFrameCalibration"
-          >应用抽帧建议</v-btn
-        >
-        <v-btn
-          block
-          variant="text"
-          prepend-icon="mdi-undo"
-          :disabled="!hasFrameBackup"
-          @click="undoFrameCalibration"
-          >撤销本次抽帧校准</v-btn
-        >
-      </section>
       <section
         v-if="mediaStore.workspaceView === 'script' && state.speakerStatus === 'ready'"
         class="semantic-calibration"
@@ -205,6 +192,11 @@ const manualError = ref('')
 const selectedCue = computed(() =>
   state.value.cues.find((cue) => cue.cueId === props.selectedCueId),
 )
+const subtitleSourceItems = [
+  { title: '导入 SRT', value: 'import-srt' },
+  { title: '上传有字幕视频', value: 'subtitled-video' },
+  { title: '上传无字幕视频', value: 'plain-video' },
+]
 const available = computed(
   () => new Set(availableVideoTranslationActions(state.value, mediaStore.videoTranslationRoles)),
 )
@@ -226,16 +218,16 @@ const actions = computed(() =>
         done: Boolean(state.value.finalMasterVideoPath),
       },
       {
-        key: 'reverse-video',
-        label: '识别字幕',
+        key: 'get-subtitles',
+        label: '获取字幕',
         icon: 'mdi-subtitles-outline',
         color: 'primary',
         done: state.value.speakerStatus === 'ready',
       },
       {
-        key: 'calibrate-frames',
-        label: '抽帧校准',
-        icon: 'mdi-image-search-outline',
+        key: 'identify-visual-people',
+        label: '画面识别人物',
+        icon: 'mdi-account-search-outline',
         color: 'primary',
         done: state.value.frameCalibrationStatus === 'ready',
       },
@@ -314,8 +306,8 @@ const actions = computed(() =>
       : [
           'upload-video',
           'upload-final-master',
-          'reverse-video',
-          'calibrate-frames',
+          'get-subtitles',
+          'identify-visual-people',
           'calibrate-subtitles',
           'translate-all-subtitles',
           'open-voice-workspace',
@@ -327,12 +319,6 @@ const hasCalibrationSuggestion = computed(() =>
 )
 const hasCalibrationBackup = computed(() =>
   state.value.cues.some((cue) => cue.calibrationBackupText !== undefined),
-)
-const hasFrameSuggestion = computed(() =>
-  state.value.cues.some((cue) => cue.frameSuggestion?.trim()),
-)
-const hasFrameBackup = computed(() =>
-  state.value.cues.some((cue) => cue.frameCalibrationBackupText !== undefined),
 )
 
 function formatTime(ms: number) {
@@ -451,24 +437,6 @@ function applyCalibration() {
     cue.sourceText = cue.calibrationSuggestion
   })
   state.value.calibrationApplied = true
-  mediaStore.invalidateTranslation('source-dialogue')
-}
-
-function applyFrameCalibration() {
-  state.value.cues.forEach((cue) => {
-    if (!cue.frameSuggestion?.trim()) return
-    cue.frameCalibrationBackupText = cue.sourceText
-    cue.sourceText = cue.frameSuggestion
-  })
-  mediaStore.invalidateTranslation('source-dialogue')
-}
-
-function undoFrameCalibration() {
-  state.value.cues.forEach((cue) => {
-    if (cue.frameCalibrationBackupText === undefined) return
-    cue.sourceText = cue.frameCalibrationBackupText
-    cue.frameCalibrationBackupText = undefined
-  })
   mediaStore.invalidateTranslation('source-dialogue')
 }
 

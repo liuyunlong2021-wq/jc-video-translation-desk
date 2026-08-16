@@ -1,7 +1,7 @@
 {
   "name": "jc-video-translation-desk",
   "description": "视频翻译工作台：将已有视频制作成目标语言配音与字幕成片",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "author": {
     "name": "YILS",
     "developer": "YILS",
