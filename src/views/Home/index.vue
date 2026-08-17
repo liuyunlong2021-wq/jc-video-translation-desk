@@ -439,6 +439,7 @@ import {
   seedLinesFromScript,
 } from '@/runtime/seedAudio'
 import {
+  autoGroupVideoTranslationCues,
   createVideoTranslationState,
   invalidateVideoTranslation,
   planVideoTranslationDialogueBlocks,
@@ -1531,6 +1532,7 @@ async function runTranslationAction(action: VideoTranslationAction) {
   if (action === 'upload-video') return uploadTranslationVideo()
   if (action === 'upload-final-master') return uploadTranslationFinalMaster()
   if (action === 'get-subtitles') return getTranslationSubtitles()
+  if (action === 'auto-group-dubbing') return autoGroupTranslationDubbing()
   if (action === 'identify-visual-people') return identifyVisualPeople()
   if (action === 'calibrate-subtitles') return calibrateTranslationSubtitles()
   if (action === 'translate-all-subtitles') return translateVideoSubtitles()
@@ -1579,6 +1581,21 @@ async function getTranslationSubtitles() {
     return
   }
   return reverseTranslationVideo()
+}
+
+async function autoGroupTranslationDubbing() {
+  await runAction('auto-group-dubbing', async () => {
+    const state = translationState()
+    state.cues = autoGroupVideoTranslationCues(
+      state.cues,
+      () => `dubbing-${crypto.randomUUID()}`,
+    )
+    mediaStore.invalidateTranslation('dubbing-group')
+    const groupCount = videoTranslationDubbingGroups(state.cues).filter(
+      (group) => group.cueIds.length > 1,
+    ).length
+    toast.success(groupCount ? `已关联 ${groupCount} 个配音分组` : '没有需要关联的连续同角色字幕')
+  })
 }
 
 async function ocrTranslationSubtitles() {
@@ -1834,6 +1851,9 @@ async function translateVideoSubtitles() {
   await runAction('translate-all-subtitles', async () => {
     const state = translationState()
     const previousStatus = state.translationStatus
+    const dubbingGroupByCue = new Map(
+      state.cues.map((cue) => [cue.cueId, cue.dubbingGroupId] as const),
+    )
     state.translationStatus = 'running'
     try {
       const roleById = new Map(
@@ -1861,6 +1881,7 @@ async function translateVideoSubtitles() {
       const next = invalidateVideoTranslation(state, 'translation')
       next.cues.forEach((cue) => {
         cue.translatedText = byId.get(cue.cueId) || ''
+        cue.dubbingGroupId = dubbingGroupByCue.get(cue.cueId)
       })
       next.translationStatus = 'ready'
       Object.assign(state, next)

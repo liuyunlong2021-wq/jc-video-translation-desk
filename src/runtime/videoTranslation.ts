@@ -340,6 +340,37 @@ export function groupVideoTranslationCueWithNext(
   return sorted
 }
 
+export function autoGroupVideoTranslationCues(
+  cues: VideoTranslationCue[],
+  groupIdFactory: () => string,
+) {
+  const sorted = cues.map((cue) => ({ ...cue, dubbingGroupId: undefined })).sort((a, b) => {
+    return a.startMs - b.startMs || a.endMs - b.endMs
+  })
+  let currentRoleId = ''
+  let currentGroup: VideoTranslationCue[] = []
+  for (const cue of sorted) {
+    if (!cue.translationRoleId || cue.translationRoleId !== currentRoleId) {
+      if (currentGroup.length > 1) {
+        const groupId = groupIdFactory()
+        if (!/^[A-Za-z0-9_-]+$/.test(groupId)) throw new Error('配音组 ID 无效')
+        currentGroup.forEach((item) => (item.dubbingGroupId = groupId))
+      }
+      currentRoleId = cue.translationRoleId || ''
+      currentGroup = cue.translationRoleId ? [cue] : []
+      continue
+    }
+    currentGroup.push(cue)
+  }
+  if (currentGroup.length > 1) {
+    const groupId = groupIdFactory()
+    if (!/^[A-Za-z0-9_-]+$/.test(groupId)) throw new Error('配音组 ID 无效')
+    currentGroup.forEach((item) => (item.dubbingGroupId = groupId))
+  }
+  videoTranslationDubbingGroups(sorted)
+  return sorted
+}
+
 export function ungroupVideoTranslationCue(
   cues: VideoTranslationCue[],
   cueId: string,
@@ -360,6 +391,7 @@ export type VideoTranslationAction =
   | 'upload-video'
   | 'upload-final-master'
   | 'get-subtitles'
+  | 'auto-group-dubbing'
   | 'calibrate-subtitles'
   | 'identify-visual-people'
   | 'translate-all-subtitles'
@@ -614,6 +646,8 @@ export function availableVideoTranslationActions(
   if (!state.hasAudio && state.speakerStatus !== 'ready') return actions
   if (state.speakerStatus !== 'ready') return actions
   if (state.cues.length) actions.push('identify-visual-people', 'calibrate-subtitles')
+  if (state.cues.length > 1 && state.cues.every((cue) => cue.translationRoleId))
+    actions.push('auto-group-dubbing')
   if (
     state.speakerStatus === 'ready' &&
     state.cues.length > 0 &&
@@ -659,29 +693,6 @@ export function availableVideoTranslationActions(
     actions.push('mix-background-audio')
   if (state.mixStatus === 'ready') actions.push('burn-subtitles-and-voice')
   return actions
-}
-
-export function videoTranslationRoleBindingTargets(
-  cues: VideoTranslationCue[],
-  cueId: string,
-  batchSameSpeaker: boolean,
-  batchSameVisualPerson: boolean,
-) {
-  const selected = cues.find((cue) => cue.cueId === cueId)
-  if (!selected) return []
-  const speaker = batchSameSpeaker ? selected.speakerCluster?.trim() : undefined
-  const visualPerson =
-    batchSameVisualPerson && selected.visiblePersonIds?.length === 1
-      ? selected.visiblePersonIds[0]
-      : undefined
-  return cues.filter(
-    (cue) =>
-      cue === selected ||
-      (speaker && cue.speakerCluster?.trim() === speaker) ||
-      (visualPerson &&
-        cue.visiblePersonIds?.length === 1 &&
-        cue.visiblePersonIds[0] === visualPerson),
-  )
 }
 
 export function invalidateVideoTranslation(
@@ -733,6 +744,9 @@ export function invalidateVideoTranslation(
   } else if (change === 'role-binding') {
     next.translationStatus = invalidate(next.translationStatus)
     next.reviewStatus = invalidate(next.reviewStatus)
+    next.cues.forEach((cue) => {
+      cue.dubbingGroupId = undefined
+    })
   } else if (change === 'timing') {
     next.reviewStatus = invalidate(next.reviewStatus)
     next.frameCalibrationStatus = invalidate(next.frameCalibrationStatus)

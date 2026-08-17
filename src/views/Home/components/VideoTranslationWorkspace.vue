@@ -39,13 +39,6 @@
             <th class="preview-column">视频片段预览</th>
             <th v-if="showRoles" class="role-column">
               <span>说话角色</span>
-              <label class="batch-role-toggle">
-                <input v-model="batchSameVisualPerson" type="checkbox" />
-                相同画面人物
-              </label>
-              <small v-if="batchTargetCount > 1" class="batch-target-count">
-                将修改 {{ batchTargetCount }} 条字幕
-              </small>
             </th>
             <th>人工确认稿</th>
             <th>{{ languageLabel(state.targetLanguage) }}字幕</th>
@@ -165,10 +158,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useMediaTaskStore } from '@/store'
 import { managedMediaUrl } from '@/runtime/managedMediaUrl'
-import {
-  videoTranslationRoleBindingTargets,
-  type VideoTranslationCue,
-} from '@/runtime/videoTranslation'
+import { type VideoTranslationCue } from '@/runtime/videoTranslation'
 
 const props = withDefaults(defineProps<{ selectedCueId: string; showRoles?: boolean }>(), {
   showRoles: true,
@@ -187,27 +177,16 @@ const selectedEndMs = ref<number>()
 const roleDialogOpen = ref(false)
 const roleNameDraft = ref('')
 const pendingRoleCue = ref<VideoTranslationCue>()
-const batchSameVisualPerson = ref(false)
 watch(
   () => [mediaStore.runId, mediaStore.episodeId, state.value.speakerStatus],
   () => {
-    batchSameVisualPerson.value = false
+    roleDialogOpen.value = false
+    pendingRoleCue.value = undefined
   },
 )
 const selectedCue = computed(() =>
   state.value.cues.find((cue) => cue.cueId === props.selectedCueId),
 )
-const batchTargetCount = computed(() => {
-  const selected = selectedCue.value
-  return selected
-    ? videoTranslationRoleBindingTargets(
-        state.value.cues,
-        selected.cueId,
-        false,
-        batchSameVisualPerson.value,
-      ).length
-    : 0
-})
 const previewCaption = computed(() =>
   state.value.sourceVideoPath
     ? `${Math.round(state.value.durationMs / 1000)} 秒 · ${state.value.cues.length} 条字幕`
@@ -283,15 +262,8 @@ function bindRole(cue: VideoTranslationCue, value: string) {
   applyRole(cue, value)
 }
 function applyRole(cue: VideoTranslationCue, roleId: string) {
-  videoTranslationRoleBindingTargets(
-    state.value.cues,
-    cue.cueId,
-    false,
-    batchSameVisualPerson.value,
-  ).forEach((item) => {
-    item.translationRoleId = roleId
-    item.needsReview = false
-  })
+  cue.translationRoleId = roleId
+  cue.needsReview = false
   mediaStore.invalidateTranslation('role-binding')
 }
 function confirmNewRole() {
@@ -441,22 +413,6 @@ p {
 }
 .role-column {
   width: 190px;
-}
-.batch-role-toggle {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 5px;
-  font-size: 11px;
-  font-weight: 400;
-  color: rgba(0, 0, 0, 0.6);
-}
-.batch-target-count {
-  display: block;
-  margin-top: 5px;
-  color: rgb(var(--v-theme-primary));
-  font-size: 11px;
-  font-weight: 500;
 }
 .audio-column {
   width: 122px;

@@ -239,6 +239,13 @@ const actions = computed(() =>
         done: state.value.speakerStatus === 'ready',
       },
       {
+        key: 'auto-group-dubbing',
+        label: '关联配音分组',
+        icon: 'mdi-link-variant',
+        color: 'primary',
+        done: Boolean(state.value.cues.some((cue) => cue.dubbingGroupId)),
+      },
+      {
         key: 'translate-all-subtitles',
         label: '翻译所有字幕',
         icon: 'mdi-translate',
@@ -306,6 +313,7 @@ const actions = computed(() =>
       : [
           'upload-video',
           'get-subtitles',
+          'auto-group-dubbing',
           'translate-all-subtitles',
           'open-voice-workspace',
         ].includes(action.key),

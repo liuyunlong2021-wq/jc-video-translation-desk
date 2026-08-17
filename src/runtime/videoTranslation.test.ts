@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 import {
+  autoGroupVideoTranslationCues,
   availableVideoTranslationActions,
   createVideoTranslationState,
   groupVideoTranslationCueWithNext,
@@ -14,7 +15,6 @@ import {
   setVideoTranslationCueBoundary,
   ungroupVideoTranslationCue,
   videoTranslationDubbingGroups,
-  videoTranslationRoleBindingTargets,
   validateConfirmedTranslation,
   validateVideoTranslationDialoguePrompt,
   type TranslationRole,
@@ -56,9 +56,21 @@ test('opens only the translation action whose dependencies are ready', () => {
       translationRoleId: role.translationRoleId,
       needsReview: false,
     },
+    {
+      cueId: 'cue-002',
+      startMs: 1100,
+      endMs: 2000,
+      recognizedText: '再见',
+      sourceText: '再见',
+      translatedText: 'Goodbye',
+      performanceDirection: '自然地告别',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
   ]
   assert.ok(availableVideoTranslationActions(state, [role]).includes('calibrate-subtitles'))
   assert.ok(availableVideoTranslationActions(state, [role]).includes('identify-visual-people'))
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('auto-group-dubbing'))
   assert.ok(availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
   state.translationStatus = 'idle'
   assert.ok(availableVideoTranslationActions(state, [role]).includes('translate-all-subtitles'))
@@ -235,6 +247,7 @@ test('keeps translated text for review when the role binding changes', () => {
       translatedText: 'Hello',
       performanceDirection: '自然地打招呼',
       translationRoleId: role.translationRoleId,
+      dubbingGroupId: 'dubbing-group-1',
       needsReview: false,
     },
   ]
@@ -242,6 +255,7 @@ test('keeps translated text for review when the role binding changes', () => {
   assert.equal(next.translationStatus, 'stale')
   assert.equal(next.reviewStatus, 'stale')
   assert.equal(next.cues[0].translatedText, 'Hello')
+  assert.equal(next.cues[0].dubbingGroupId, undefined)
 })
 
 test('merges both source and translated text without relocking translation', () => {
@@ -354,6 +368,72 @@ test('groups adjacent same-role subtitles without merging subtitle data', () => 
   )
 })
 
+test('automatically groups consecutive same-role subtitles only', () => {
+  const otherRole: TranslationRole = {
+    ...role,
+    translationRoleId: 'role-2',
+    displayName: '周野',
+  }
+  const cues = [
+    {
+      cueId: 'cue-001',
+      startMs: 0,
+      endMs: 900,
+      recognizedText: '一',
+      sourceText: '一',
+      translatedText: 'One',
+      translationRoleId: role.translationRoleId,
+      dubbingGroupId: 'old-group',
+      needsReview: false,
+    },
+    {
+      cueId: 'cue-002',
+      startMs: 1000,
+      endMs: 2000,
+      recognizedText: '二',
+      sourceText: '二',
+      translatedText: 'Two',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+    {
+      cueId: 'cue-003',
+      startMs: 2100,
+      endMs: 3000,
+      recognizedText: '三',
+      sourceText: '三',
+      translatedText: 'Three',
+      translationRoleId: otherRole.translationRoleId,
+      needsReview: false,
+    },
+    {
+      cueId: 'cue-004',
+      startMs: 3100,
+      endMs: 4000,
+      recognizedText: '四',
+      sourceText: '四',
+      translatedText: 'Four',
+      translationRoleId: role.translationRoleId,
+      needsReview: false,
+    },
+  ]
+  const ids = ['dubbing-group-1']
+  const grouped = autoGroupVideoTranslationCues(cues, () => ids.shift()!)
+  assert.deepEqual(
+    grouped.map((cue) => cue.dubbingGroupId),
+    ['dubbing-group-1', 'dubbing-group-1', undefined, undefined],
+  )
+  assert.deepEqual(
+    grouped.map((cue) => [cue.sourceText, cue.translatedText, cue.startMs, cue.endMs]),
+    [
+      ['一', 'One', 0, 900],
+      ['二', 'Two', 1000, 2000],
+      ['三', 'Three', 2100, 3000],
+      ['四', 'Four', 3100, 4000],
+    ],
+  )
+})
+
 test('changing dubbing groups preserves the confirmed subtitle and global voice route', () => {
   const state = createVideoTranslationState()
   state.reviewStatus = 'ready'
@@ -439,27 +519,6 @@ test('derives strict three-part grouped prompts from the validated global prompt
     plan.prompts['dubbing-group-1'],
     `这是一段时长为2秒的配音表演艺术家在顶级录音棚内的配音片段。\n\n林默是成熟男性，低沉清晰，饰演者为@音频1。\n\n林默（温和开口）：“Hello”\n林默（平静告别）：“Goodbye”`,
   )
-})
-
-test('binds one cue or one explicit speaker evidence group', () => {
-  const cues = [
-    { cueId: 'a', speakerCluster: 'speaker-1', visiblePersonIds: ['visual-person-1'] },
-    { cueId: 'b', speakerCluster: 'speaker-1', visiblePersonIds: ['visual-person-2'] },
-    { cueId: 'c', speakerCluster: 'speaker-2', visiblePersonIds: ['visual-person-1'] },
-  ].map((cue, index) => ({
-    ...cue,
-    startMs: index * 1000,
-    endMs: (index + 1) * 1000,
-    recognizedText: cue.cueId,
-    sourceText: cue.cueId,
-    translatedText: '',
-    needsReview: true,
-  }))
-  const ids = (sameSpeaker: boolean, sameVisual: boolean) =>
-    videoTranslationRoleBindingTargets(cues, 'a', sameSpeaker, sameVisual).map((cue) => cue.cueId)
-  assert.deepEqual(ids(false, false), ['a'])
-  assert.deepEqual(ids(true, false), ['a', 'b'])
-  assert.deepEqual(ids(false, true), ['a', 'c'])
 })
 
 test('adds overlapping dialogue and adjusts subtitles from the video playhead', () => {
@@ -684,7 +743,7 @@ test('routes translation review through voice workbench before a role-free subti
     assert.match(workspace, new RegExp(column))
   assert.doesNotMatch(workspace, /表演/)
   assert.match(workspace, /v-if="showRoles" class="role-column"/)
-  assert.match(workspace, /videoTranslationRoleBindingTargets/)
+  assert.doesNotMatch(workspace, /videoTranslationRoleBindingTargets/)
   assert.doesNotMatch(workspace, /FunASR 原文/)
   assert.match(workspace, /calibrationSuggestion/)
   assert.match(home, /:show-roles="!isTranslationSubtitleWorkspace"/)
@@ -703,6 +762,7 @@ test('routes translation review through voice workbench before a role-free subti
     '上传有字幕视频',
     '上传无字幕视频',
     '获取字幕',
+    '关联配音分组',
     '翻译所有字幕',
     '进入配音工作台',
     '分离原人声和背景声',
@@ -722,6 +782,9 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(home, /durationMs: state\.durationMs/)
   assert.match(home, /calibrateVideoTranslationSubtitles/)
   assert.match(home, /autoIdentifyVisualPeople\(state\)/)
+  assert.match(home, /autoGroupVideoTranslationCues/)
+  assert.match(home, /invalidateTranslation\('dubbing-group'\)/)
+  assert.match(home, /dubbingGroupByCue/)
   assert.match(home, /sourceText: speaker\.correctedText/)
   assert.match(home, /invalidateVideoTranslation\(state, 'source-dialogue'\)/)
   assert.match(inspector, /播放头字幕编辑/)
@@ -732,9 +795,9 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(inspector, /撤销本次校准/)
   assert.match(inspector, /恢复识别原文/)
   assert.doesNotMatch(workspace, /相同声音/)
-  assert.match(workspace, /相同画面人物/)
+  assert.doesNotMatch(workspace, /相同画面人物/)
   assert.doesNotMatch(workspace, /batchSameSpeaker\.value/)
-  assert.match(workspace, /batchSameVisualPerson\.value/)
+  assert.doesNotMatch(workspace, /batchSameVisualPerson\.value/)
   assert.match(workspace, /cue\.framePath/)
   assert.match(workspace, /cue\.visiblePersonIds/)
   assert.match(workspace, /声音识别：/)
