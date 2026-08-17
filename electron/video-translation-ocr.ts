@@ -119,7 +119,7 @@ export async function recognizeVideoTranslationHardSubtitles(
   ]).catch(() => {
     throw new Error('本地字幕引擎尚未安装，请打开“生成设置”并点击“一键安装”')
   })
-  reportProgress('视频字幕 OCR 正在读取画面字幕')
+  reportProgress('正在获取画面字幕')
   let stdout = ''
   try {
     ;({ stdout } = await runFile(

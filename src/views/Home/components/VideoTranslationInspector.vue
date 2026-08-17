@@ -8,7 +8,7 @@
       </header>
       <div class="actions">
         <v-select
-          v-if="mediaStore.workspaceView === 'script' && state.sourceVideoPath"
+          v-if="mediaStore.workspaceView === 'script'"
           v-model="state.subtitleSourceMode"
           :items="subtitleSourceItems"
           item-title="title"
@@ -57,32 +57,46 @@
           >打开翻译成片</v-btn
         >
       </div>
-      <section
-        v-if="mediaStore.workspaceView === 'script' && state.speakerStatus === 'ready'"
-        class="semantic-calibration"
-      >
-        <strong>语义校准确认</strong>
-        <small>FunASR 原文永久保留；校准只提供人工确认稿建议。</small>
-        <v-btn
-          block
-          color="primary"
-          variant="tonal"
-          prepend-icon="mdi-check"
-          :disabled="!hasCalibrationSuggestion"
-          @click="applyCalibration"
-          >应用校准建议</v-btn
-        >
-        <v-btn
-          block
-          variant="text"
-          prepend-icon="mdi-undo"
-          :disabled="!hasCalibrationBackup"
-          @click="undoCalibration"
-          >撤销本次校准</v-btn
-        >
-        <v-btn block variant="text" prepend-icon="mdi-restore" @click="restoreRecognizedText"
-          >恢复并采用 FunASR 原文</v-btn
-        >
+      <section v-if="mediaStore.workspaceView === 'script' && state.speakerStatus === 'ready'">
+        <v-expansion-panels class="advanced-actions" variant="accordion">
+          <v-expansion-panel>
+            <v-expansion-panel-title>高级功能</v-expansion-panel-title>
+            <v-expansion-panel-text>
+              <div class="semantic-calibration">
+                <v-btn
+                  block
+                  color="primary"
+                  variant="tonal"
+                  prepend-icon="mdi-text-recognition"
+                  :disabled="!available.has('calibrate-subtitles')"
+                  :loading="mediaStore.busyAction === 'calibrate-subtitles'"
+                  @click="emit('action', 'calibrate-subtitles')"
+                  >大模型语义校准</v-btn
+                >
+                <v-btn
+                  block
+                  color="primary"
+                  variant="tonal"
+                  prepend-icon="mdi-check"
+                  :disabled="!hasCalibrationSuggestion"
+                  @click="applyCalibration"
+                  >应用校准建议</v-btn
+                >
+                <v-btn
+                  block
+                  variant="text"
+                  prepend-icon="mdi-undo"
+                  :disabled="!hasCalibrationBackup"
+                  @click="undoCalibration"
+                  >撤销本次校准</v-btn
+                >
+                <v-btn block variant="text" prepend-icon="mdi-restore" @click="restoreRecognizedText"
+                  >恢复识别原文</v-btn
+                >
+              </div>
+            </v-expansion-panel-text>
+          </v-expansion-panel>
+        </v-expansion-panels>
       </section>
       <section
         v-if="mediaStore.workspaceView === 'script' && state.sourceVideoPath"
@@ -205,7 +219,7 @@ const actions = computed(() =>
     [
       {
         key: 'upload-video',
-        label: state.value.sourceVideoPath ? '更换识别视频' : '上传识别视频',
+        label: state.value.sourceVideoPath ? '更换视频' : '上传视频',
         icon: 'mdi-upload',
         color: 'primary',
         done: false,
@@ -219,24 +233,10 @@ const actions = computed(() =>
       },
       {
         key: 'get-subtitles',
-        label: '获取字幕',
+        label: state.value.subtitleSourceMode === 'import-srt' ? '导入 SRT' : '获取字幕',
         icon: 'mdi-subtitles-outline',
         color: 'primary',
         done: state.value.speakerStatus === 'ready',
-      },
-      {
-        key: 'identify-visual-people',
-        label: '画面识别人物',
-        icon: 'mdi-account-search-outline',
-        color: 'primary',
-        done: state.value.frameCalibrationStatus === 'ready',
-      },
-      {
-        key: 'calibrate-subtitles',
-        label: '大模型语义校准',
-        icon: 'mdi-text-recognition',
-        color: 'primary',
-        done: state.value.calibrationStatus === 'ready',
       },
       {
         key: 'translate-all-subtitles',
@@ -305,10 +305,7 @@ const actions = computed(() =>
         ].includes(action.key)
       : [
           'upload-video',
-          'upload-final-master',
           'get-subtitles',
-          'identify-visual-people',
-          'calibrate-subtitles',
           'translate-all-subtitles',
           'open-voice-workspace',
         ].includes(action.key),
@@ -517,14 +514,12 @@ header small {
   padding-top: 12px;
   border-top: 1px solid rgba(0, 0, 0, 0.1);
 }
+.advanced-actions {
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
 .semantic-calibration {
   display: grid;
   gap: 8px;
-  padding-top: 12px;
-  border-top: 1px solid rgba(0, 0, 0, 0.1);
-}
-.semantic-calibration small {
-  color: rgba(0, 0, 0, 0.56);
 }
 .manual-cue-times {
   display: grid;

@@ -680,12 +680,12 @@ test('routes translation review through voice workbench before a role-free subti
     home,
     /if \(!state\) mediaStore\.selectWorkspaceEntry\('video-translate'\)[\s\S]*flush: 'sync'/,
   )
-  for (const column of ['时间轴', '视频片段预览', '说话角色', '原文', '字幕'])
+  for (const column of ['时间轴', '视频片段预览', '说话角色', '人工确认稿', '字幕'])
     assert.match(workspace, new RegExp(column))
   assert.doesNotMatch(workspace, /表演/)
   assert.match(workspace, /v-if="showRoles" class="role-column"/)
   assert.match(workspace, /videoTranslationRoleBindingTargets/)
-  assert.match(workspace, /FunASR 原文/)
+  assert.doesNotMatch(workspace, /FunASR 原文/)
   assert.match(workspace, /calibrationSuggestion/)
   assert.match(home, /:show-roles="!isTranslationSubtitleWorkspace"/)
   assert.match(home, /VideoTranslationSidebar[\s\S]*:show-roles="!isTranslationSubtitleWorkspace"/)
@@ -697,15 +697,12 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(inspector, /!mediaStore\.runId/)
   assert.match(home, /请先新建或打开项目，再上传视频/)
   for (const action of [
-    '上传识别视频',
-    '上传无字幕成片母版',
+    '上传视频',
     '字幕来源',
     '导入 SRT',
     '上传有字幕视频',
     '上传无字幕视频',
     '获取字幕',
-    '画面识别人物',
-    '大模型语义校准',
     '翻译所有字幕',
     '进入配音工作台',
     '分离原人声和背景声',
@@ -720,18 +717,23 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(home, /JSON\.parse\(JSON\.stringify\(state\.cues\)\)/)
   assert.doesNotMatch(inspector, /Whisper 生成时间轴|校准字幕与角色/)
   assert.doesNotMatch(inspector, /选择字幕行后设置角色声音|目标语言声音|voice-section/)
+  assert.doesNotMatch(inspector, /上传无字幕成片母版[\s\S]*字幕来源/)
+  assert.doesNotMatch(inspector, /画面识别人物[\s\S]*翻译所有字幕/)
   assert.match(home, /durationMs: state\.durationMs/)
   assert.match(home, /calibrateVideoTranslationSubtitles/)
+  assert.match(home, /autoIdentifyVisualPeople\(state\)/)
   assert.match(home, /sourceText: speaker\.correctedText/)
   assert.match(home, /invalidateVideoTranslation\(state, 'source-dialogue'\)/)
   assert.match(inspector, /播放头字幕编辑/)
   assert.match(inspector, /在当前位置新增对白/)
+  assert.match(inspector, /高级功能/)
+  assert.match(inspector, /大模型语义校准/)
   assert.match(inspector, /应用校准建议/)
   assert.match(inspector, /撤销本次校准/)
-  assert.match(inspector, /恢复并采用 FunASR 原文/)
-  assert.match(workspace, /相同声音/)
+  assert.match(inspector, /恢复识别原文/)
+  assert.doesNotMatch(workspace, /相同声音/)
   assert.match(workspace, /相同画面人物/)
-  assert.match(workspace, /batchSameSpeaker\.value/)
+  assert.doesNotMatch(workspace, /batchSameSpeaker\.value/)
   assert.match(workspace, /batchSameVisualPerson\.value/)
   assert.match(workspace, /cue\.framePath/)
   assert.match(workspace, /cue\.visiblePersonIds/)

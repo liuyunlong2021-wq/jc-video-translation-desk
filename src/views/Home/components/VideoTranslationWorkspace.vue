@@ -40,33 +40,20 @@
             <th v-if="showRoles" class="role-column">
               <span>说话角色</span>
               <label class="batch-role-toggle">
-                <input
-                  v-model="batchSameSpeaker"
-                  type="checkbox"
-                  @change="batchSameSpeaker && (batchSameVisualPerson = false)"
-                />
-                相同声音
-              </label>
-              <label class="batch-role-toggle">
-                <input
-                  v-model="batchSameVisualPerson"
-                  type="checkbox"
-                  @change="batchSameVisualPerson && (batchSameSpeaker = false)"
-                />
+                <input v-model="batchSameVisualPerson" type="checkbox" />
                 相同画面人物
               </label>
               <small v-if="batchTargetCount > 1" class="batch-target-count">
                 将修改 {{ batchTargetCount }} 条字幕
               </small>
             </th>
-            <th>FunASR 原文</th>
             <th>人工确认稿</th>
             <th>{{ languageLabel(state.targetLanguage) }}字幕</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!state.cues.length">
-            <td :colspan="showRoles ? 7 : 6" class="empty-row">
+            <td :colspan="showRoles ? 6 : 5" class="empty-row">
               点击右栏“识别字幕”后在这里审核角色、原文和译文
             </td>
           </tr>
@@ -117,11 +104,6 @@
               <small v-if="cue.visiblePersonIds?.length">
                 画面出现：{{ cue.visiblePersonIds.map(visualPersonLabel).join('、') }}
               </small>
-            </td>
-            <td @click.stop="selectCue(cue.cueId)">
-              <div class="recognized-text">
-                {{ cue.recognizedText || '人工新增，无 FunASR 原文' }}
-              </div>
             </td>
             <td @click.stop="selectCue(cue.cueId)">
               <textarea
@@ -205,12 +187,10 @@ const selectedEndMs = ref<number>()
 const roleDialogOpen = ref(false)
 const roleNameDraft = ref('')
 const pendingRoleCue = ref<VideoTranslationCue>()
-const batchSameSpeaker = ref(false)
 const batchSameVisualPerson = ref(false)
 watch(
   () => [mediaStore.runId, mediaStore.episodeId, state.value.speakerStatus],
   () => {
-    batchSameSpeaker.value = false
     batchSameVisualPerson.value = false
   },
 )
@@ -223,7 +203,7 @@ const batchTargetCount = computed(() => {
     ? videoTranslationRoleBindingTargets(
         state.value.cues,
         selected.cueId,
-        batchSameSpeaker.value,
+        false,
         batchSameVisualPerson.value,
       ).length
     : 0
@@ -306,7 +286,7 @@ function applyRole(cue: VideoTranslationCue, roleId: string) {
   videoTranslationRoleBindingTargets(
     state.value.cues,
     cue.cueId,
-    batchSameSpeaker.value,
+    false,
     batchSameVisualPerson.value,
   ).forEach((item) => {
     item.translationRoleId = roleId
@@ -417,10 +397,6 @@ p {
 }
 .source-preview.full-width {
   grid-column: 1 / -1;
-}
-.recognized-text {
-  white-space: pre-wrap;
-  color: rgba(0, 0, 0, 0.68);
 }
 .calibration-suggestion {
   display: block;

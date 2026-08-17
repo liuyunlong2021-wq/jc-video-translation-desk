@@ -1615,7 +1615,8 @@ async function ocrTranslationSubtitles() {
       state.calibrationApplied = true
       selectedTranslationCueId.value = state.cues[0]?.cueId || ''
       mediaStore.selectView('script')
-      toast.success('视频字幕 OCR 完成，请检查字幕后继续翻译')
+      await autoIdentifyVisualPeople(state)
+      toast.success('字幕已获取')
     } catch (error) {
       state.speakerStatus = 'failed'
       throw error
@@ -1626,7 +1627,7 @@ async function ocrTranslationSubtitles() {
 async function importTranslationSrt() {
   await runAction('get-subtitles', async () => {
     const state = translationState()
-    if (!state.sourceVideoPath) throw new Error('请先上传识别视频')
+    if (!state.sourceVideoPath) throw new Error('请先上传视频')
     state.speakerStatus = 'running'
     try {
       const result = await window.electron.cloud.importVideoTranslationSrt(
@@ -1658,7 +1659,8 @@ async function importTranslationSrt() {
       state.calibrationStatus = 'idle'
       state.frameCalibrationStatus = 'idle'
       selectedTranslationCueId.value = state.cues[0]?.cueId || ''
-      toast.success('SRT 已导入，请检查字幕后继续翻译')
+      await autoIdentifyVisualPeople(state)
+      toast.success('字幕已获取')
     } catch (error) {
       state.speakerStatus = 'failed'
       throw error
@@ -1668,7 +1670,7 @@ async function importTranslationSrt() {
 
 async function uploadTranslationFinalMaster() {
   const state = translationState()
-  if (!state.sourceVideoPath) throw new Error('请先上传识别视频')
+  if (!state.sourceVideoPath) throw new Error('请先上传视频')
   if (
     state.finalMasterVideoPath &&
     !window.confirm('更换无字幕成片母版会使分离、混音和成片失效，是否继续？')
@@ -1727,7 +1729,8 @@ async function reverseTranslationVideo() {
       state.calibrationApplied = false
       selectedTranslationCueId.value = state.cues[0]?.cueId || ''
       mediaStore.selectView('script')
-      toast.success('字幕识别完成，已打开字幕配音工作台')
+      await autoIdentifyVisualPeople(state)
+      toast.success('字幕已获取')
     } catch (error) {
       state.speakerStatus = 'failed'
       throw error
@@ -1760,52 +1763,67 @@ async function calibrateTranslationSubtitles() {
 
 async function identifyVisualPeople() {
   await runTranslationStep('identify-visual-people', 'frameCalibrationStatus', async (state) => {
-    if (!state.sourceVideoPath) throw new Error('请先上传识别视频')
-    toast.info('画面识别人物会按每批 20 条处理，可在当前项目任务查看进度')
-    const result = await window.electron.cloud.calibrateVideoTranslationFrames({
-      runId: mediaStore.runId,
-      episodeId: mediaStore.episodeId,
-      videoPath: state.sourceVideoPath,
-      textModel: mediaStore.textModel,
-      cues: state.cues.map((cue) => ({
-        cueId: cue.cueId,
-        startMs: cue.startMs,
-        endMs: cue.endMs,
-        text: cue.recognizedText || cue.sourceText,
-      })),
-    })
-    const byId = new Map(result.subtitles.map((subtitle) => [subtitle.cueId, subtitle]))
-    const visualRoleByPerson = new Map(
-      result.persons.map((person) => {
-        const roleId = `visual-${mediaStore.episodeId}-${person.visualPersonId}`
-        let role = mediaStore.videoTranslationRoles.find(
-          (item) => item.translationRoleId === roleId,
-        )
-        if (!role) {
-          role = {
-            translationRoleId: roleId,
-            visualPersonId: person.visualPersonId,
-            displayName: visualPersonLabel(person.visualPersonId),
-            aliases: [],
-            sourceEpisodeIds: [mediaStore.episodeId],
-            status: 'confirmed',
-          }
-          mediaStore.videoTranslationRoles.push(role)
-        }
-        return [person.visualPersonId, role.translationRoleId] as const
-      }),
-    )
-    state.cues.forEach((cue) => {
-      const suggestion = byId.get(cue.cueId)
-      cue.framePath = suggestion?.framePath
-      cue.visiblePersonIds = suggestion?.visiblePersonIds
-      cue.translationRoleId =
-        suggestion?.visiblePersonIds?.length === 1
-          ? visualRoleByPerson.get(suggestion.visiblePersonIds[0])
-          : undefined
-    })
-    toast.success('画面人物识别完成，请检查角色绑定')
+    await recognizeVisualPeople(state)
+    toast.success('人物已识别')
   })
+}
+
+async function autoIdentifyVisualPeople(state: NonNullable<typeof mediaStore.videoTranslation>) {
+  if (!state.sourceVideoPath || !state.cues.length) return
+  try {
+    state.frameCalibrationStatus = 'running'
+    await recognizeVisualPeople(state)
+  } catch (error) {
+    state.frameCalibrationStatus = 'failed'
+    toast.warning(
+      `字幕已获取，人物识别稍后可重试：${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+}
+
+async function recognizeVisualPeople(state: NonNullable<typeof mediaStore.videoTranslation>) {
+  if (!state.sourceVideoPath) throw new Error('请先上传视频')
+  const result = await window.electron.cloud.calibrateVideoTranslationFrames({
+    runId: mediaStore.runId,
+    episodeId: mediaStore.episodeId,
+    videoPath: state.sourceVideoPath,
+    textModel: mediaStore.textModel,
+    cues: state.cues.map((cue) => ({
+      cueId: cue.cueId,
+      startMs: cue.startMs,
+      endMs: cue.endMs,
+      text: cue.recognizedText || cue.sourceText,
+    })),
+  })
+  const byId = new Map(result.subtitles.map((subtitle) => [subtitle.cueId, subtitle]))
+  const visualRoleByPerson = new Map(
+    result.persons.map((person) => {
+      const roleId = `visual-${mediaStore.episodeId}-${person.visualPersonId}`
+      let role = mediaStore.videoTranslationRoles.find((item) => item.translationRoleId === roleId)
+      if (!role) {
+        role = {
+          translationRoleId: roleId,
+          visualPersonId: person.visualPersonId,
+          displayName: visualPersonLabel(person.visualPersonId),
+          aliases: [],
+          sourceEpisodeIds: [mediaStore.episodeId],
+          status: 'confirmed',
+        }
+        mediaStore.videoTranslationRoles.push(role)
+      }
+      return [person.visualPersonId, role.translationRoleId] as const
+    }),
+  )
+  state.cues.forEach((cue) => {
+    const suggestion = byId.get(cue.cueId)
+    cue.framePath = suggestion?.framePath
+    cue.visiblePersonIds = suggestion?.visiblePersonIds
+    cue.translationRoleId =
+      suggestion?.visiblePersonIds?.length === 1
+        ? visualRoleByPerson.get(suggestion.visiblePersonIds[0])
+        : undefined
+  })
+  state.frameCalibrationStatus = 'ready'
 }
 
 function visualPersonLabel(personId: string) {

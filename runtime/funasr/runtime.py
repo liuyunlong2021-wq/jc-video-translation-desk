@@ -283,8 +283,8 @@ def subtitle_roi(frame, active_bounds: tuple[int, int, int, int] | None):
     height, width = frame.shape[:2]
     x0, y0, x1, y1 = active_bounds or (0, 0, width, height)
     active_height = max(1, y1 - y0)
-    roi_y0 = max(0, y0 + int(active_height * 0.35))
-    roi_y1 = min(height, y0 + int(active_height * 0.95))
+    roi_y0 = max(0, y0 + int(active_height * 0.62))
+    roi_y1 = min(height, y0 + int(active_height * 0.96))
     return frame[roi_y0:roi_y1, x0:x1]
 
 
