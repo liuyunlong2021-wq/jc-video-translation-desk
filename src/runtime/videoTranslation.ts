@@ -695,7 +695,6 @@ export function validateVideoTranslationDialoguePrompt(
 export function parseVideoTranslationDialoguePrompt(
   prompt: string,
   block: VideoTranslationDialogueBlock,
-  allowContinuousGroup = false,
 ) {
   if (/固定音色|固定声线|不能串音|声音身份|情绪变化不能改变|参考音只锁定/.test(prompt))
     throw new Error(`${block.blockId} 含有压制自然表演的角色约束`)
@@ -708,16 +707,6 @@ export function parseVideoTranslationDialoguePrompt(
   const identities: Record<string, string> = {}
   block.references.forEach((reference, index) => {
     const label = reference.label?.split('·')[0]?.trim() || reference.speakerId
-    if (
-      allowContinuousGroup &&
-      prompt
-        .split('\n')
-        .map((line) => line.trim())
-        .some((line) => line.match(new RegExp(`饰演者为@音频${index + 1}[。.]?$`)))
-    ) {
-      identities[reference.speakerId] = ''
-      return
-    }
     const definition = prompt
       .split('\n')
       .map((line) => line.trim())
@@ -739,40 +728,6 @@ export function parseVideoTranslationDialoguePrompt(
     .map((value) => value.trim())
     .map((value) => value.match(/^(.+?)[（(](.+)[）)]\s*[：:]\s*[“"](.+)[”"]$/))
     .filter((value): value is RegExpMatchArray => Boolean(value))
-  if (allowContinuousGroup) {
-    if (dialogueLines.length)
-      throw new Error(`${block.blockId} 必须使用连续分句导演格式，不得使用角色括号引号格式`)
-    const body = prompt
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line && !/^这是一段/.test(line) && !/饰演者为@音频\d+[。.]?$/.test(line))
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-    let cursor = 0
-    const directions = block.lines.map((line) => {
-      const text = line.text.trim()
-      const index = body.indexOf(text, cursor)
-      if (index < cursor) throw new Error(`${block.blockId} 未按顺序保留全部确认台词`)
-      const prefix = body.slice(cursor, index)
-      const colonIndex = Math.max(prefix.lastIndexOf('：'), prefix.lastIndexOf(':'))
-      if (colonIndex < 0) throw new Error(`${block.blockId} 缺少每句台词对应的表演说明`)
-      const direction = prefix
-        .slice(colonIndex > 0 ? Math.max(prefix.lastIndexOf('，', colonIndex), 0) : 0, colonIndex)
-        .replace(/^[，。；、\s]*(?:先是|先|随后|紧接着|然后|再|并|且)?/, '')
-        .trim()
-      cursor = index + text.length
-      return direction || line.performanceEvidence
-    })
-    return {
-      identities,
-      lines: block.lines.map((line, index) => ({
-        cueId: line.cueId,
-        performanceDirection: directions[index],
-        text: line.text,
-      })),
-    }
-  }
   if (dialogueLines.length !== block.lines.length)
     throw new Error(`${block.blockId} 未按顺序逐行保留全部确认台词`)
   block.lines.forEach((line, index) => {
@@ -801,7 +756,7 @@ export function validateVideoTranslationGroupedPrompt(
 ) {
   if (block.references.length !== 1 || block.speakerIds.length !== 1)
     throw new Error(`${block.blockId} 必须只包含一个角色参考音`)
-  parseVideoTranslationDialoguePrompt(prompt, block, true)
+  parseVideoTranslationDialoguePrompt(prompt, block)
 }
 
 export function compactVideoTranslationVoiceIdentity(identity: string) {
@@ -814,12 +769,22 @@ export function compactVideoTranslationVoiceIdentity(identity: string) {
     .trim()
 }
 
-function formatVideoTranslationDurationSeconds(startMs: number, endMs: number) {
-  return (Math.max(0.01, (endMs - startMs) / 1000).toFixed(2).replace(/\.?0+$/, '') || '0.01')
+function promptSections(markdown: string) {
+  return new Map(
+    markdown
+      .split(/^##\s+/m)
+      .slice(1)
+      .flatMap((section) => {
+        const newline = section.indexOf('\n')
+        return newline < 0
+          ? []
+          : [[section.slice(0, newline).trim(), section.slice(newline + 1).trim()]]
+      }),
+  )
 }
 
 export function planVideoTranslationGroupedDialogueBlocks(
-  _legacyGlobalPromptMarkdown: string,
+  globalPromptMarkdown: string,
   globalArrangement: VideoTranslationDialogueArrangement,
   cues: VideoTranslationCue[],
   roles: TranslationRole[],
@@ -827,6 +792,19 @@ export function planVideoTranslationGroupedDialogueBlocks(
   overrides: Record<string, string> = {},
 ): VideoTranslationGroupedPlan {
   validateConfirmedTranslation(cues, roles, globalArrangement.durationMs)
+  const sections = promptSections(globalPromptMarkdown)
+  const performanceByCue = new Map<string, string>()
+  const identityByCue = new Map<string, string>()
+  for (const block of globalArrangement.blocks) {
+    const prompt = sections.get(block.blockId)
+    if (!prompt) throw new Error(`${block.blockId} 缺少全局配音提示词`)
+    const parsed = parseVideoTranslationDialoguePrompt(prompt, block)
+    for (const line of parsed.lines) {
+      performanceByCue.set(line.cueId, line.performanceDirection)
+      const sourceLine = block.lines.find((item) => item.cueId === line.cueId)!
+      identityByCue.set(line.cueId, parsed.identities[sourceLine.speakerId] || '')
+    }
+  }
   const cueById = new Map(cues.map((cue) => [cue.cueId, cue]))
   const roleById = new Map(roles.map((role) => [role.translationRoleId, role]))
   const referenceBySpeaker = new Map(
@@ -850,14 +828,16 @@ export function planVideoTranslationGroupedDialogueBlocks(
         cueId,
         speakerId: group.speakerId,
         text: cue.translatedText.trim(),
-        performanceEvidence: cue.performanceDirection?.trim() || '自然表达',
+        performanceEvidence: performanceByCue.get(cueId) || cue.performanceDirection?.trim() || '自然表达',
         expectedStartMs: cue.startMs,
         expectedEndMs: cue.endMs,
       }
     })
-    const identity = compactVideoTranslationVoiceIdentity(
-      role.voiceIdentityText?.trim() || reference.voiceDesignPrompt?.trim() || '',
-    )
+    const identity =
+      identityByCue.get(group.cueIds[0]) ||
+      compactVideoTranslationVoiceIdentity(
+        role.voiceIdentityText?.trim() || reference.voiceDesignPrompt?.trim() || '',
+      )
     if (!identity) throw new Error(`${role.displayName} 缺少角色声音身份`)
     const block: VideoTranslationDialogueBlock = {
       blockId: group.groupId,
@@ -866,18 +846,12 @@ export function planVideoTranslationGroupedDialogueBlocks(
       references: [{ ...reference, label: role.displayName }],
       lines,
     }
-    const seconds = formatVideoTranslationDurationSeconds(group.startMs, group.endMs)
-    const continuousPerformance = lines
-      .map((line, index) => {
-        const prefix = index === 0 ? '先是' : index === 1 ? '随后' : '接着'
-        const suffix = index === lines.length - 1 ? '' : '，'
-        return `${prefix}${line.performanceEvidence}：${line.text}${suffix}`
-      })
-      .join('')
     const generated = [
-      `这是一段${seconds}秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。`,
+      `这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。`,
       '',
-      continuousPerformance,
+      `${role.displayName}是${identity}，饰演者为@音频1。`,
+      '',
+      ...lines.map((line) => `${role.displayName}（${line.performanceEvidence}）：“${line.text}”`),
     ].join('\n')
     const prompt = overrides[group.groupId]?.trim() || generated
     validateVideoTranslationGroupedPrompt(prompt, block)

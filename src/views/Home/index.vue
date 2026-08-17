@@ -2708,7 +2708,7 @@ async function generateTranslationGroupedPrompts(
     mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role]),
   )
   const base = planVideoTranslationGroupedDialogueBlocks(
-    '',
+    globalPrompt,
     globalPlan.arrangement,
     state.cues,
     mediaStore.videoTranslationRoles,
@@ -2815,7 +2815,7 @@ async function generateTranslationGroupedPrompts(
       `已生成 ${completed}/${base.arrangement.blocks.length} 个分组提示词，失败 ${failures.length} 个：${failures[0]}`,
     )
   return planVideoTranslationGroupedDialogueBlocks(
-    '',
+    globalPrompt,
     globalPlan.arrangement,
     state.cues,
     mediaStore.videoTranslationRoles,

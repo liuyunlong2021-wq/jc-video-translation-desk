@@ -688,15 +688,20 @@ test('grouped dubbing keeps successful groups and places complete audio without 
   const prompt = [
     '## group-1',
     '',
-    '这是一段1.5秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。',
+    '这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。',
     '',
-    '先是自然问候：Hello，随后热情欢迎：Welcome',
+    '角色一是成熟男性，饰演者为@音频1。',
+    '',
+    '角色一（自然问候）：“Hello”',
+    '角色一（热情欢迎）：“Welcome”',
     '',
     '## single-cue-3',
     '',
-    '这是一段1秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。',
+    '这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。',
     '',
-    '先是平静告别：Goodbye',
+    '角色一是成熟男性，饰演者为@音频1。',
+    '',
+    '角色一（平静告别）：“Goodbye”',
   ].join('\n')
   await translation.writeVideoTranslationGroupedPlan(
     projectId,
@@ -793,7 +798,7 @@ test('grouped dubbing keeps successful groups and places complete audio without 
           },
         ],
       },
-      '## group-1\n\n这是一段1.5秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。\n\n先是自然问候：Hello，随后热情欢迎：Welcome',
+      '## group-1\n\n这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。\n\n角色一是成熟男性，饰演者为@音频1。\n\n角色一（自然问候）：“Hello”\n角色一（热情欢迎）：“Welcome”',
     ),
     /角色参考音绑定不一致/,
   )

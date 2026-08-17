@@ -646,7 +646,7 @@ test('derives strict three-part grouped prompts without a global prompt', () => 
     'a'.repeat(64),
   ).arrangement
   const plan = planVideoTranslationGroupedDialogueBlocks(
-    '# 旧全局提示词\n\n## voice-block-001\n\n旧内容',
+    `# 全局配音提示词\n\n## voice-block-001\n\n这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。\n\n林默是成熟男性，低沉清晰，饰演者为@音频1。\n\n林默（温和开口）：“Hello”\n林默（平静告别）：“Goodbye”`,
     global,
     cues,
     [role],
@@ -655,12 +655,12 @@ test('derives strict three-part grouped prompts without a global prompt', () => 
   assert.equal(plan.arrangement.blocks.length, 1)
   assert.equal(
     plan.prompts['dubbing-group-1'],
-    `这是一段2.4秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。\n\n先是旧方向：Hello，随后旧方向：Goodbye`,
+    `这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。\n\n林默是成熟男性，低沉清晰，饰演者为@音频1。\n\n林默（温和开口）：“Hello”\n林默（平静告别）：“Goodbye”`,
   )
   assert.throws(
     () =>
       planVideoTranslationGroupedDialogueBlocks(
-        '',
+        '# 全局配音提示词',
         global,
         cues,
         [role],
@@ -670,7 +670,7 @@ test('derives strict three-part grouped prompts without a global prompt', () => 
             '林默是青年男性，美式英语自然，声线清晰，饰演者为@音频1。\n\n林默（旧方向）：“Hello”\n林默（旧方向）：“Goodbye”',
         },
       ),
-    /必须使用连续分句导演格式/,
+    /voice-block-001 缺少全局配音提示词/,
   )
 })
 
@@ -713,10 +713,16 @@ test('grouped cloning accepts two-line Seed role prompts as voice identity', () 
     'script-1',
     'b'.repeat(64),
   ).arrangement
-  const plan = planVideoTranslationGroupedDialogueBlocks('', global, cues, [waiterRole], [reference])
+  const plan = planVideoTranslationGroupedDialogueBlocks(
+    `# 全局配音提示词\n\n## voice-block-001\n\n这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。\n\n画面人物 3是酒吧服务员 是越南中年男性，浑厚，略微沙哑，响亮，谦逊，饰演者为@音频1。\n\n画面人物 3（礼貌询问）：“Xin chào, quý khách có yêu cầu gì ạ?”`,
+    global,
+    cues,
+    [waiterRole],
+    [reference],
+  )
   assert.equal(
     plan.prompts['single-cue-014'],
-    `这是一段2.5秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。\n\n先是礼貌询问：Xin chào, quý khách có yêu cầu gì ạ?`,
+    `这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。\n\n画面人物 3是酒吧服务员 是越南中年男性，浑厚，略微沙哑，响亮，谦逊，饰演者为@音频1。\n\n画面人物 3（礼貌询问）：“Xin chào, quý khách có yêu cầu gì ạ?”`,
   )
 })
 
@@ -901,12 +907,11 @@ test('uses voiceProfileId as the only reference voice identity', () => {
   assert.match(skill, /`voiceProfileId` 是唯一声音 ID/)
   assert.match(skill, /参考音文件由产品在正式声音请求中直接传入/)
   assert.match(studioSkill, /专业的配音表演艺术家在顶级录音棚内的配音片段/)
-  assert.match(studioSkill, /连续分句格式/)
-  assert.match(studioSkill, /不输出角色定义行/)
+  assert.match(studioSkill, /角色定义结束后再空一行/)
   assert.match(studioSkill, /正式译文必须逐字保留/)
   assert.match(studioSkill, /输入不包含源语言人工确认稿/)
   assert.match(studioSkill, /globalVoicePrompt/)
-  assert.match(studioSkill, /不输出时间戳、`cueId`、角色 ID、声音 ID/)
+  assert.match(studioSkill, /不输出时间戳、时长、`cueId`、角色 ID、声音 ID/)
   assert.match(studioSkill, /最终回复只能是可直接提交给 Seed Audio 的提示词正文/)
 })
 
