@@ -1099,7 +1099,7 @@ test('routes translation review through voice workbench before a role-free subti
   )
   assert.match(
     groupedBatch,
-    /currentTranslationSeedPlan\(\)[\s\S]*mediaStore\.seedAudioGlobalPrompt \|\| state\.seedPromptText \|\| ''[\s\S]*existingPrompts[\s\S]*generateTranslationGroupedPrompts\([\s\S]*existingPrompts[\s\S]*writeVideoTranslationGroupedPlan[\s\S]*generateVideoTranslationGroupedVoice/,
+    /generateAndSaveTranslationGlobalPrompt\(state\)[\s\S]*const globalPlan = generated\.plan[\s\S]*const globalPrompt = generated\.prompt[\s\S]*existingPrompts[\s\S]*generateTranslationGroupedPrompts\([\s\S]*existingPrompts[\s\S]*writeVideoTranslationGroupedPlan[\s\S]*generateVideoTranslationGroupedVoice/,
   )
   assert.match(home, /globalVoicePrompt: globalPrompt/)
   assert.match(home, /Math\.min\(3, plan\.arrangement\.blocks\.length\)/)

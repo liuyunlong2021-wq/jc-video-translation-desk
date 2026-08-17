@@ -2862,15 +2862,9 @@ async function generateTranslationVoice() {
 async function generateTranslationGroupedVoice(regenerateBlockIds: string[] = []) {
   await runAction('generate-grouped-voice', async () => {
     const state = translationState()
-    let globalPlan = await currentTranslationSeedPlan()
-    let globalPrompt = mediaStore.seedAudioGlobalPrompt || state.seedPromptText || ''
-    if (!globalPrompt.trim()) {
-      const generated = await generateAndSaveTranslationGlobalPrompt(state)
-      globalPlan = generated.plan
-      globalPrompt = generated.prompt
-    } else {
-      mediaStore.seedAudioGlobalPrompt = globalPrompt
-    }
+    const generated = await generateAndSaveTranslationGlobalPrompt(state)
+    const globalPlan = generated.plan
+    const globalPrompt = generated.prompt
     const groupIds = videoTranslationDubbingGroups(state.cues).map((group) => group.groupId)
     const existingPrompts = state.groupedVoicePrompts || {}
     const plan = await generateTranslationGroupedPrompts(
