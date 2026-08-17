@@ -227,6 +227,10 @@ function languageLabel(value: string) {
         es: '西班牙语',
         fr: '法语',
         de: '德语',
+        vi: '越南语',
+        th: '泰语',
+        id: '印尼语',
+        ms: '马来语',
       } as Record<string, string>
     )[value] || value
   )

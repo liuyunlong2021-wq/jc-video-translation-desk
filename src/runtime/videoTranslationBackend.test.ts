@@ -688,20 +688,15 @@ test('grouped dubbing keeps successful groups and places complete audio without 
   const prompt = [
     '## group-1',
     '',
-    '这是一段时长为2秒的配音表演艺术家在顶级录音棚内的配音片段。',
+    '这是一段1.5秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。',
     '',
-    '角色一是成熟男性，饰演者为@音频1。',
-    '',
-    '角色一（自然问候）：“Hello”',
-    '角色一（热情欢迎）：“Welcome”',
+    '先是自然问候：Hello，随后热情欢迎：Welcome',
     '',
     '## single-cue-3',
     '',
-    '这是一段时长为1秒的配音表演艺术家在顶级录音棚内的配音片段。',
+    '这是一段1秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。',
     '',
-    '角色一是成熟男性，饰演者为@音频1。',
-    '',
-    '角色一（平静告别）：“Goodbye”',
+    '先是平静告别：Goodbye',
   ].join('\n')
   await translation.writeVideoTranslationGroupedPlan(
     projectId,
@@ -717,6 +712,90 @@ test('grouped dubbing keeps successful groups and places complete audio without 
       blocks,
     },
     prompt,
+  )
+  await fs.promises.writeFile(
+    path.join(projectRoot, 'wiki', '翻译', '声音', `${role.translationRoleId}.md`),
+    `---\ntranslationRoleId: ${role.translationRoleId}\nvoiceProfileId: voice-current\nstatus: confirmed\n---\n`,
+  )
+  await assert.rejects(
+    translation.writeVideoTranslationGroupedPlan(
+      projectId,
+      groupedEpisode,
+      'en',
+      {
+        schemaVersion: 1,
+        episodeId: groupedEpisode,
+        targetLanguage: 'en',
+        finalScriptId: confirmed.finalScriptId,
+        scriptHash: confirmed.scriptHash,
+        durationMs: 4_000,
+        blocks,
+      },
+      prompt,
+    ),
+    /参考音已过期/,
+  )
+  await fs.promises.rm(
+    path.join(projectRoot, 'wiki', '翻译', '声音', `${role.translationRoleId}.md`),
+  )
+  await assert.rejects(
+    translation.writeVideoTranslationGroupedPlan(
+      projectId,
+      groupedEpisode,
+      'vi',
+      {
+        schemaVersion: 1,
+        episodeId: groupedEpisode,
+        targetLanguage: 'en',
+        finalScriptId: confirmed.finalScriptId,
+        scriptHash: confirmed.scriptHash,
+        durationMs: 4_000,
+        blocks,
+      },
+      prompt,
+    ),
+    /目标语言不匹配/,
+  )
+  await assert.rejects(
+    translation.writeVideoTranslationGroupedPlan(
+      projectId,
+      groupedEpisode,
+      'en',
+      {
+        schemaVersion: 1,
+        episodeId: groupedEpisode,
+        targetLanguage: 'en',
+        finalScriptId: confirmed.finalScriptId,
+        scriptHash: confirmed.scriptHash,
+        durationMs: 4_000,
+        blocks,
+      },
+      `${prompt}\n\n## group-1\n\n重复提示词`,
+    ),
+    /重复提示词标题/,
+  )
+  await assert.rejects(
+    translation.writeVideoTranslationGroupedPlan(
+      projectId,
+      groupedEpisode,
+      'en',
+      {
+        schemaVersion: 1,
+        episodeId: groupedEpisode,
+        targetLanguage: 'en',
+        finalScriptId: confirmed.finalScriptId,
+        scriptHash: confirmed.scriptHash,
+        durationMs: 4_000,
+        blocks: [
+          {
+            ...blocks[0],
+            references: [{ ...reference, speakerId: 'other-role' }],
+          },
+        ],
+      },
+      '## group-1\n\n这是一段1.5秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。\n\n先是自然问候：Hello，随后热情欢迎：Welcome',
+    ),
+    /角色参考音绑定不一致/,
   )
 
   seedDuration = 2
@@ -739,13 +818,33 @@ test('grouped dubbing keeps successful groups and places complete audio without 
       .every((task) => task.status === 'success'),
   )
 
+  const changedPrompt = prompt.replace('自然问候', '低声问候')
+  await translation.writeVideoTranslationGroupedPlan(
+    projectId,
+    groupedEpisode,
+    'en',
+    {
+      schemaVersion: 1,
+      episodeId: groupedEpisode,
+      targetLanguage: 'en',
+      finalScriptId: confirmed.finalScriptId,
+      scriptHash: confirmed.scriptHash,
+      durationMs: 4_000,
+      blocks,
+    },
+    changedPrompt,
+  )
+  const promptChangedSeedBefore = seedCalls
+  await translation.generateVideoTranslationGroupedVoice(projectId, groupedEpisode, 'en')
+  assert.equal(seedCalls, promptChangedSeedBefore + 1)
+
   const regenerated = await translation.generateVideoTranslationGroupedVoice(
     projectId,
     groupedEpisode,
     'en',
     ['group-1'],
   )
-  assert.equal(seedCalls, seedBefore + 3)
+  assert.equal(seedCalls, seedBefore + 4)
   assert.equal(regenerated.blocks?.length, 2)
 
   seedWaitForAbort = true
@@ -763,10 +862,16 @@ test('grouped dubbing keeps successful groups and places complete audio without 
   controller.abort()
   await assert.rejects(cancelled, /任务已停止/)
   assert.equal(
-    (await cloud.readPending(projectId)).find(
-      (task) => task.kind === 'dubbing' && task.targetId === 'group-1' && !task.id.includes('@'),
-    )?.status,
-    'stopped',
+    (
+      await cloud.readPending(projectId)
+    ).some(
+      (task) =>
+        task.kind === 'dubbing' &&
+        task.targetId === 'group-1' &&
+        !task.id.includes('@') &&
+        task.status === 'stopped',
+    ),
+    true,
   )
   seedWaitForAbort = false
 

@@ -113,6 +113,8 @@ contextBridge.exposeInMainWorld('electron', {
     ) => ipcRenderer.invoke('media-select-seed-reference', runId, episodeId, speakerId, workflow),
     selectVideoTranslationSource: (runId: string, episodeId: string) =>
       ipcRenderer.invoke('video-translation-select-source', runId, episodeId),
+    selectVideoTranslationScriptDocument: (runId: string, episodeId: string) =>
+      ipcRenderer.invoke('video-translation-select-script-document', runId, episodeId),
     selectVideoTranslationFinalMaster: (
       runId: string,
       episodeId: string,
@@ -135,6 +137,9 @@ contextBridge.exposeInMainWorld('electron', {
     calibrateVideoTranslationSubtitles: (
       params: import('./types').CalibrateVideoTranslationSubtitlesParams,
     ) => ipcRenderer.invoke('video-translation-calibrate-subtitles', params),
+    extractVideoTranslationScriptCharacters: (
+      params: import('./types').ExtractVideoTranslationScriptCharactersParams,
+    ) => ipcRenderer.invoke('video-translation-extract-script-characters', params),
     calibrateVideoTranslationFrames: (
       params: import('./types').CalibrateVideoTranslationFramesParams,
     ) => ipcRenderer.invoke('video-translation-calibrate-frames', params),

@@ -61,7 +61,7 @@ export interface GenerateSeedAudioParams {
   mode: SeedAudioMode
   durationMs: number
   prompt: string
-  language?: 'zh' | 'en'
+  language?: string
   references?: SeedAudioReference[]
   outputName?: string
   workflow?: 'creative' | 'video-translation'

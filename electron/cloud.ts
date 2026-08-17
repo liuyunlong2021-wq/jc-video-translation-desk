@@ -17,6 +17,8 @@ import type {
   TranslateVideoSubtitlesParams,
   IdentifyVideoTranslationSpeakersParams,
   CalibrateVideoTranslationSubtitlesParams,
+  ExtractVideoTranslationScriptCharactersParams,
+  ExtractVideoTranslationScriptCharactersResult,
   GenerateVideoTranslationDialogueTimestampsParams,
   VideoTranslationContextSource,
   VideoTranslationSpeakerDraft,
@@ -68,6 +70,39 @@ const VIDEO_TRANSLATION_FRAME_BATCH_SIZE = 20
 
 const KEY_FILE = 'jiucai-api-key.bin'
 export const VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
+const VIDEO_TRANSLATION_SCRIPT_CHARACTER_PROMPT = `# 剧本角色提取
+
+你是视频翻译工作台的剧本角色提取器。你的任务是从用户上传的剧本、故事、SRT 或角色文档中提取可供字幕工作台绑定的角色候选。
+
+## 输出格式
+
+只输出合法 JSON：
+
+\`\`\`json
+{
+  "characters": [
+    {
+      "displayName": "角色正式姓名或称呼",
+      "aliases": ["别名或称呼"],
+      "description": "一句话身份/关系/角色功能，控制在30字以内",
+      "evidence": "原文中支持该角色存在和身份的短证据，控制在60字以内"
+    }
+  ]
+}
+\`\`\`
+
+## 规则
+
+- 只提取人物、旁白或稳定说话对象，不提取场景、道具、公司、地点。
+- \`displayName\` 必须非空，只能写角色名或稳定称呼，控制在12字以内；不要写身份描述、剧情、关系链或句子。
+- 不知道真实姓名时使用原文中的稳定称呼，例如“母亲”“服务生”“旁白”。
+- \`aliases\` 只放原文明确出现的别称、亲属称呼或称谓，不要编造。
+- \`description\` 只写一条最有用的短身份；能确定关系就写关系，能确定职业就写职业，都不能确定才写角色功能，例如“与女主对话的男性”。
+- \`evidence\` 必须是原文可追溯的短句或概括；证据不要和 \`description\` 重复成长段剧情。
+- 按角色在文档中首次出现的顺序输出。
+- 合并同一角色的不同称呼；无法确定是同一人时分开输出。
+- 不输出人物关系图、剧情总结、解释、Markdown 或代码块。
+- 最多输出 80 个角色。`
 
 type DubbingAlignmentCue = { cueId: string; translatedText: string }
 type DubbingAlignmentAsrCue = {
@@ -459,6 +494,47 @@ export async function runSkill(
   return runId ? withRunAbort(runId, action) : action()
 }
 
+export async function extractVideoTranslationScriptCharacters(
+  params: ExtractVideoTranslationScriptCharactersParams,
+): Promise<ExtractVideoTranslationScriptCharactersResult> {
+  if (
+    !params?.runId ||
+    !params.episodeId?.trim() ||
+    !params.originalName?.trim() ||
+    !params.content?.trim() ||
+    !TEXT_MODELS.includes(params.textModel)
+  )
+    throw new Error('剧本角色提取参数无效')
+  const content = params.content.slice(0, 300_000)
+  const input = JSON.stringify({
+    episodeId: params.episodeId,
+    originalName: params.originalName,
+    content,
+  })
+  const prompt = `${input}\n\n只输出合法 JSON，不要使用 Markdown 代码块。`
+  return withRunAbort(params.runId, async (signal) => {
+    const output = await generateText(
+      VIDEO_TRANSLATION_SCRIPT_CHARACTER_PROMPT,
+      prompt,
+      params.textModel,
+      signal,
+    )
+    try {
+      return parseJson(output)
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return parseJson(
+        await generateText(
+          VIDEO_TRANSLATION_SCRIPT_CHARACTER_PROMPT,
+          `${prompt}\n\n上次输出解析失败（${reason}）。请只修复 JSON 语法，保留原有角色、字段和顺序，不要解释。`,
+          params.textModel,
+          signal,
+        ),
+      )
+    }
+  })
+}
+
 export async function translateSubtitles(params: TranslateSubtitlesParams) {
   if (!params?.runId || !TEXT_MODELS.includes(params.textModel) || !params.subtitles?.length)
     throw new Error('字幕翻译参数无效')
@@ -571,9 +647,15 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
   )
   const context = await collectVideoTranslationContext(params.runId, params.episodeId)
   const locale =
-    params.targetLanguage === 'en'
-      ? '目标受众是美国观众。使用自然、简洁、符合人物身份的当代美式影视口语，避免英式拼写、英式习语、中文语序和机械直译。'
-      : ''
+    (
+      {
+        en: '目标受众是美国观众。使用自然、简洁、符合人物身份的当代美式影视口语，避免英式拼写、英式习语、中文语序和机械直译。',
+        vi: '目标受众是越南观众。使用自然、简洁、符合人物身份的当代越南语影视口语，避免中文语序、机械直译和生硬书面腔。',
+        th: '目标受众是泰国观众。使用自然、简洁、符合人物身份的当代泰语影视口语，避免中文语序、机械直译和生硬书面腔。',
+        id: '目标受众是印尼观众。使用自然、简洁、符合人物身份的当代 Bahasa Indonesia 影视口语，避免中文语序、机械直译和生硬书面腔。',
+        ms: '目标受众是马来西亚观众。使用自然、简洁、符合人物身份的当代 Bahasa Melayu 影视口语，避免写成印尼语、中文语序、机械直译和生硬书面腔。',
+      } as Record<string, string>
+    )[params.targetLanguage] || ''
   const prompt = `把字幕从 ${params.sourceLanguage} 准确翻译为 ${params.targetLanguage}。${locale}先理解整段剧情、人物关系、说话目的、情绪、潜台词和前后问答，再逐条翻译；在不改变原意、剧情事实和人物关系的前提下，优先传达真实语义和戏剧效果，使对白自然、演员说得出口。结合完整字幕、角色和剧本资料，保持人名、称呼、地点、专有名词、语气和人物语言风格前后一致；保留原对白的情绪、攻击性、幽默、讽刺和身份差异，不随意弱化或夸大。译文应适合原时间区间内阅读和配音。不得编造信息，不得增删、遗漏、合并、拆分或改变 cueId、顺序和时间戳。只返回 Markdown，不要前言、总结或代码块。每条严格使用以下格式：\n## cue-001\n译文正文\n\n上下文：${JSON.stringify(context)}\n\n完整字幕：${JSON.stringify(params.subtitles)}`
   return withRunAbort(params.runId, async (signal) => {
     let reason = ''

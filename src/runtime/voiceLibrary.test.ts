@@ -205,14 +205,74 @@ test('registers a translation reference voice without writing creative role bind
     displayName: 'Role One',
     sourceAudioPath: audio,
     voiceDesignPrompt: '',
-    language: 'en',
+    language: 'vi',
     workflow: 'video-translation',
   })
 
   assert.match(registered.voiceProfileId, /^voice-[a-f0-9]{16}$/)
+  const profile = (
+    await voices.listVoiceProfiles({ includeNonCommercial: true, sourceGroup: 'Seed Audio' })
+  ).find((item) => item.voiceProfileId === registered.voiceProfileId)
+  assert.equal(profile?.language, 'vi')
   assert.match(
     fs.readFileSync(path.join(root, 'wiki', '翻译', '声音', 'role-one.md'), 'utf8'),
     new RegExp(`voiceProfileId: ${registered.voiceProfileId}`),
   )
+  assert.match(
+    fs.readFileSync(path.join(root, 'wiki', '翻译', '声音', 'role-one.md'), 'utf8'),
+    /voiceLanguage: vi[\s\S]*status: ready/,
+  )
   assert.equal(fs.existsSync(path.join(root, 'wiki', '声音', '角色', 'role-one.md')), false)
+})
+
+test('keeps concurrent translation Seed voice registrations isolated in the catalog', async () => {
+  const projectId = 'translation-voice-concurrent-project'
+  const episodeId = 'episode-001'
+  const root = path.join(userData, 'projects', projectId)
+  await workspace.registerProjectRoot(projectId, root, false)
+  const base = path.join(root, 'episodes', episodeId, 'video-translate', 'vi', 'seed-audio')
+  fs.mkdirSync(base, { recursive: true })
+  fs.mkdirSync(path.join(root, 'wiki', '翻译', '角色'), { recursive: true })
+  for (const speakerId of ['role-two', 'role-three']) {
+    fs.writeFileSync(
+      path.join(root, 'wiki', '翻译', '角色', `${speakerId}.md`),
+      `---\ntranslationRoleId: ${speakerId}\nstatus: confirmed\n---\n\n# ${speakerId}\n`,
+    )
+  }
+  fs.writeFileSync(path.join(base, 'role-two.wav'), 'female seed voice')
+  fs.writeFileSync(path.join(base, 'role-three.wav'), 'male waiter seed voice')
+
+  const [second, third] = await Promise.all(
+    [
+      ['role-two', '女性角色 Seed 音色', 'role-two.wav', '年轻女性，明亮柔和。'],
+      ['role-three', '男服务员 Seed 音色', 'role-three.wav', '年轻男服务员，中性清晰。'],
+    ].map(([speakerId, displayName, fileName, voiceDesignPrompt]) =>
+      voices.registerSeedVoiceProfile({
+        projectId,
+        episodeId,
+        speakerId,
+        displayName,
+        sourceAudioPath: path.join(base, fileName),
+        voiceDesignPrompt,
+        language: 'vi',
+        workflow: 'video-translation',
+      }),
+    ),
+  )
+
+  assert.notEqual(second.voiceProfileId, third.voiceProfileId)
+  const profiles = await voices.listVoiceProfiles({
+    includeNonCommercial: true,
+    sourceGroup: 'Seed Audio',
+  })
+  assert.ok(profiles.some((profile) => profile.voiceProfileId === second.voiceProfileId))
+  assert.ok(profiles.some((profile) => profile.voiceProfileId === third.voiceProfileId))
+  assert.match(
+    fs.readFileSync(path.join(root, 'wiki', '翻译', '声音', 'role-two.md'), 'utf8'),
+    new RegExp(`voiceProfileId: ${second.voiceProfileId}`),
+  )
+  assert.match(
+    fs.readFileSync(path.join(root, 'wiki', '翻译', '声音', 'role-three.md'), 'utf8'),
+    new RegExp(`voiceProfileId: ${third.voiceProfileId}`),
+  )
 })

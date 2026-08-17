@@ -61,12 +61,14 @@
             prepend-icon="mdi-text-box-edit-outline"
             :loading="mediaStore.busyAction === 'generate-seed-role-prompts'"
             :disabled="
-              Boolean(mediaStore.busyAction) || !mediaStore.apiConfigured || !seedCharacters.length
+              Boolean(mediaStore.busyAction) ||
+              !mediaStore.apiConfigured ||
+              !props.selectedSeedRoleIds.length
             "
             :title="!mediaStore.apiConfigured ? '请先在生成设置中配置韭菜盒子 API Key' : undefined"
             block
-            @click="$emit('generateAllSeedRolePrompts')"
-            >生成角色提示词</v-btn
+            @click="$emit('generateAllSeedRolePrompts', props.selectedSeedRoleIds)"
+            >生成所选角色提示词</v-btn
           >
           <v-btn
             color="success"
@@ -75,21 +77,22 @@
             :disabled="
               Boolean(mediaStore.busyAction) ||
               !mediaStore.apiConfigured ||
-              !allSeedRolePromptsReady
+              !props.selectedSeedRoleIds.length ||
+              !selectedSeedRolePromptsReady
             "
             :title="
               !mediaStore.apiConfigured
                 ? '请先在生成设置中配置韭菜盒子 API Key'
-                : !allSeedRolePromptsReady
-                  ? '请先生成全部角色提示词'
+                : !selectedSeedRolePromptsReady
+                  ? '请先生成所选角色提示词'
                   : undefined
             "
             block
-            @click="$emit('generateAllSeedReferences')"
-            >按提示词生成角色参考音</v-btn
+            @click="$emit('generateAllSeedReferences', props.selectedSeedRoleIds)"
+            >按提示词生成所选参考音</v-btn
           >
         </template>
-        <template v-else-if="mediaStore.seedVoiceTab === 'global'">
+        <template v-else-if="mediaStore.seedVoiceTab === 'global' && !translationMode">
           <strong>全局配音</strong>
           <small v-if="globalSeedDisabledReason" class="text-warning">{{
             globalSeedDisabledReason
@@ -120,29 +123,7 @@
             @click="$emit('generateGlobalSeedAudio')"
             >生成全局配音</v-btn
           >
-          <v-alert
-            v-if="
-              translationMode && progressText && mediaStore.busyAction === 'generate-target-voice'
-            "
-            type="info"
-            density="compact"
-            variant="tonal"
-          >
-            <v-progress-linear indeterminate class="mb-2" />
-            {{ progressText }}
-          </v-alert>
           <v-btn
-            v-if="translationMode"
-            color="success"
-            prepend-icon="mdi-subtitles-outline"
-            :disabled="Boolean(mediaStore.busyAction) || !props.translationFinalReady"
-            :title="!props.translationFinalReady ? '请先生成并选择完整的配音版本' : undefined"
-            block
-            @click="$emit('openTranslationSubtitles')"
-            >进入成片工作台</v-btn
-          >
-          <v-btn
-            v-if="!translationMode"
             color="success"
             prepend-icon="mdi-movie-edit-outline"
             :loading="mediaStore.busyAction === 'shot-plan'"
@@ -154,9 +135,9 @@
         </template>
         <template v-else>
           <strong>分组克隆</strong>
-          <small>批量并发生成全部配音组；失败组可单独重新生成。</small>
-          <small v-if="!mediaStore.seedAudioGlobalPrompt.trim()" class="text-warning">
-            人工确认稿已变化，请先在“全局配音”重新生成提示词。
+          <small>先生成全局声音基底，再生成每组提示词并批量克隆音频。</small>
+          <small v-if="translationMode && !allTranslationVoicesConfirmed" class="text-warning">
+            {{ missingTranslationVoiceReason }}
           </small>
           <v-btn
             color="success"
@@ -165,31 +146,24 @@
             :disabled="
               Boolean(mediaStore.busyAction) ||
               !mediaStore.apiConfigured ||
-              !mediaStore.seedAudioGlobalPrompt.trim()
+              !allTranslationVoicesConfirmed
             "
             block
             @click="$emit('generateGroupedSeedAudio')"
-            >批量生成全部分组</v-btn
-          >
-          <v-btn
-            color="primary"
-            variant="tonal"
-            prepend-icon="mdi-refresh"
-            :disabled="Boolean(mediaStore.busyAction) || !mediaStore.selectedAssetId"
-            block
-            @click="$emit('regenerateGroupedSeedAudio')"
-            >重新生成当前组</v-btn
+            >批量生成全部分组配音</v-btn
           >
           <v-alert
             v-if="
-              translationMode && progressText && mediaStore.busyAction === 'generate-grouped-voice'
+              translationMode &&
+              currentProgressText &&
+              mediaStore.busyAction === 'generate-grouped-voice'
             "
             type="info"
             density="compact"
             variant="tonal"
           >
             <v-progress-linear indeterminate class="mb-2" />
-            {{ progressText }}
+            {{ currentProgressText }}
           </v-alert>
           <v-btn
             color="success"
@@ -331,11 +305,19 @@ import {
   type RevisionTargetType,
 } from '@/runtime/videoWorkflow'
 import { assetVersionMatches } from '@/runtime/storyboardMarkdown'
-import { videoTranslationDubbingGroups } from '@/runtime/videoTranslation'
+import {
+  videoTranslationDubbingGroups,
+  videoTranslationRoleVoiceLanguageMatches,
+  videoTranslationRoleVoiceReady,
+} from '@/runtime/videoTranslation'
 
 const props = withDefaults(
-  defineProps<{ translationMode?: boolean; translationFinalReady?: boolean }>(),
-  { translationMode: false, translationFinalReady: false },
+  defineProps<{
+    translationMode?: boolean
+    translationFinalReady?: boolean
+    selectedSeedRoleIds?: string[]
+  }>(),
+  { translationMode: false, translationFinalReady: false, selectedSeedRoleIds: () => [] },
 )
 const { translationMode } = props
 const emit = defineEmits([
@@ -353,7 +335,6 @@ const emit = defineEmits([
   'generateGlobalSeedPrompt',
   'generateGlobalSeedAudio',
   'generateGroupedSeedAudio',
-  'regenerateGroupedSeedAudio',
   'editGroupedPrompt',
   'openTranslationSubtitles',
   'editScriptMode',
@@ -381,7 +362,10 @@ const emit = defineEmits([
   'exportFinal',
 ])
 const mediaStore = useMediaTaskStore()
-const progressText = ref('')
+const backendProgressText = ref('')
+const currentProgressText = computed(
+  () => backendProgressText.value || mediaStore.progressText,
+)
 const revisionInstruction = ref('')
 const revisionPending = ref(false)
 const revisionFeedback = ref<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -429,12 +413,10 @@ const selectedGroupedPrompt = computed(
       mediaStore.videoTranslation?.groupedVoicePrompts?.[selectedTranslationGroup.value.groupId]) ||
     '',
 )
-const allSeedRolePromptsReady = computed(
+const selectedSeedRolePromptsReady = computed(
   () =>
-    seedCharacters.value.length > 0 &&
-    seedCharacters.value.every((asset) =>
-      Boolean(mediaStore.seedAudioRolePrompts[asset.id]?.trim()),
-    ),
+    props.selectedSeedRoleIds.length > 0 &&
+    props.selectedSeedRoleIds.every((id) => Boolean(mediaStore.seedAudioRolePrompts[id]?.trim())),
 )
 const allTranslationVoicesConfirmed = computed(
   () =>
@@ -443,29 +425,42 @@ const allTranslationVoicesConfirmed = computed(
       const role = mediaStore.videoTranslationRoles.find(
         (item) => item.translationRoleId === asset.id,
       )
-      return Boolean(
-        role?.voiceProfileId && role.voiceIdentityText?.trim() && role.voiceConfirmedAt,
+      return videoTranslationRoleVoiceReady(
+        role,
+        mediaStore.videoTranslation?.targetLanguage || '',
       )
     }),
 )
-const globalSeedDisabledReason = computed(() => {
+const missingTranslationVoiceReason = computed(() => {
   if (!allTranslationVoicesConfirmed.value) {
     const asset = seedCharacters.value.find((item) => {
       const role = mediaStore.videoTranslationRoles.find(
         (candidate) => candidate.translationRoleId === item.id,
       )
-      return !role?.voiceProfileId || !role.voiceIdentityText?.trim() || !role.voiceConfirmedAt
+      return !videoTranslationRoleVoiceReady(
+        role,
+        mediaStore.videoTranslation?.targetLanguage || '',
+      )
     })
     const role = mediaStore.videoTranslationRoles.find(
       (item) => item.translationRoleId === asset?.id,
     )
     const missing = !role?.voiceProfileId
       ? '参考音'
-      : !role.voiceIdentityText?.trim()
-        ? '角色声音身份'
-        : '人工确认'
+      : !videoTranslationRoleVoiceLanguageMatches(
+            role,
+            mediaStore.videoTranslation?.targetLanguage || '',
+          )
+        ? '当前目标语言参考音'
+        : !role.voiceIdentityText?.trim()
+          ? '角色声音身份'
+          : '人工确认'
     return `${asset?.label || '角色'}还缺：${missing}。`
   }
+  return ''
+})
+const globalSeedDisabledReason = computed(() => {
+  if (missingTranslationVoiceReason.value) return missingTranslationVoiceReason.value
   if (!mediaStore.seedAudioGlobalPrompt.trim()) return '下一步：生成全局配音提示词。'
   if (!mediaStore.seedAudioTrackPath) return '下一步：生成全局配音。'
   return ''
@@ -476,7 +471,7 @@ onMounted(() => {
   if (!translationMode) return
   stopTranslationProgress = window.electron.cloud.onVideoTranslationProgress((progress) => {
     if (progress.runId === mediaStore.runId && progress.episodeId === mediaStore.episodeId)
-      progressText.value = progress.message
+      backendProgressText.value = progress.message
   })
 })
 onBeforeUnmount(() => stopTranslationProgress?.())
@@ -782,6 +777,8 @@ const displayError = computed(() =>
 watch(
   () => mediaStore.busyAction,
   (current, previous) => {
+    if (current === 'generate-grouped-voice' || previous === 'generate-grouped-voice')
+      backendProgressText.value = ''
     if (!revisionPending.value || previous !== 'revision' || current === 'revision') return
     revisionPending.value = false
     if (mediaStore.error) {

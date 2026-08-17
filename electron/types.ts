@@ -435,6 +435,30 @@ export interface VideoTranslationUploadResult {
   hasAudio: boolean
 }
 
+export interface VideoTranslationScriptDocumentResult {
+  path: string
+  originalName: string
+  content: string
+  contentHash: string
+}
+
+export interface ExtractVideoTranslationScriptCharactersParams {
+  runId: string
+  episodeId: string
+  originalName: string
+  content: string
+  textModel: TextModel
+}
+
+export interface ExtractVideoTranslationScriptCharactersResult {
+  characters: Array<{
+    displayName: string
+    aliases?: string[]
+    description?: string
+    evidence?: string
+  }>
+}
+
 export interface GenerateVideoTranslationDialogueTimestampsParams {
   runId: string
   episodeId: string
@@ -491,6 +515,8 @@ export interface PendingCloudTask {
   pollRoute?: string
   resultUrl?: string
   outputPath: string
+  outputHash?: string
+  outputBytes?: number
   createdAt: string
   startedAt?: string
   updatedAt?: string

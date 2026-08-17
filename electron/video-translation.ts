@@ -1,9 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
+import zlib from 'node:zlib'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { dialog } from 'electron'
+import { app, dialog } from 'electron'
 import {
   assertVideoTranslationAsset,
   assertVideoTranslationSource,
@@ -16,6 +17,7 @@ import {
 import type {
   TranslationRole,
   VideoTranslationCue,
+  VideoTranslationDialogueBlock,
   VideoTranslationDialogueArrangement,
   VideoTranslationVoiceVersion,
 } from '../src/runtime/videoTranslation.ts'
@@ -28,6 +30,7 @@ import { generateSeedAudio } from './seed-audio.ts'
 import { executeFFmpeg } from './ffmpeg/index.ts'
 import type {
   PendingCloudTask,
+  VideoTranslationScriptDocumentResult,
   VideoTranslationMasterUploadResult,
   VideoTranslationUploadResult,
 } from './types.ts'
@@ -37,6 +40,7 @@ import { resolveFfprobePath } from './runtime-tools.ts'
 
 const runFile = promisify(execFile)
 const translationWrites = new Map<string, Promise<unknown>>()
+const groupedVoiceRuns = new Set<string>()
 
 async function probeVideo(filePath: string) {
   const { stdout } = await runFile(
@@ -152,6 +156,96 @@ async function fileHash(filePath: string) {
   return hash.digest('hex')
 }
 
+async function fileStatHash(filePath: string) {
+  const stat = await fs.promises.stat(filePath)
+  if (!stat.isFile() || stat.size <= 0) throw new Error('音频文件为空')
+  return { outputBytes: stat.size, outputHash: await fileHash(filePath) }
+}
+
+async function reusableOutput(filePath: string, task?: PendingCloudTask) {
+  if (task?.status !== 'success') return false
+  try {
+    const stat = await fs.promises.stat(filePath)
+    if (!stat.isFile() || stat.size <= 0) return false
+    if (!task.outputHash) return true
+    return task.outputBytes === stat.size && task.outputHash === (await fileHash(filePath))
+  } catch {
+    return false
+  }
+}
+
+function validateArrangementHeader(
+  arrangement: VideoTranslationDialogueArrangement,
+  episodeId: string,
+  targetLanguage: string,
+  label: string,
+) {
+  if (arrangement.episodeId !== episodeId) throw new Error(`${label}剧集不匹配`)
+  if (arrangement.targetLanguage !== targetLanguage) throw new Error(`${label}目标语言不匹配`)
+  if (
+    !arrangement.finalScriptId ||
+    !arrangement.scriptHash ||
+    !/^[a-f0-9]{64}$/i.test(arrangement.scriptHash)
+  )
+    throw new Error(`${label}没有绑定有效最终剧本`)
+}
+
+function validateGroupedBlockIsolation(block: VideoTranslationDialogueBlock) {
+  const speakerId = block.speakerIds[0]
+  const reference = block.references[0]
+  if (
+    block.references.length !== 1 ||
+    block.speakerIds.length !== 1 ||
+    !speakerId ||
+    reference?.speakerId !== speakerId ||
+    block.lines.some((line) => line.speakerId !== speakerId)
+  )
+    throw new Error(`${block.blockId} 的角色参考音绑定不一致`)
+}
+
+function frontmatterValue(content: string, key: string) {
+  return content.match(new RegExp(`^${key}:\\s*["']?([^"'\\s]+)["']?\\s*$`, 'm'))?.[1]
+}
+
+async function validateCurrentGroupedVoiceBindings(
+  runId: string,
+  blocks: VideoTranslationDialogueBlock[],
+) {
+  for (const block of blocks) {
+    const reference = block.references[0]
+    if (!reference?.speakerId || !reference.voiceProfileId) continue
+    const bindingPath = path.join(
+      getRunDir(runId),
+      'wiki',
+      '翻译',
+      '声音',
+      `${reference.speakerId}.md`,
+    )
+    const binding = await fs.promises.readFile(bindingPath, 'utf8').catch(() => '')
+    if (!binding) continue
+    const currentVoiceProfileId = frontmatterValue(binding, 'voiceProfileId')
+    if (!currentVoiceProfileId) throw new Error(`${reference.speakerId} 缺少当前确认声音绑定`)
+    if (reference.voiceProfileId !== currentVoiceProfileId)
+      throw new Error(
+        `${block.blockId} 的参考音已过期：当前 ${reference.speakerId} 绑定 ${currentVoiceProfileId}，计划仍使用 ${reference.voiceProfileId}`,
+      )
+    const catalogPath = path.join(
+      process.env.VOICE_LIBRARY_DIR || path.join(app.getPath('userData'), 'voice-library'),
+      'catalog.json',
+    )
+    const catalog = await fs.promises
+      .readFile(catalogPath, 'utf8')
+      .then((value) => JSON.parse(value) as { profiles?: Array<{ voiceProfileId?: string; referenceRelativePath?: string }> })
+      .catch(() => null)
+    const profile = catalog?.profiles?.find((item) => item.voiceProfileId === currentVoiceProfileId)
+    if (profile?.referenceRelativePath) {
+      const currentReferencePath = path.join(path.dirname(catalogPath), profile.referenceRelativePath)
+      if (path.resolve(reference.referenceAudioPath) !== path.resolve(currentReferencePath))
+        throw new Error(`${block.blockId} 的参考音文件不是当前确认声音文件`)
+    }
+  }
+}
+
 export async function selectVideoTranslationSource(
   runId: string,
   episodeId: string,
@@ -187,6 +281,139 @@ export async function selectVideoTranslationSource(
     durationMs,
     hasAudio,
   }
+}
+
+export async function selectVideoTranslationScriptDocument(
+  runId: string,
+  episodeId: string,
+): Promise<VideoTranslationScriptDocumentResult | null> {
+  safeId(episodeId, '剧集 ID')
+  const selected = await dialog.showOpenDialog({
+    title: '上传剧本或角色文档',
+    properties: ['openFile'],
+    filters: [{ name: '剧本/角色文档', extensions: ['txt', 'md', 'srt', 'docx', 'pdf'] }],
+  })
+  const source = selected.filePaths[0]
+  if (selected.canceled || !source) return null
+  const extension = path.extname(source).toLowerCase()
+  if (!['.txt', '.md', '.srt', '.docx', '.pdf'].includes(extension))
+    throw new Error('仅支持 TXT、MD、SRT、DOCX、PDF')
+  const stat = await fs.promises.stat(source)
+  if (!stat.isFile() || !stat.size || stat.size > 20 * 1024 * 1024)
+    throw new Error('剧本文档必须是 20 MB 以内的可读文件')
+  const buffer = await fs.promises.readFile(source)
+  const content = await extractScriptDocumentText(buffer, extension)
+  if (!content.trim()) throw new Error('没有从文档中读取到可提取的文字，请直接粘贴剧本文本')
+  const contentHash = createHash('sha256').update(buffer).digest('hex')
+  const target = path.join(
+    getRunDir(runId),
+    '.raw',
+    '视频翻译',
+    episodeId,
+    '剧本角色',
+    `${contentHash.slice(0, 12)}${extension}`,
+  )
+  if (!(await fs.promises.stat(target).catch(() => null))) await atomicCopy(source, target)
+  return {
+    path: relativeRunAsset(runId, target),
+    originalName: path.basename(source),
+    content,
+    contentHash,
+  }
+}
+
+async function extractScriptDocumentText(buffer: Buffer, extension: string) {
+  if (['.txt', '.md', '.srt'].includes(extension)) {
+    const text = buffer.toString('utf8')
+    if (text.includes('\uFFFD')) throw new Error('文本文件必须使用 UTF-8 编码')
+    return text
+  }
+  if (extension === '.docx') return extractDocxText(buffer)
+  if (extension === '.pdf') return extractPdfText(buffer)
+  throw new Error('不支持的剧本文档格式')
+}
+
+function decodeXml(value: string) {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+function extractZipEntry(buffer: Buffer, wantedName: string) {
+  const eocdMin = Math.max(0, buffer.length - 65_557)
+  let eocdOffset = -1
+  for (let index = buffer.length - 22; index >= eocdMin; index--) {
+    if (buffer.readUInt32LE(index) === 0x06054b50) {
+      eocdOffset = index
+      break
+    }
+  }
+  if (eocdOffset < 0) throw new Error('DOCX 压缩包结构无效')
+  let offset = buffer.readUInt32LE(eocdOffset + 16)
+  const entries = buffer.readUInt16LE(eocdOffset + 10)
+  for (let entry = 0; entry < entries; entry++) {
+    if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50)
+      throw new Error('DOCX 中央目录无效')
+    const method = buffer.readUInt16LE(offset + 10)
+    const compressedSize = buffer.readUInt32LE(offset + 20)
+    const fileNameLength = buffer.readUInt16LE(offset + 28)
+    const extraLength = buffer.readUInt16LE(offset + 30)
+    const commentLength = buffer.readUInt16LE(offset + 32)
+    const localHeaderOffset = buffer.readUInt32LE(offset + 42)
+    const nameStart = offset + 46
+    const name = buffer.toString('utf8', nameStart, nameStart + fileNameLength)
+    if (name === wantedName) {
+      if (
+        localHeaderOffset + 30 > buffer.length ||
+        buffer.readUInt32LE(localHeaderOffset) !== 0x04034b50
+      )
+        throw new Error('DOCX 正文位置无效')
+      const localNameLength = buffer.readUInt16LE(localHeaderOffset + 26)
+      const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28)
+      const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength
+      const dataEnd = dataStart + compressedSize
+      if (dataEnd > buffer.length) throw new Error('DOCX 正文内容不完整')
+      const data = buffer.subarray(dataStart, dataEnd)
+      if (method === 0) return data
+      if (method === 8) return zlib.inflateRawSync(data)
+      throw new Error('DOCX 使用了不支持的压缩方式')
+    }
+    offset = nameStart + fileNameLength + extraLength + commentLength
+  }
+  return null
+}
+
+function extractDocxText(buffer: Buffer) {
+  const documentXml = extractZipEntry(buffer, 'word/document.xml')
+  if (!documentXml) throw new Error('DOCX 缺少正文内容')
+  return documentXml
+    .toString('utf8')
+    .replace(/<w:tab\b[^>]*\/>/g, '\t')
+    .replace(/<w:br\b[^>]*\/>/g, '\n')
+    .replace(/<\/w:p>/g, '\n')
+    .replace(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g, (_match, text) => decodeXml(text))
+    .replace(/<[^>]+>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+async function extractPdfText(buffer: Buffer) {
+  const moduleName = 'pdfjs-dist/build/pdf.js'
+  const pdfjs = await import(/* @vite-ignore */ moduleName)
+  const document = await (pdfjs.getDocument as any)({
+    data: new Uint8Array(buffer),
+    disableWorker: true,
+  }).promise
+  const pages: string[] = []
+  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+    const page = await document.getPage(pageNumber)
+    const content = await page.getTextContent()
+    pages.push(content.items.map((item: any) => String(item.str || '')).join(' '))
+  }
+  return pages.join('\n\n').trim()
 }
 
 export async function selectVideoTranslationFinalMaster(
@@ -477,7 +704,7 @@ export async function writeTranslationVoiceBinding(runId: string, role: Translat
   const target = path.join(getRunDir(runId), 'wiki', '翻译', '声音', `${role.translationRoleId}.md`)
   await atomicWrite(
     target,
-    `---\ntranslationRoleId: ${role.translationRoleId}\nvoiceProfileId: ${role.voiceProfileId}\nconfirmedAt: ${role.voiceConfirmedAt}\nstatus: confirmed\n---\n\n# ${role.displayName}的角色声音\n\n${role.voiceIdentityText.trim()}\n\n- 声音档案：[[声音库/音色/${role.voiceProfileId}]]\n`,
+    `---\ntranslationRoleId: ${role.translationRoleId}\nvoiceProfileId: ${role.voiceProfileId}${role.voiceLanguage ? `\nvoiceLanguage: ${role.voiceLanguage}` : ''}\nconfirmedAt: ${role.voiceConfirmedAt}\nstatus: confirmed\n---\n\n# ${role.displayName}的角色声音\n\n${role.voiceIdentityText.trim()}\n\n- 声音档案：[[声音库/音色/${role.voiceProfileId}]]\n`,
   )
   return relativeRunAsset(runId, target)
 }
@@ -490,7 +717,7 @@ export async function writeVideoTranslationSeedPlan(
   promptMarkdown: string,
 ) {
   safeId(episodeId, '剧集 ID')
-  safeLanguage(targetLanguage)
+  const language = safeLanguage(targetLanguage)
   if (
     !arrangement?.blocks?.length ||
     arrangement.blocks.some(
@@ -503,19 +730,25 @@ export async function writeVideoTranslationSeedPlan(
     throw new Error('视频翻译全局配音安排无效')
   if (!promptMarkdown.trim() || Buffer.byteLength(promptMarkdown, 'utf8') > 2 * 1024 * 1024)
     throw new Error('豆包语音稿无效')
-  if (
-    !arrangement.finalScriptId ||
-    !arrangement.scriptHash ||
-    !/^[a-f0-9]{64}$/i.test(arrangement.scriptHash)
-  )
-    throw new Error('全局配音安排没有绑定最终时间戳剧本')
+  validateArrangementHeader(arrangement, episodeId, language, '全局配音安排')
   const base = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, '声音')
   const arrangementPath = path.join(base, '全局配音安排.json')
   const promptPath = path.join(base, '全局配音提示词.md')
-  await Promise.all([
-    atomicWrite(arrangementPath, `${JSON.stringify(arrangement, null, 2)}\n`),
-    atomicWrite(promptPath, `${promptMarkdown.trim()}\n`),
-  ])
+  const prompts = blockPrompts(
+    promptMarkdown,
+    arrangement.blocks.map((block) => block.blockId),
+  )
+  for (const block of arrangement.blocks) {
+    const prompt = prompts.get(block.blockId)
+    if (!prompt) throw new Error(`${block.blockId} 缺少全局配音提示词`)
+    validateVideoTranslationDialoguePrompt(prompt, block)
+  }
+  await serializeTranslationWrite(runId, async () =>
+    replaceFiles([
+      { path: arrangementPath, content: `${JSON.stringify(arrangement, null, 2)}\n` },
+      { path: promptPath, content: `${promptMarkdown.trim()}\n` },
+    ]),
+  )
   return {
     arrangementPath: relativeRunAsset(runId, arrangementPath),
     promptPath: relativeRunAsset(runId, promptPath),
@@ -530,7 +763,7 @@ export async function writeVideoTranslationGroupedPlan(
   promptMarkdown: string,
 ) {
   safeId(episodeId, '剧集 ID')
-  safeLanguage(targetLanguage)
+  const language = safeLanguage(targetLanguage)
   if (
     !arrangement?.blocks?.length ||
     arrangement.blocks.some(
@@ -542,13 +775,13 @@ export async function writeVideoTranslationGroupedPlan(
     )
   )
     throw new Error('视频翻译分组克隆安排无效')
-  if (
-    !arrangement.finalScriptId ||
-    !arrangement.scriptHash ||
-    !/^[a-f0-9]{64}$/i.test(arrangement.scriptHash)
+  validateArrangementHeader(arrangement, episodeId, language, '分组克隆安排')
+  arrangement.blocks.forEach(validateGroupedBlockIsolation)
+  await validateCurrentGroupedVoiceBindings(runId, arrangement.blocks)
+  const prompts = blockPrompts(
+    promptMarkdown,
+    arrangement.blocks.map((block) => block.blockId),
   )
-    throw new Error('分组克隆安排没有绑定最终时间戳剧本')
-  const prompts = blockPrompts(promptMarkdown)
   for (const block of arrangement.blocks) {
     const prompt = prompts.get(block.blockId)
     if (!prompt) throw new Error(`${block.blockId} 缺少分组克隆提示词`)
@@ -557,28 +790,36 @@ export async function writeVideoTranslationGroupedPlan(
   const base = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, '声音')
   const arrangementPath = path.join(base, '分组克隆安排.json')
   const promptPath = path.join(base, '分组克隆提示词.md')
-  await Promise.all([
-    atomicWrite(arrangementPath, `${JSON.stringify(arrangement, null, 2)}\n`),
-    atomicWrite(promptPath, `${promptMarkdown.trim()}\n`),
-  ])
+  await serializeTranslationWrite(runId, async () =>
+    replaceFiles([
+      { path: arrangementPath, content: `${JSON.stringify(arrangement, null, 2)}\n` },
+      { path: promptPath, content: `${promptMarkdown.trim()}\n` },
+    ]),
+  )
   return {
     arrangementPath: relativeRunAsset(runId, arrangementPath),
     promptPath: relativeRunAsset(runId, promptPath),
   }
 }
 
-function blockPrompts(markdown: string) {
-  return new Map(
-    markdown
-      .split(/^##\s+/m)
-      .slice(1)
-      .flatMap((section) => {
-        const newline = section.indexOf('\n')
-        return newline < 0
-          ? []
-          : [[section.slice(0, newline).trim(), section.slice(newline + 1).trim()]]
-      }),
-  )
+function blockPrompts(markdown: string, expectedBlockIds?: string[]) {
+  const prompts = new Map<string, string>()
+  const expected = expectedBlockIds ? new Set(expectedBlockIds) : undefined
+  for (const section of markdown.split(/^##\s+/m).slice(1)) {
+    const newline = section.indexOf('\n')
+    if (newline < 0) continue
+    const blockId = section.slice(0, newline).trim()
+    const prompt = section.slice(newline + 1).trim()
+    if (!blockId || !prompt) continue
+    if (prompts.has(blockId)) throw new Error(`${blockId} 存在重复提示词标题`)
+    if (expected && !expected.has(blockId)) throw new Error(`${blockId} 不是当前配音计划的分组`)
+    prompts.set(blockId, prompt)
+  }
+  if (expected) {
+    const missing = [...expected].find((blockId) => !prompts.has(blockId))
+    if (missing) throw new Error(`${missing} 缺少提示词标题`)
+  }
+  return prompts
 }
 
 async function saveVideoTranslationVoiceVersion(
@@ -690,13 +931,11 @@ export async function generateVideoTranslationTargetVoice(
     path.join(wikiBase, '全局配音提示词.md'),
     'utf8',
   )
-  if (
-    !arrangement.finalScriptId ||
-    !arrangement.scriptHash ||
-    !/^[a-f0-9]{64}$/i.test(arrangement.scriptHash)
+  validateArrangementHeader(arrangement, episodeId, language, '全局配音安排')
+  const prompts = blockPrompts(
+    promptMarkdown,
+    arrangement.blocks.map((block) => block.blockId),
   )
-    throw new Error('全局配音安排没有绑定有效最终剧本')
-  const prompts = blockPrompts(promptMarkdown)
   const versionId = `voice-${Date.now()}-${randomUUID().slice(0, 8)}`
   const mediaBase = path.join(
     getRunDir(runId),
@@ -728,7 +967,7 @@ export async function generateVideoTranslationTargetVoice(
         block.lines.reduce((total, line) => total + line.expectedEndMs - line.expectedStartMs, 0),
       ),
       prompt,
-      language: language === 'zh' ? 'zh' : 'en',
+      language,
       references: block.references,
       outputName: `${versionId}-${block.blockId}`,
       abortSignal,
@@ -797,21 +1036,26 @@ export async function generateVideoTranslationGroupedVoice(
 ): Promise<VideoTranslationVoiceVersion> {
   safeId(episodeId, '剧集 ID')
   const language = safeLanguage(targetLanguage)
-  const wikiBase = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, '声音')
-  const arrangement = JSON.parse(
-    await fs.promises.readFile(path.join(wikiBase, '分组克隆安排.json'), 'utf8'),
-  ) as VideoTranslationDialogueArrangement
-  const promptMarkdown = await fs.promises.readFile(
-    path.join(wikiBase, '分组克隆提示词.md'),
-    'utf8',
-  )
-  if (
-    !arrangement.finalScriptId ||
-    !arrangement.scriptHash ||
-    !/^[a-f0-9]{64}$/i.test(arrangement.scriptHash)
-  )
-    throw new Error('分组克隆安排没有绑定有效最终剧本')
-  const prompts = blockPrompts(promptMarkdown)
+  const runKey = `${runId}:${episodeId}:${language}:grouped-voice`
+  if (groupedVoiceRuns.has(runKey)) throw new Error('分组配音正在生成，请等待当前任务完成')
+  groupedVoiceRuns.add(runKey)
+  try {
+    const wikiBase = path.join(getRunDir(runId), 'wiki', '翻译', episodeId, '声音')
+    const arrangement = JSON.parse(
+      await fs.promises.readFile(path.join(wikiBase, '分组克隆安排.json'), 'utf8'),
+    ) as VideoTranslationDialogueArrangement
+    const promptMarkdown = await fs.promises.readFile(
+      path.join(wikiBase, '分组克隆提示词.md'),
+      'utf8',
+    )
+    validateArrangementHeader(arrangement, episodeId, language, '分组克隆安排')
+    arrangement.blocks.forEach(validateGroupedBlockIsolation)
+    await validateCurrentGroupedVoiceBindings(runId, arrangement.blocks)
+    const scriptHash = arrangement.scriptHash as string
+    const prompts = blockPrompts(
+      promptMarkdown,
+      arrangement.blocks.map((block) => block.blockId),
+    )
   const force = new Set(regenerateBlockIds)
   for (const blockId of force) safeId(blockId, '配音组 ID')
   if (
@@ -826,19 +1070,39 @@ export async function generateVideoTranslationGroupedVoice(
     'video-translate',
     language,
     '分组克隆草稿',
-    arrangement.scriptHash,
+    scriptHash,
   )
   await fs.promises.mkdir(draftBase, { recursive: true })
-  const taskId = (blockId: string) =>
-    `${episodeId}:dubbing:${arrangement.scriptHash!.slice(0, 12)}:${blockId}`
+  const blockFingerprint = (block: VideoTranslationDialogueBlock) =>
+    createHash('sha256')
+      .update(
+        JSON.stringify({
+          targetLanguage: language,
+          scriptHash: arrangement.scriptHash,
+          blockId: block.blockId,
+          cueIds: block.cueIds,
+          prompt: prompts.get(block.blockId) || '',
+          references: block.references.map((reference) => ({
+            speakerId: reference.speakerId,
+            voiceProfileId: reference.voiceProfileId,
+            referenceAudioPath: reference.referenceAudioPath,
+          })),
+        }),
+      )
+      .digest('hex')
+      .slice(0, 12)
+  const taskId = (block: VideoTranslationDialogueBlock) =>
+    `${episodeId}:dubbing:${scriptHash.slice(0, 12)}:${block.blockId}:${blockFingerprint(block)}`
   const existingById = new Map((await readPending(runId)).map((task) => [task.id, task]))
-  const pending = arrangement.blocks.filter((block) => {
-    if (force.size) return force.has(block.blockId)
-    const task = existingById.get(taskId(block.blockId))
-    return (
-      task?.status !== 'success' || !fs.existsSync(path.join(draftBase, `${block.blockId}.wav`))
-    )
-  })
+  const pending: VideoTranslationDialogueBlock[] = []
+  for (const block of arrangement.blocks) {
+    if (force.size) {
+      if (force.has(block.blockId)) pending.push(block)
+      continue
+    }
+    if (!(await reusableOutput(path.join(draftBase, `${block.blockId}.wav`), existingById.get(taskId(block)))))
+      pending.push(block)
+  }
   for (const block of pending) {
     safeId(block.blockId, '配音组 ID')
     const index = arrangement.blocks.indexOf(block)
@@ -846,7 +1110,7 @@ export async function generateVideoTranslationGroupedVoice(
     const target = path.join(draftBase, `${block.blockId}.wav`)
     const label = block.references[0]?.label?.split('·')[0]?.trim() || block.speakerIds[0]
     const task: PendingCloudTask = {
-      id: taskId(block.blockId),
+      id: taskId(block),
       kind: 'dubbing',
       index: index + 1,
       targetId: block.blockId,
@@ -859,13 +1123,19 @@ export async function generateVideoTranslationGroupedVoice(
     await putPending(runId, task)
   }
   const failures: string[] = []
+  let completed = arrangement.blocks.length - pending.length
+  let failed = 0
   let cursor = 0
+  if (pending.length)
+    reportProgress(
+      `正在生成分组音频 ${completed}/${arrangement.blocks.length}（3 个并发）`,
+    )
   await Promise.all(
     Array.from({ length: Math.min(3, pending.length) }, async () => {
       while (cursor < pending.length) {
         if (abortSignal?.aborted) return
         const block = pending[cursor++]
-        const id = taskId(block.blockId)
+        const id = taskId(block)
         const prompt = prompts.get(block.blockId)
         const target = path.join(draftBase, `${block.blockId}.wav`)
         try {
@@ -885,7 +1155,7 @@ export async function generateVideoTranslationGroupedVoice(
                 error: undefined,
               }))
               reportProgress(
-                `正在生成分组克隆 ${arrangement.blocks.indexOf(block) + 1}/${arrangement.blocks.length}`,
+                `正在生成分组音频 ${completed}/${arrangement.blocks.length}（当前：第 ${arrangement.blocks.indexOf(block) + 1} 组）`,
               )
               const generated = await generateSeedAudio({
                 runId,
@@ -898,29 +1168,39 @@ export async function generateVideoTranslationGroupedVoice(
                   block.lines.at(-1)!.expectedEndMs - block.lines[0].expectedStartMs,
                 ),
                 prompt,
-                language: language === 'zh' ? 'zh' : 'en',
+                language,
                 references: block.references,
-                outputName: `grouped-${arrangement.scriptHash!.slice(0, 12)}-${block.blockId}`,
+                outputName: `grouped-${scriptHash.slice(0, 12)}-${block.blockId}-${blockFingerprint(block)}`,
                 abortSignal: signal,
               })
               await atomicCopy(
                 assertVideoTranslationAsset(runId, episodeId, generated.path),
                 target,
               )
+              const output = await fileStatHash(target)
               await updateTask(runId, id, (task) => ({
                 ...task,
                 status: 'success',
                 outputPath: relativeRunAsset(runId, target),
+                ...output,
                 updatedAt: new Date().toISOString(),
                 finishedAt: new Date().toISOString(),
                 error: undefined,
               }))
+              completed += 1
+              reportProgress(
+                `分组音频已完成 ${completed}/${arrangement.blocks.length}${failed ? `，失败 ${failed} 个` : ''}`,
+              )
             },
             abortSignal,
           )
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           failures.push(`${block.blockId}：${message}`)
+          failed += 1
+          reportProgress(
+            `分组音频已完成 ${completed}/${arrangement.blocks.length}，失败 ${failed} 个`,
+          )
           const task = (await readPending(runId)).find((item) => item.id === id)
           if (task?.status !== 'stopped')
             await updateTask(runId, id, (current) => ({
@@ -937,11 +1217,13 @@ export async function generateVideoTranslationGroupedVoice(
   if (failures.length) throw new Error(`有 ${failures.length} 个配音组生成失败`)
   const currentTasks = new Map((await readPending(runId)).map((task) => [task.id, task]))
   if (
-    arrangement.blocks.some(
-      (block) =>
-        currentTasks.get(taskId(block.blockId))?.status !== 'success' ||
-        !fs.existsSync(path.join(draftBase, `${block.blockId}.wav`)),
-    )
+    (
+      await Promise.all(
+        arrangement.blocks.map((block) =>
+          reusableOutput(path.join(draftBase, `${block.blockId}.wav`), currentTasks.get(taskId(block))),
+        ),
+      )
+    ).some((value) => !value)
   )
     throw new Error('仍有配音组尚未生成完成')
   const versionId = `grouped-${Date.now()}-${randomUUID().slice(0, 8)}`
@@ -1016,6 +1298,9 @@ export async function generateVideoTranslationGroupedVoice(
   }
   await saveVideoTranslationVoiceVersion(runId, wikiBase, version)
   return version
+  } finally {
+    groupedVoiceRuns.delete(runKey)
+  }
 }
 
 async function videoTranslationIndexFiles(

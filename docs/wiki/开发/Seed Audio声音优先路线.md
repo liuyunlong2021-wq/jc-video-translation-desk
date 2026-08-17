@@ -23,6 +23,7 @@ VEO/Grok 继续按原分镜提示词生成原生声音。Seed 路线只在后期
 ## 已完成能力
 
 - Seed Audio 与其他模型共用韭菜盒子 API Key，统一请求 `/v1/audio/speech`；设置中不再保留火山引擎专属 Key。
+- Seed Audio 的声音控制唯一入口是最终 `text_prompt` / `input`；客户端不得提交 `voice`、`response_format`、性别映射、基础音色预设或其他伪控制字段。
 - MP3 落盘后转换为 48kHz 双声道 WAV，并写 `声音生成记录.json`。
 - 产品自己的 `voiceProfileId` 是唯一角色声音身份；Seed 基准音、声音设计和角色 `entityId` 写入项目声音 Wiki 并回链角色页。
 - 韭菜盒子统一渠道已支持 Seed Audio 文本生成 MP3 和参考音文件透传；客户端按确定顺序同时提交参考音、`voiceProfileId` 和角色声音定义。
@@ -81,3 +82,24 @@ VEO/Grok 继续按原分镜提示词生成原生声音。Seed 路线只在后期
 - 验证：`pnpm test` `197/197`；`pnpm exec vue-tsc --noEmit`、`git diff --check`、macOS universal APP 签名与 DMG 构建通过；桌面实际显示风千雪当前参考音 `0:10`，旧参考音仍在下拉框可选。
 - 已处理范围：声音库保存与绑定、Seed 参考音请求、连续对白参考音传递、参考音试听、Skill、TDD 和研发 Wiki。
 - 记录时间：2026-08-07 23:03:32 CST。
+
+## 2026-08-17 Prompt-only 请求合同
+
+- 来源角色：产品负责人当前会话确认。
+- 确认结论：Seed Audio 生成声音时只向模型提交最终提示词；`input` 是唯一声音控制入口。客户端不得再提交 `voice` 或 `response_format` 字段，不得用 `echo`、`nova`、`alloy` 或类似基础音色预设做男女性别映射。
+- 设计原因：Seed Audio 已由提示词直接控制年龄感、音色、口音、表达习惯和示例台词；额外 voice 路由会与产品 prompt-only 设计冲突，并可能掩盖提示词质量问题。
+- 已处理范围：`src/runtime/seedAudio.ts` 请求合同、`electron/seed-audio.ts` 生成记录、Seed Audio 运行时测试、TDD-10 请求体示例和本 Wiki 页面。
+- 实现来源：`src/runtime/seedAudio.ts` `sha256:5881d8792e540be2daa133dba25be497b15ba0dc7da62b14b800904139e2abc8`；`electron/seed-audio.ts` `sha256:7f1c7f6829bfe5a4eb00cf5a10de476806669324f73dc1e8ace0c42e6f1e6e0c`；`src/runtime/seedAudio.test.ts` `sha256:f0b5fb031efbeafd803b7e7a90082b0766d0275cd04471f4b2cec558dfdb6f8b`；`docs/tdd/10-Seed Audio声音设计整段配音与完整声音轨TDD.md` `sha256:135f3481f60e7629df7172781fa8ec21f7bb5ef8649c8ee41b4b2d7dda16f97b`。
+- 验证：`pnpm exec vue-tsc --noEmit`、`pnpm test`、`git diff --check` 已通过。
+- 记录时间：2026-08-17 CST。
+
+## 2026-08-17 视频翻译角色参考音短 Prompt
+
+- 来源角色：产品负责人当前会话确认，成功样例为“酒吧服务员 是越南中年男性，浑厚，略微沙哑，响亮，谦逊。使用中性、稳定、自然的语气说：……”。
+- 确认结论：视频翻译配音工作台的“生成角色提示词”不再调用 `jc-voice-design` 或 `jc-doubao-seed-audio` Skill 生成长稿，改为程序内确定性构造两行 Seed 角色参考音 Prompt。
+- Prompt 结构：第一行固定为“角色身份 是目标语言年龄性别，3-5 个强声音特征。”；第二行固定为“使用中性、稳定、自然的语气说：目标语言示例台词”。示例台词优先取该角色已确认译文，缺失时使用目标语种默认句。
+- 设计原因：角色参考音只需要稳定、可控、贴脸的中性基准音，不需要把剧情情绪、九项音色参数或大段抽象描述塞进 Seed 请求；男性服务员等角色必须显式给出“中年男性、浑厚、略微沙哑、响亮、谦逊”等硬特征，避免模型生成偏女性。
+- 已处理范围：`src/runtime/videoTranslation.ts` 新增 `buildVideoTranslationSeedRolePrompt()`；`src/views/Home/index.vue` 的视频翻译角色提示词生成改走程序内 Prompt；`src/runtime/videoTranslation.test.ts` 增加越南男服务员样例和禁用 Skill 路由静态断言。
+- 实现来源：`src/runtime/videoTranslation.ts` `sha256:17edf521db1492ed3b1a0f481f69d4895f172f619fe6c4b3359ae945003d038c`；`src/views/Home/index.vue` `sha256:1d91d67d116e93c1d1abd9ca6e8da448c3898ec92f90492762b05a5acbdc0a44`；`src/runtime/videoTranslation.test.ts` `sha256:91fb7215e83148c212b11ef35246a9b7e8176f7abbd683c9fb32218940efec06`。
+- 验证：`pnpm exec vue-tsc --noEmit`、`pnpm test src/runtime/videoTranslation.test.ts`、`git diff --check` 已通过。
+- 记录时间：2026-08-17 CST。

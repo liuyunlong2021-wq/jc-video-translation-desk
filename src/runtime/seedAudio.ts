@@ -75,8 +75,6 @@ export interface SeedDialogueCue extends SeedAudioLine {
 export interface SeedAudioRequestPayload {
   model: 'seed-audio-1.0'
   input: string
-  voice: 'alloy'
-  response_format: 'mp3'
   references?: SeedAudioRequestReference[]
 }
 
@@ -122,8 +120,6 @@ export function buildSeedAudioRequest(input: SeedAudioPromptInput): SeedAudioReq
   return {
     model: 'seed-audio-1.0',
     input: input.prompt.trim(),
-    voice: 'alloy',
-    response_format: 'mp3',
     ...(references?.length ? { references: references.map((item) => ({ audio_data: item })) } : {}),
   }
 }

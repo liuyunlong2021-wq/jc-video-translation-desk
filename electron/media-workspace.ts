@@ -65,6 +65,7 @@ const SHARED_STATE_KEYS = [
   'videoModel',
   'referenceAssets',
   'assetPlanCompletedRoles',
+  'scriptCharacters',
   'videoTranslationRoles',
 ] as const
 

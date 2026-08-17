@@ -35,6 +35,7 @@ import { DEFAULT_EPISODE_ID } from '../runtime/productionContract.ts'
 import {
   createVideoTranslationState,
   invalidateVideoTranslation,
+  type ScriptCharacter,
   type TranslationRole,
   type VideoTranslationChange,
   type VideoTranslationState,
@@ -186,8 +187,10 @@ export const useMediaTaskStore = defineStore(
     const pictureMasterPath = ref('')
     const finalPath = ref('')
     const workspaceEntry = ref<WorkspaceEntry>('video-translate')
+    const scriptCharacters = ref<ScriptCharacter[]>([])
     const videoTranslationRoles = ref<TranslationRole[]>([])
     const videoTranslation = ref<VideoTranslationState | null>(null)
+    const progressText = ref('')
     const busyAction = ref('')
     const cancelRequested = ref(false)
     const error = ref('')
@@ -295,7 +298,11 @@ export const useMediaTaskStore = defineStore(
     function invalidateTranslation(change: VideoTranslationChange) {
       if (videoTranslation.value)
         videoTranslation.value = invalidateVideoTranslation(videoTranslation.value, change)
-      if (['source-dialogue', 'translation', 'role-binding', 'timing', 'language'].includes(change)) {
+      if (
+        ['source-dialogue', 'translation', 'role-binding', 'timing', 'language', 'voice-binding'].includes(
+          change,
+        )
+      ) {
         seedAudioGlobalPrompt.value = ''
         seedAudioArrangementPath.value = ''
         seedAudioTrackPath.value = ''
@@ -681,6 +688,7 @@ export const useMediaTaskStore = defineStore(
       pictureMasterPath.value = ''
       finalPath.value = ''
       workspaceEntry.value = 'video-translate'
+      scriptCharacters.value = []
       videoTranslationRoles.value = []
       videoTranslation.value = null
       busyAction.value = ''
@@ -821,8 +829,10 @@ export const useMediaTaskStore = defineStore(
       pictureMasterPath,
       finalPath,
       workspaceEntry,
+      scriptCharacters,
       videoTranslationRoles,
       videoTranslation,
+      progressText,
       busyAction,
       cancelRequested,
       error,
@@ -879,6 +889,7 @@ export const useMediaTaskStore = defineStore(
     persist: {
       omit: [
         'busyAction',
+        'progressText',
         'cancelRequested',
         'error',
         'cloudTasks',

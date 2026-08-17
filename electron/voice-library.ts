@@ -43,7 +43,7 @@ export interface RegisterSeedVoiceProfileParams {
   displayName: string
   sourceAudioPath: string
   voiceDesignPrompt: string
-  language?: 'zh' | 'en'
+  language?: string
   workflow?: 'creative' | 'video-translation'
 }
 export type VoiceSearchQuery = Partial<
@@ -56,6 +56,7 @@ export type VoiceSearchQuery = Partial<
   indexTtsReady?: boolean
 }
 const AUDIO = new Set(['.wav', '.mp3', '.m4a', '.flac', '.ogg', '.aac'])
+let catalogWriteQueue = Promise.resolve()
 
 function libraryDir() {
   return process.env.VOICE_LIBRARY_DIR || path.join(app.getPath('userData'), 'voice-library')
@@ -142,6 +143,23 @@ function directorReferencesSpeaker(content: string, speakerId: string) {
 }
 async function saveCatalog(catalog: VoiceCatalog) {
   await write(catalogPath(), `${JSON.stringify(catalog, null, 2)}\n`)
+}
+
+async function updateCatalog(mutator: (catalog: VoiceCatalog) => void | Promise<void>) {
+  const write = catalogWriteQueue.then(async () => {
+    const catalog = await loadCatalog()
+    await mutator(catalog)
+    catalog.profiles = catalog.profiles.sort((a, b) =>
+      a.voiceProfileId.localeCompare(b.voiceProfileId),
+    )
+    await saveCatalog(catalog)
+    return catalog
+  })
+  catalogWriteQueue = write.then(
+    () => undefined,
+    () => undefined,
+  )
+  return write
 }
 
 export async function scanVoiceLibrary(sourceRoot: string) {
@@ -520,7 +538,6 @@ export async function registerSeedVoiceProfile(params: RegisterSeedVoiceProfileP
     fs.promises.copyFile(source, referencePath),
   ])
   const metadata = await parseFile(source, { duration: true }).catch(() => undefined)
-  const catalog = await loadCatalog()
   const profile: VoiceProfile = {
     voiceProfileId,
     displayName: params.displayName.trim() || params.speakerId,
@@ -536,18 +553,20 @@ export async function registerSeedVoiceProfile(params: RegisterSeedVoiceProfileP
     roleTags: ['角色化'],
     emotionTags: [],
     autoTags: ['Seed Audio', '角色化'],
-    language: params.language === 'en' ? 'English' : 'Chinese',
+    language:
+      params.language === 'en' ? 'English' : params.language === 'zh' ? 'Chinese' : params.language,
     quality: 'approved',
     cloneReady: true,
     rights: 'commercial-cleared',
     engine: 'seed-audio',
     voiceDesignPrompt: params.voiceDesignPrompt.trim(),
   }
-  catalog.profiles = [
-    ...catalog.profiles.filter((item) => item.voiceProfileId !== voiceProfileId),
-    profile,
-  ].sort((a, b) => a.voiceProfileId.localeCompare(b.voiceProfileId))
-  await saveCatalog(catalog)
+  await updateCatalog((catalog) => {
+    catalog.profiles = [
+      ...catalog.profiles.filter((item) => item.voiceProfileId !== voiceProfileId),
+      profile,
+    ]
+  })
 
   let voicePath: string
   if (translationWorkflow) {
@@ -556,7 +575,7 @@ export async function registerSeedVoiceProfile(params: RegisterSeedVoiceProfileP
     await writeProjectMarkdown(
       params.projectId,
       voicePath,
-      `---\ntranslationRoleId: ${params.speakerId}\nvoiceProfileId: ${voiceProfileId}\nengine: seed-audio\nstatus: confirmed\n---\n\n# ${params.displayName}的翻译声音\n\n- 声音档案：[[声音库/音色/${voiceProfileId}]]\n`,
+      `---\ntranslationRoleId: ${params.speakerId}\nvoiceProfileId: ${voiceProfileId}${params.language ? `\nvoiceLanguage: ${params.language}` : ''}\nengine: seed-audio\nstatus: ready\n---\n\n# ${params.displayName}的翻译声音\n\n- 声音档案：[[声音库/音色/${voiceProfileId}]]\n`,
       current?.revision,
     )
   } else {

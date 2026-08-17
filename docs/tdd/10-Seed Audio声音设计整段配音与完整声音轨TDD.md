@@ -286,13 +286,11 @@ Content-Type: application/json
 ```json
 {
   "model": "seed-audio-1.0",
-  "input": "最终编排后的 Seed Audio 提示词",
-  "voice": "alloy",
-  "response_format": "mp3"
+  "input": "最终编排后的 Seed Audio 提示词"
 }
 ```
 
-统一渠道直接返 `audio/mpeg` 二进制 MP3，客户端落盘后转换为项目统一的 48kHz 双声道 WAV。参考音上传和透传已支持；正式请求中参考音数组顺序必须与 `voiceProfileId` 及提示词中 `@音频N` 完全一致，不得静默丢弃或交换角色参考音。
+统一渠道直接返音频结果，客户端落盘后转换为项目统一的 48kHz 双声道 WAV。Seed Audio 的声音控制唯一入口是 `input` 中的最终提示词；客户端不得额外提交 `voice`、`response_format`、性别映射、基础音色预设或其他伪控制字段。参考音上传和透传已支持；正式克隆请求中参考音数组顺序必须与 `voiceProfileId` 及提示词中 `@音频N` 完全一致，不得静默丢弃或交换角色参考音。
 
 ## 11. 配音字幕工作台适配
 

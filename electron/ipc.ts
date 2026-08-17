@@ -38,6 +38,7 @@ import {
   ocrVideoTranslationSubtitles,
   calibrateVideoTranslationSubtitles,
   calibrateVideoTranslationFrames,
+  extractVideoTranslationScriptCharacters,
   generateVideoTranslationDialogueTimestamps,
   withRunAbort,
 } from './cloud'
@@ -101,6 +102,7 @@ import {
 import {
   deleteVideoTranslationRole,
   importVideoTranslationSrt,
+  selectVideoTranslationScriptDocument,
   selectVideoTranslationFinalMaster,
   selectVideoTranslationSource,
   generateVideoTranslationGroupedVoice,
@@ -331,6 +333,9 @@ export default function initIPC() {
   ipcMain.handle('video-translation-select-source', (_event, runId, episodeId) =>
     selectVideoTranslationSource(runId, episodeId),
   )
+  ipcMain.handle('video-translation-select-script-document', (_event, runId, episodeId) =>
+    selectVideoTranslationScriptDocument(runId, episodeId),
+  )
   ipcMain.handle('video-translation-select-final-master', (_event, runId, episodeId, sourcePath) =>
     selectVideoTranslationFinalMaster(runId, episodeId, sourcePath),
   )
@@ -357,6 +362,9 @@ export default function initIPC() {
   )
   ipcMain.handle('video-translation-calibrate-subtitles', (_event, params) =>
     calibrateVideoTranslationSubtitles(params),
+  )
+  ipcMain.handle('video-translation-extract-script-characters', (_event, params) =>
+    extractVideoTranslationScriptCharacters(params),
   )
   ipcMain.handle('video-translation-calibrate-frames', (event, params) =>
     calibrateVideoTranslationFrames(params, (message) =>

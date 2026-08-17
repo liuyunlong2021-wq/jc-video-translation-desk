@@ -143,6 +143,10 @@ interface Window {
         runId: string,
         episodeId: string,
       ) => Promise<import('./types').VideoTranslationUploadResult | null>
+      selectVideoTranslationScriptDocument: (
+        runId: string,
+        episodeId: string,
+      ) => Promise<import('./types').VideoTranslationScriptDocumentResult | null>
       selectVideoTranslationFinalMaster: (
         runId: string,
         episodeId: string,
@@ -170,6 +174,9 @@ interface Window {
       calibrateVideoTranslationSubtitles: (
         params: import('./types').CalibrateVideoTranslationSubtitlesParams,
       ) => Promise<{ subtitles: Array<{ cueId: string; text: string }> }>
+      extractVideoTranslationScriptCharacters: (
+        params: import('./types').ExtractVideoTranslationScriptCharactersParams,
+      ) => Promise<import('./types').ExtractVideoTranslationScriptCharactersResult>
       calibrateVideoTranslationFrames: (
         params: import('./types').CalibrateVideoTranslationFramesParams,
       ) => Promise<{

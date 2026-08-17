@@ -7,15 +7,35 @@ export interface TranslationRole {
   translationRoleId: string
   displayName: string
   visualPersonId?: string
+  scriptCharacterId?: string
   aliases: string[]
   description?: string
   screenshotId?: string
   linkedCreativeRoleId?: string
   voiceProfileId?: string
+  voiceLanguage?: string
   voiceIdentityText?: string
   voiceConfirmedAt?: string
   sourceEpisodeIds: string[]
   status: 'confirmed'
+}
+
+export interface ScriptCharacter {
+  scriptCharacterId: string
+  displayName: string
+  aliases: string[]
+  description: string
+  evidence: string
+  sourcePath: string
+  order: number
+  status: 'draft' | 'confirmed'
+}
+
+export interface ScriptCharacterDraft {
+  displayName: string
+  aliases?: string[]
+  description?: string
+  evidence?: string
 }
 
 export interface VideoTranslationCue {
@@ -47,6 +67,13 @@ export interface VideoTranslationCue {
   frameCalibrationBackupText?: string
   calibrationSuggestion?: string
   calibrationBackupText?: string
+}
+
+export interface VideoTranslationSeedRolePromptInput {
+  role: TranslationRole
+  cues: VideoTranslationCue[]
+  language: string
+  fallbackLine?: string
 }
 
 export interface VideoTranslationState {
@@ -340,6 +367,223 @@ export function groupVideoTranslationCueWithNext(
   return sorted
 }
 
+function normalizeCharacterName(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, '')
+}
+
+function uniqueNonEmpty(values: string[]) {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    const trimmed = String(value || '').trim()
+    const key = normalizeCharacterName(trimmed)
+    if (!trimmed || seen.has(key)) continue
+    seen.add(key)
+    result.push(trimmed)
+  }
+  return result
+}
+
+function slugCharacterId(value: string, index: number) {
+  const ascii = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return `script-${ascii || String(index + 1).padStart(3, '0')}`
+}
+
+function compactText(value: string, maxLength: number) {
+  const text = value.replace(/\s+/g, ' ').trim()
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text
+}
+
+function normalizeScriptCharacterDraft(draft: ScriptCharacterDraft) {
+  const rawName = String(draft?.displayName || '').replace(/\s+/g, ' ').trim()
+  if (!rawName) throw new Error('剧本角色名称不能为空')
+  const separatorIndex = rawName.search(/[：:，,。；;\n]/)
+  const hasShortHead = separatorIndex > 0 && separatorIndex <= 12
+  const displayName = hasShortHead ? rawName.slice(0, separatorIndex).trim() : rawName
+  const nameRemainder = hasShortHead ? rawName.slice(separatorIndex + 1).trim() : ''
+  const description = compactText([nameRemainder, draft.description].filter(Boolean).join('；'), 80)
+  const evidence = compactText(String(draft.evidence || ''), 120)
+  return { displayName: compactText(displayName, 18), description, evidence }
+}
+
+export function mergeScriptCharacters(
+  existing: ScriptCharacter[],
+  drafts: ScriptCharacterDraft[],
+  sourcePath: string,
+) {
+  const byName = new Map<string, ScriptCharacter>()
+  const result = existing.map((character) => ({
+    ...character,
+    aliases: [...character.aliases],
+  }))
+  const byId = new Map(result.map((character) => [character.scriptCharacterId, character]))
+  result.forEach((character) => {
+    byName.set(normalizeCharacterName(character.displayName), character)
+    character.aliases.forEach((alias) => byName.set(normalizeCharacterName(alias), character))
+  })
+  for (const draft of drafts) {
+    const normalized = normalizeScriptCharacterDraft(draft)
+    const displayName = normalized.displayName
+    const aliases = uniqueNonEmpty(draft.aliases || []).filter(
+      (alias) => normalizeCharacterName(alias) !== normalizeCharacterName(displayName),
+    )
+    const key = normalizeCharacterName(displayName)
+    const matched = byName.get(key)
+    if (matched) {
+      matched.aliases = uniqueNonEmpty([...matched.aliases, ...aliases])
+      matched.aliases.forEach((alias) => byName.set(normalizeCharacterName(alias), matched))
+      if (!matched.description && normalized.description) matched.description = normalized.description
+      if (!matched.evidence && normalized.evidence) matched.evidence = normalized.evidence
+      continue
+    }
+    let id = slugCharacterId(displayName, result.length)
+    let suffix = 2
+    while (byId.has(id)) id = `${slugCharacterId(displayName, result.length)}-${suffix++}`
+    const character: ScriptCharacter = {
+      scriptCharacterId: id,
+      displayName,
+      aliases,
+      description: normalized.description,
+      evidence: normalized.evidence,
+      sourcePath,
+      order: result.length,
+      status: 'confirmed',
+    }
+    result.push(character)
+    byId.set(id, character)
+    byName.set(key, character)
+    aliases.forEach((alias) => byName.set(normalizeCharacterName(alias), character))
+  }
+  return result.map((character, order) => ({ ...character, order }))
+}
+
+export function scriptCharacterOptions(characters: ScriptCharacter[]) {
+  return [...characters].sort((a, b) => a.order - b.order || a.displayName.localeCompare(b.displayName))
+}
+
+export function matchScriptCharacterForRole(
+  role: TranslationRole,
+  characters: ScriptCharacter[],
+  cues: VideoTranslationCue[] = [],
+) {
+  const haystack = [
+    role.displayName,
+    ...role.aliases,
+    role.description || '',
+    ...cues
+      .filter((cue) => cue.translationRoleId === role.translationRoleId)
+      .flatMap((cue) => [cue.sourceText, cue.recognizedText, cue.proposedName || '']),
+  ]
+    .join('\n')
+    .toLowerCase()
+  const matches = characters.filter((character) =>
+    [character.displayName, ...character.aliases]
+      .map(normalizeCharacterName)
+      .filter(Boolean)
+      .some((name) => haystack.replace(/\s+/g, '').includes(name)),
+  )
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+export function bindTranslationRoleToScriptCharacter(
+  role: TranslationRole,
+  character: ScriptCharacter,
+) {
+  return {
+    ...role,
+    scriptCharacterId: character.scriptCharacterId,
+    displayName: character.displayName,
+    aliases: uniqueNonEmpty([...role.aliases, ...character.aliases]),
+    description: character.description || role.description,
+  }
+}
+
+function languageVoiceLabel(language: string) {
+  const code = language.trim().toLowerCase()
+  if (code === 'en') return '美式英语'
+  if (code === 'vi') return '越南'
+  if (code === 'th') return '泰国'
+  if (code === 'id') return '印尼'
+  if (code === 'ms') return '马来西亚'
+  if (code === 'zh') return '中文'
+  return code || '目标语言'
+}
+
+function seedRoleContext(role: TranslationRole, cues: VideoTranslationCue[]) {
+  return [
+    role.displayName,
+    role.description || '',
+    ...(role.aliases || []),
+    ...cues.flatMap((cue) => [
+      cue.sourceText,
+      cue.translatedText,
+      cue.recognizedText,
+      cue.evidence || '',
+      cue.performanceDirection || '',
+    ]),
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function seedRoleIdentity(role: TranslationRole, context: string) {
+  if (/酒吧|夜店|俱乐部|club|bar/i.test(context) && /服务员|侍者|waiter|server/i.test(context))
+    return '酒吧服务员'
+  if (/服务员|侍者|waiter|server/i.test(context)) return '服务员'
+  const description = (role.description || '').split(/[，,。；;：:\n]/)[0]?.trim()
+  if (description && description.length <= 12) return description
+  const alias = role.aliases.find((item) => item.trim() && !/^画面人物/.test(item.trim()))
+  if (alias) return alias.trim()
+  return role.displayName
+}
+
+function seedRoleAgeGender(context: string, identity: string) {
+  if (/女性|女声|女人|女孩|女儿|女主|妈妈|母亲|姐姐|妹妹|小姐|女士|female|woman|girl|mother|sister/i.test(context))
+    return '成年女性'
+  if (/中年男性|中年男|父亲|爸爸|叔叔|老板|先生|middle-aged man/i.test(context))
+    return '中年男性'
+  if (/男性|男声|男人|男孩|男主|哥哥|弟弟|年轻男人|male|man|boy|father|brother/i.test(context))
+    return /服务员|侍者/.test(identity) ? '中年男性' : '成年男性'
+  if (/服务员|侍者/.test(identity)) return '中年男性'
+  return '成年角色'
+}
+
+function seedRoleVoiceTraits(ageGender: string, identity: string) {
+  if (/男性/.test(ageGender) && /服务员|侍者/.test(identity))
+    return '浑厚，略微沙哑，响亮，谦逊'
+  if (/男性/.test(ageGender)) return '浑厚，略微沙哑，稳重，自然'
+  if (/女性/.test(ageGender)) return '清亮，柔和，自然，坚定'
+  return '自然，清晰，稳定，贴合角色身份'
+}
+
+function seedRoleExampleLine(cues: VideoTranslationCue[], fallbackLine = '') {
+  const line = cues
+    .map((cue) => cue.translatedText.trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const sample = line || fallbackLine.trim()
+  if (sample.length <= 220) return sample
+  return `${sample.slice(0, 220).trim()}。`
+}
+
+export function buildVideoTranslationSeedRolePrompt(input: VideoTranslationSeedRolePromptInput) {
+  const cues = input.cues.filter(
+    (cue) => cue.translationRoleId === input.role.translationRoleId && cue.translatedText.trim(),
+  )
+  const context = seedRoleContext(input.role, cues)
+  const identity = seedRoleIdentity(input.role, context)
+  const ageGender = seedRoleAgeGender(context, identity)
+  const traits = seedRoleVoiceTraits(ageGender, identity)
+  const exampleLine = seedRoleExampleLine(cues, input.fallbackLine)
+  return `${identity} 是${languageVoiceLabel(input.language)}${ageGender}，${traits}。\n使用中性、稳定、自然的语气说：${exampleLine}`
+}
+
 export function autoGroupVideoTranslationCues(
   cues: VideoTranslationCue[],
   groupIdFactory: () => string,
@@ -451,6 +695,7 @@ export function validateVideoTranslationDialoguePrompt(
 export function parseVideoTranslationDialoguePrompt(
   prompt: string,
   block: VideoTranslationDialogueBlock,
+  allowContinuousGroup = false,
 ) {
   if (/固定音色|固定声线|不能串音|声音身份|情绪变化不能改变|参考音只锁定/.test(prompt))
     throw new Error(`${block.blockId} 含有压制自然表演的角色约束`)
@@ -463,6 +708,16 @@ export function parseVideoTranslationDialoguePrompt(
   const identities: Record<string, string> = {}
   block.references.forEach((reference, index) => {
     const label = reference.label?.split('·')[0]?.trim() || reference.speakerId
+    if (
+      allowContinuousGroup &&
+      prompt
+        .split('\n')
+        .map((line) => line.trim())
+        .some((line) => line.match(new RegExp(`饰演者为@音频${index + 1}[。.]?$`)))
+    ) {
+      identities[reference.speakerId] = ''
+      return
+    }
     const definition = prompt
       .split('\n')
       .map((line) => line.trim())
@@ -484,6 +739,40 @@ export function parseVideoTranslationDialoguePrompt(
     .map((value) => value.trim())
     .map((value) => value.match(/^(.+?)[（(](.+)[）)]\s*[：:]\s*[“"](.+)[”"]$/))
     .filter((value): value is RegExpMatchArray => Boolean(value))
+  if (allowContinuousGroup) {
+    if (dialogueLines.length)
+      throw new Error(`${block.blockId} 必须使用连续分句导演格式，不得使用角色括号引号格式`)
+    const body = prompt
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !/^这是一段/.test(line) && !/饰演者为@音频\d+[。.]?$/.test(line))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    let cursor = 0
+    const directions = block.lines.map((line) => {
+      const text = line.text.trim()
+      const index = body.indexOf(text, cursor)
+      if (index < cursor) throw new Error(`${block.blockId} 未按顺序保留全部确认台词`)
+      const prefix = body.slice(cursor, index)
+      const colonIndex = Math.max(prefix.lastIndexOf('：'), prefix.lastIndexOf(':'))
+      if (colonIndex < 0) throw new Error(`${block.blockId} 缺少每句台词对应的表演说明`)
+      const direction = prefix
+        .slice(colonIndex > 0 ? Math.max(prefix.lastIndexOf('，', colonIndex), 0) : 0, colonIndex)
+        .replace(/^[，。；、\s]*(?:先是|先|随后|紧接着|然后|再|并|且)?/, '')
+        .trim()
+      cursor = index + text.length
+      return direction || line.performanceEvidence
+    })
+    return {
+      identities,
+      lines: block.lines.map((line, index) => ({
+        cueId: line.cueId,
+        performanceDirection: directions[index],
+        text: line.text,
+      })),
+    }
+  }
   if (dialogueLines.length !== block.lines.length)
     throw new Error(`${block.blockId} 未按顺序逐行保留全部确认台词`)
   block.lines.forEach((line, index) => {
@@ -506,46 +795,31 @@ export function parseVideoTranslationDialoguePrompt(
   }
 }
 
-function promptSections(markdown: string) {
-  return new Map(
-    markdown
-      .split(/^##\s+/m)
-      .slice(1)
-      .flatMap((section) => {
-        const newline = section.indexOf('\n')
-        return newline < 0
-          ? []
-          : [[section.slice(0, newline).trim(), section.slice(newline + 1).trim()]]
-      }),
-  )
-}
-
 export function validateVideoTranslationGroupedPrompt(
   prompt: string,
   block: VideoTranslationDialogueBlock,
 ) {
   if (block.references.length !== 1 || block.speakerIds.length !== 1)
     throw new Error(`${block.blockId} 必须只包含一个角色参考音`)
-  const expectedSeconds = Math.max(
-    1,
-    Math.round((block.lines.at(-1)!.expectedEndMs - block.lines[0].expectedStartMs) / 1000),
-  )
-  if (
-    !prompt
-      .split('\n')[0]
-      ?.trim()
-      .match(
-        new RegExp(
-          `^这是一段时长为${expectedSeconds}秒的配音表演艺术家在顶级录音棚内的配音片段[。.]$`,
-        ),
-      )
-  )
-    throw new Error(`${block.blockId} 的分组时长提示不正确`)
-  parseVideoTranslationDialoguePrompt(prompt, block)
+  parseVideoTranslationDialoguePrompt(prompt, block, true)
+}
+
+export function compactVideoTranslationVoiceIdentity(identity: string) {
+  return identity
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .find((line) => !/^使用/.test(line))
+    ?.replace(/[。.]$/, '')
+    .trim()
+}
+
+function formatVideoTranslationDurationSeconds(startMs: number, endMs: number) {
+  return (Math.max(0.01, (endMs - startMs) / 1000).toFixed(2).replace(/\.?0+$/, '') || '0.01')
 }
 
 export function planVideoTranslationGroupedDialogueBlocks(
-  globalPromptMarkdown: string,
+  _legacyGlobalPromptMarkdown: string,
   globalArrangement: VideoTranslationDialogueArrangement,
   cues: VideoTranslationCue[],
   roles: TranslationRole[],
@@ -553,19 +827,6 @@ export function planVideoTranslationGroupedDialogueBlocks(
   overrides: Record<string, string> = {},
 ): VideoTranslationGroupedPlan {
   validateConfirmedTranslation(cues, roles, globalArrangement.durationMs)
-  const sections = promptSections(globalPromptMarkdown)
-  const performanceByCue = new Map<string, string>()
-  const identityByCue = new Map<string, string>()
-  for (const block of globalArrangement.blocks) {
-    const prompt = sections.get(block.blockId)
-    if (!prompt) throw new Error(`${block.blockId} 缺少全局配音提示词`)
-    const parsed = parseVideoTranslationDialoguePrompt(prompt, block)
-    for (const line of parsed.lines) {
-      performanceByCue.set(line.cueId, line.performanceDirection)
-      const sourceLine = block.lines.find((item) => item.cueId === line.cueId)!
-      identityByCue.set(line.cueId, parsed.identities[sourceLine.speakerId] || '')
-    }
-  }
   const cueById = new Map(cues.map((cue) => [cue.cueId, cue]))
   const roleById = new Map(roles.map((role) => [role.translationRoleId, role]))
   const referenceBySpeaker = new Map(
@@ -575,23 +836,29 @@ export function planVideoTranslationGroupedDialogueBlocks(
   const blocks = videoTranslationDubbingGroups(cues).map((group) => {
     const role = roleById.get(group.speakerId)
     const reference = referenceBySpeaker.get(group.speakerId)
-    if (!role || !reference?.referenceAudioPath?.trim())
+    if (
+      !role ||
+      !role.voiceProfileId ||
+      !videoTranslationRoleVoiceLanguageMatches(role, globalArrangement.targetLanguage) ||
+      !role.voiceConfirmedAt ||
+      !reference?.referenceAudioPath?.trim()
+    )
       throw new Error(`${group.speakerId} 缺少已确认角色声音`)
     const lines = group.cueIds.map((cueId) => {
       const cue = cueById.get(cueId)!
-      const performanceDirection = performanceByCue.get(cueId)
-      if (!performanceDirection) throw new Error(`${cueId} 缺少全局配音表演方向`)
       return {
         cueId,
         speakerId: group.speakerId,
         text: cue.translatedText.trim(),
-        performanceEvidence: performanceDirection,
+        performanceEvidence: cue.performanceDirection?.trim() || '自然表达',
         expectedStartMs: cue.startMs,
         expectedEndMs: cue.endMs,
       }
     })
-    const identity = identityByCue.get(group.cueIds[0]) || role.voiceIdentityText?.trim()
-    if (!identity) throw new Error(`${role.displayName} 缺少全局配音角色声音身份`)
+    const identity = compactVideoTranslationVoiceIdentity(
+      role.voiceIdentityText?.trim() || reference.voiceDesignPrompt?.trim() || '',
+    )
+    if (!identity) throw new Error(`${role.displayName} 缺少角色声音身份`)
     const block: VideoTranslationDialogueBlock = {
       blockId: group.groupId,
       cueIds: [...group.cueIds],
@@ -599,13 +866,18 @@ export function planVideoTranslationGroupedDialogueBlocks(
       references: [{ ...reference, label: role.displayName }],
       lines,
     }
-    const seconds = Math.max(1, Math.round((group.endMs - group.startMs) / 1000))
+    const seconds = formatVideoTranslationDurationSeconds(group.startMs, group.endMs)
+    const continuousPerformance = lines
+      .map((line, index) => {
+        const prefix = index === 0 ? '先是' : index === 1 ? '随后' : '接着'
+        const suffix = index === lines.length - 1 ? '' : '，'
+        return `${prefix}${line.performanceEvidence}：${line.text}${suffix}`
+      })
+      .join('')
     const generated = [
-      `这是一段时长为${seconds}秒的配音表演艺术家在顶级录音棚内的配音片段。`,
+      `这是一段${seconds}秒的一个专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。`,
       '',
-      `${role.displayName}是${identity}，饰演者为@音频1。`,
-      '',
-      ...lines.map((line) => `${role.displayName}（${line.performanceEvidence}）：“${line.text}”`),
+      continuousPerformance,
     ].join('\n')
     const prompt = overrides[group.groupId]?.trim() || generated
     validateVideoTranslationGroupedPrompt(prompt, block)
@@ -633,6 +905,23 @@ function invalidate(status: ArtifactStatus): ArtifactStatus {
   if (status === 'ready') return 'stale'
   if (status === 'running' || status === 'failed') return 'idle'
   return status
+}
+
+export function videoTranslationRoleVoiceLanguageMatches(
+  role: TranslationRole | undefined,
+  language: string,
+) {
+  const voiceLanguage = role?.voiceLanguage || (language === 'en' ? 'en' : '')
+  return Boolean(role && voiceLanguage === language)
+}
+
+export function videoTranslationRoleVoiceReady(role: TranslationRole | undefined, language: string) {
+  return Boolean(
+    role?.voiceProfileId &&
+      videoTranslationRoleVoiceLanguageMatches(role, language) &&
+      role.voiceIdentityText?.trim() &&
+      role.voiceConfirmedAt,
+  )
 }
 
 export function availableVideoTranslationActions(
@@ -667,9 +956,7 @@ export function availableVideoTranslationActions(
       cue.sourceText.trim() &&
       cue.translatedText.trim() &&
       cue.translationRoleId &&
-      roleById.get(cue.translationRoleId)?.voiceProfileId &&
-      roleById.get(cue.translationRoleId)?.voiceIdentityText &&
-      roleById.get(cue.translationRoleId)?.voiceConfirmedAt,
+      videoTranslationRoleVoiceReady(roleById.get(cue.translationRoleId), state.targetLanguage),
   )
   if (dialogueReady && (actionable(state.arrangementStatus) || state.voiceStatus === 'failed'))
     actions.push('arrange-doubao-voice')
@@ -763,7 +1050,11 @@ export function invalidateVideoTranslation(
       cue.translatedText = ''
     })
   }
-  if (['source-dialogue', 'translation', 'role-binding', 'timing', 'language'].includes(change)) {
+  if (
+    ['source-dialogue', 'translation', 'role-binding', 'timing', 'language', 'voice-binding'].includes(
+      change,
+    )
+  ) {
     next.finalScriptId = undefined
     next.scriptHash = undefined
     next.finalScriptMarkdown = undefined
@@ -816,10 +1107,10 @@ export function invalidateVideoTranslation(
   if (
     [
       'source-dialogue',
-      'translation',
       'role-binding',
       'timing',
       'language',
+      'voice-binding',
       'voice-prompt',
     ].includes(change)
   )
@@ -872,12 +1163,15 @@ export function planVideoTranslationDialogueBlocks(
   validateConfirmedTranslation(cues, roles, durationMs)
   if (!Number.isFinite(durationMs) || durationMs <= 0) throw new Error('原片时长无效')
   const referenceBySpeaker = new Map(references.map((item) => [item.speakerId, item]))
+  const roleBySpeaker = new Map(roles.map((role) => [role.translationRoleId, role]))
   const blocks: VideoTranslationDialogueBlock[] = []
   let current: VideoTranslationDialogueBlock | undefined
   for (const cue of cues
     .slice()
     .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs)) {
     const speakerId = cue.translationRoleId!
+    if (!videoTranslationRoleVoiceReady(roleBySpeaker.get(speakerId), targetLanguage))
+      throw new Error(`${speakerId} 缺少当前目标语言的已确认角色声音`)
     const reference = referenceBySpeaker.get(speakerId)
     if (!reference?.referenceAudioPath?.trim()) throw new Error(`${speakerId} 缺少绑定参考音`)
     if (current && !current.speakerIds.includes(speakerId) && current.speakerIds.length === 3)

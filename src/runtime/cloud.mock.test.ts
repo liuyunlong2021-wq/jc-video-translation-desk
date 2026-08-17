@@ -1538,6 +1538,39 @@ test('video translation uses cue Markdown and retries an incomplete draft', asyn
   assert.match(calls[1].data.messages[1].content, /上次结果无效/)
 })
 
+test('video translation prompt localizes Southeast Asia target languages', async () => {
+  const cases = [
+    ['vi', /越南观众/],
+    ['th', /泰国观众/],
+    ['id', /Bahasa Indonesia/],
+    ['ms', /马来西亚观众[\s\S]*Bahasa Melayu[\s\S]*避免写成印尼语/],
+  ] as const
+  for (const [targetLanguage, expected] of cases) {
+    chatOutputs.push('## cue-001\nTranslated.')
+    const requestStart = requests.length
+    await cloud.translateVideoSubtitles({
+      runId: 'translation-context-run',
+      episodeId,
+      textModel: 'gemini-3.6-flash',
+      sourceLanguage: 'zh',
+      targetLanguage,
+      subtitles: [
+        {
+          cueId: 'cue-001',
+          startMs: 610,
+          endMs: 1530,
+          text: '你好。',
+        },
+      ],
+    })
+    const call = requests
+      .slice(requestStart)
+      .find((request) => request.url.endsWith('/v1/chat/completions'))
+    assert.ok(call)
+    assert.match(call.data.messages[1].content, expected)
+  }
+})
+
 test('FunASR recognition returns raw cues without calling the text model', async () => {
   const runId = 'translation-context-run'
   asrCues = [
