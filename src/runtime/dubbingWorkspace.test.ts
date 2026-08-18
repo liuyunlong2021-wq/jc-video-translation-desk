@@ -30,14 +30,13 @@ test('provides the seven-stage dubbing and subtitle workspace skeleton', () => {
   )
   assert.match(workspace, /@click="selectSegment\(segment\.index\)"/)
   assert.match(workspace, /@timeupdate="stopAtSelectedEnd"/)
-  assert.match(home, /const dubbingRightOpen = ref\(true\)/)
   assert.match(
     home,
     /leftPanelVisible = computed\(\(\) => mediaStore\.workspaceView === 'script'\)/,
   )
   assert.match(
     home,
-    /!isFinalWorkspace\.value && \(!isDubbingWorkspace\.value \|\| dubbingRightOpen\.value\)/,
+    /const rightPanelVisible = computed\(\r?\n\s+\(\) => !isFinalWorkspace\.value && \(isDubbingWorkspace\.value \|\| inspectorOpen\.value\),\r?\n\)/,
   )
   assert.match(home, /v-show="!isVideoTranslation && leftPanelVisible"/)
   assert.match(home, /v-show="rightPanelVisible"/)

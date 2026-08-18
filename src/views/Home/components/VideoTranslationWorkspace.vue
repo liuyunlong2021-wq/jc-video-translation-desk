@@ -8,11 +8,11 @@
         </div>
       </header>
       <video
-        v-if="state.sourceVideoPath"
+        v-if="showRoles ? state.sourceVideoPath : state.finalVideoPath || state.sourceVideoPath"
         ref="sourcePreview"
         class="source-preview"
-        :class="{ 'full-width': !state.finalVideoPath }"
-        :src="fileUrl(previewVideoPath)"
+        :class="{ 'full-width': !showRoles || !state.finalVideoPath }"
+        :src="fileUrl(showRoles ? previewVideoPath : state.finalVideoPath || previewVideoPath)"
         controls
         preload="metadata"
         @play="armSelectedEnd"
@@ -23,7 +23,7 @@
         <v-icon size="42">mdi-video-outline</v-icon><span>请从右栏上传视频</span>
       </div>
       <video
-        v-if="state.finalVideoPath"
+        v-if="showRoles && state.finalVideoPath"
         class="final-preview"
         :src="fileUrl(state.finalVideoPath)"
         controls

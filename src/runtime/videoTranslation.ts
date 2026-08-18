@@ -647,6 +647,7 @@ export type VideoTranslationAction =
   | 'separate-source-audio'
   | 'mix-background-audio'
   | 'burn-subtitles-and-voice'
+  | 'generate-final-video'
 
 export type VideoTranslationChange =
   | 'source-video'
@@ -1011,6 +1012,12 @@ export function availableVideoTranslationActions(
   )
     actions.push('mix-background-audio')
   if (state.mixStatus === 'ready') actions.push('burn-subtitles-and-voice')
+  if (
+    state.sourceVideoPath &&
+    state.finalMasterVideoPath &&
+    (state.targetVoicePath || hasCompleteGroupedVoiceVersion(state))
+  )
+    actions.push('generate-final-video')
   return actions
 }
 

@@ -132,16 +132,6 @@
           >成片工作台</v-btn
         >
       </v-btn-toggle>
-      <template v-if="isDubbingWorkspace">
-        <v-btn
-          :icon="dubbingRightOpen ? 'mdi-chevron-double-right' : 'mdi-chevron-double-left'"
-          variant="text"
-          size="small"
-          :color="dubbingRightOpen ? 'primary' : undefined"
-          :title="dubbingRightOpen ? '收起右侧后期操作' : '展开右侧后期操作'"
-          @click="dubbingRightOpen = !dubbingRightOpen"
-        />
-      </template>
       <span v-if="currentProject?.wikiPending" class="text-caption text-warning">
         Wiki 待同步
       </span>
@@ -353,7 +343,7 @@
         <div
           v-show="rightPanelVisible"
           class="inspector-column min-w-0 min-h-0"
-          :class="{ open: isDubbingWorkspace ? dubbingRightOpen : inspectorOpen }"
+          :class="{ open: isDubbingWorkspace || inspectorOpen }"
         >
           <VideoRender
             :advanced-seed-voice-mode="advancedSeedVoiceMode"
@@ -496,7 +486,6 @@ const toast = useToast()
 const { t } = useTranslation()
 const isMac = window.electron.platform === 'darwin'
 const inspectorOpen = ref(false)
-const dubbingRightOpen = ref(true)
 const advancedSeedVoiceMode = ref(false)
 const taskDrawerOpen = ref(false)
 const textGenerateRef = ref<InstanceType<typeof TextGenerate> | null>(null)
@@ -594,7 +583,7 @@ watch(
 )
 const leftPanelVisible = computed(() => mediaStore.workspaceView === 'script')
 const rightPanelVisible = computed(
-  () => !isFinalWorkspace.value && (!isDubbingWorkspace.value || dubbingRightOpen.value),
+  () => !isFinalWorkspace.value && (isDubbingWorkspace.value || inspectorOpen.value),
 )
 const activeTaskCount = computed(
   () =>
@@ -1619,6 +1608,7 @@ async function runTranslationAction(action: VideoTranslationAction) {
   if (action === 'arrange-doubao-voice') return arrangeTranslationVoice()
   if (action === 'generate-target-voice') return generateTranslationVoice()
   if (action === 'timestamp-target-dialogue') return timestampTranslationDialogue()
+  if (action === 'generate-final-video') return generateTranslationFinalVideo()
   if (action === 'separate-source-audio') return separateTranslationAudio()
   if (action === 'mix-background-audio') return mixTranslationAudio()
   return burnTranslationVideo()
@@ -1718,6 +1708,21 @@ async function ocrTranslationSubtitles() {
       throw error
     }
   })
+}
+
+async function executeTranslationStep(
+  state: NonNullable<typeof mediaStore.videoTranslation>,
+  status: TranslationStatusKey,
+  work: (state: NonNullable<typeof mediaStore.videoTranslation>) => Promise<void>,
+) {
+  state[status] = 'running'
+  try {
+    await work(state)
+    state[status] = 'ready'
+  } catch (error) {
+    state[status] = mediaStore.cancelRequested ? 'stale' : 'failed'
+    throw error
+  }
 }
 
 async function importTranslationSrt() {
@@ -2930,18 +2935,22 @@ function applyTranslationAudio(
 
 async function separateTranslationAudio() {
   await runTranslationStep('separate-source-audio', 'separationStatus', async (state) => {
-    applyTranslationAudio(
-      state,
-      await window.electron.cloud.separateSourceAudio({
-        runId: mediaStore.runId,
-        episodeId: mediaStore.episodeId,
-        pictureMasterPath: state.finalMasterVideoPath || state.sourceVideoPath!,
-        workflow: 'video-translation',
-        targetLanguage: state.targetLanguage,
-      }),
-    )
+    await separateTranslationAudioCore(state)
     toast.success('原人声和背景声已分离')
   })
+}
+
+async function separateTranslationAudioCore(state: NonNullable<typeof mediaStore.videoTranslation>) {
+  applyTranslationAudio(
+    state,
+    await window.electron.cloud.separateSourceAudio({
+      runId: mediaStore.runId,
+      episodeId: mediaStore.episodeId,
+      pictureMasterPath: state.finalMasterVideoPath || state.sourceVideoPath!,
+      workflow: 'video-translation',
+      targetLanguage: state.targetLanguage,
+    }),
+  )
 }
 
 async function timestampTranslationDialogue() {
@@ -2984,38 +2993,70 @@ async function ensureTranslationTargetVoice(
 
 async function mixTranslationAudio() {
   await runTranslationStep('mix-background-audio', 'mixStatus', async (state) => {
-    const targetVoicePath = await ensureTranslationTargetVoice(state)
-    applyTranslationAudio(
-      state,
-      await window.electron.cloud.mixBackgroundAudio({
-        runId: mediaStore.runId,
-        episodeId: mediaStore.episodeId,
-        vocalPath: state.vocalPath!,
-        instrumentPath: state.instrumentPath!,
-        voiceFile: targetVoicePath,
-        workflow: 'video-translation',
-        targetLanguage: state.targetLanguage,
-      }),
-    )
+    await mixTranslationAudioCore(state)
     state.finalStatus = 'stale'
     toast.success('背景声和目标语言配音已混合')
   })
 }
 
-async function burnTranslationVideo() {
-  await runTranslationStep('burn-subtitles-and-voice', 'finalStatus', async (state) => {
-    state.finalVideoPath = await window.electron.cloud.composeVideoTranslation({
+async function mixTranslationAudioCore(state: NonNullable<typeof mediaStore.videoTranslation>) {
+  const targetVoicePath = await ensureTranslationTargetVoice(state)
+  applyTranslationAudio(
+    state,
+    await window.electron.cloud.mixBackgroundAudio({
       runId: mediaStore.runId,
       episodeId: mediaStore.episodeId,
-      sourceVideoPath: state.finalMasterVideoPath || state.sourceVideoPath!,
-      mixedAudioPath: state.mixedPath!,
+      vocalPath: state.vocalPath!,
+      instrumentPath: state.instrumentPath!,
+      voiceFile: targetVoicePath,
+      workflow: 'video-translation',
       targetLanguage: state.targetLanguage,
-      finalScriptId: state.finalScriptId!,
-      scriptHash: state.scriptHash!,
-      voiceVersionId: state.activeVoiceVersionId!,
-      dubDialogueTimestampHash: state.dubDialogueTimestampHash!,
-    })
+    }),
+  )
+}
+
+async function burnTranslationVideo() {
+  await runTranslationStep('burn-subtitles-and-voice', 'finalStatus', async (state) => {
+    await burnTranslationVideoCore(state)
     toast.success('视频翻译成片已生成')
+  })
+}
+
+async function burnTranslationVideoCore(state: NonNullable<typeof mediaStore.videoTranslation>) {
+  state.finalVideoPath = await window.electron.cloud.composeVideoTranslation({
+    runId: mediaStore.runId,
+    episodeId: mediaStore.episodeId,
+    sourceVideoPath: state.finalMasterVideoPath || state.sourceVideoPath!,
+    mixedAudioPath: state.mixedPath!,
+    targetLanguage: state.targetLanguage,
+    finalScriptId: state.finalScriptId!,
+    scriptHash: state.scriptHash!,
+    voiceVersionId: state.activeVoiceVersionId!,
+    dubDialogueTimestampHash: state.dubDialogueTimestampHash!,
+  })
+}
+
+async function generateTranslationFinalVideo() {
+  await runAction('generate-final-video', async () => {
+    const state = translationState()
+    if (!state.targetVoicePath || !state.dubDialogueTimestampHash || !state.activeVoiceVersionId) {
+      mediaStore.progressText = '正在生成配音对白时间戳'
+      await ensureTranslationTargetVoice(state, true)
+    }
+    if (state.separationStatus !== 'ready' || !state.vocalPath || !state.instrumentPath) {
+      mediaStore.progressText = '正在分离原人声和背景声'
+      await executeTranslationStep(state, 'separationStatus', separateTranslationAudioCore)
+    }
+    if (state.mixStatus !== 'ready' || !state.mixedPath) {
+      mediaStore.progressText = '正在合成目标语言音轨'
+      await executeTranslationStep(state, 'mixStatus', mixTranslationAudioCore)
+    }
+    if (state.finalStatus !== 'ready' || !state.finalVideoPath) {
+      mediaStore.progressText = '正在烧录字幕和配音'
+      await executeTranslationStep(state, 'finalStatus', burnTranslationVideoCore)
+    }
+    mediaStore.selectView('final')
+    toast.success('成片已生成')
   })
 }
 
@@ -5012,7 +5053,6 @@ watch(
 )
 watch(isDubbingWorkspace, (active) => {
   if (!active) return
-  dubbingRightOpen.value = true
 })
 watch(
   () => [mediaStore.episodeId, mediaStore.videoTranslation?.sourceFingerprint],

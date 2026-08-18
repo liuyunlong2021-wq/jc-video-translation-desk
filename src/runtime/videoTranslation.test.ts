@@ -129,6 +129,9 @@ test('opens only the translation action whose dependencies are ready', () => {
   assert.ok(availableVideoTranslationActions(state, [role]).includes('mix-background-audio'))
   state.mixStatus = 'ready'
   assert.ok(availableVideoTranslationActions(state, [role]).includes('burn-subtitles-and-voice'))
+  state.sourceVideoPath = 'source.mp4'
+  state.finalMasterVideoPath = 'final-master.mp4'
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('generate-final-video'))
 })
 
 test('allows regenerating the Seed prompt after target voice generation fails', () => {
@@ -988,6 +991,7 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(manage, /task\?\.status === 'success' \? task\.outputPath : undefined/)
   assert.match(inspector, /onVideoTranslationProgress/)
   assert.match(inspector, /v-progress-linear/)
+  assert.match(inspector, /mediaStore\.progressText/)
   assert.match(
     home,
     /if \(!state\) mediaStore\.selectWorkspaceEntry\('video-translate'\)[\s\S]*flush: 'sync'/,
@@ -1018,12 +1022,11 @@ test('routes translation review through voice workbench before a role-free subti
     '关联配音分组',
     '翻译所有字幕',
     '进入配音工作台',
-    '分离原人声和背景声',
-    '配音对白时间戳',
-    '合成目标语言音轨',
-    '烧录字幕和配音',
+    '上传无字幕成片母版',
+    '生成成片',
   ])
     assert.match(inspector, new RegExp(action))
+  assert.match(inspector, /generate-final-video/)
   assert.doesNotMatch(inspector, /确认角色与字幕/)
   assert.match(home, /translation-mode/)
   assert.match(home, /openTranslationSubtitleWorkspace/)

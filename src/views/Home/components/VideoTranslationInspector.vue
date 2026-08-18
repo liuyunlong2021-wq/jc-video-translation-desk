@@ -35,7 +35,9 @@
           >
           <v-alert
             v-if="
-              ['get-subtitles', 'timestamp-target-dialogue'].includes(action.key) &&
+              ['get-subtitles', 'timestamp-target-dialogue', 'generate-final-video'].includes(
+                action.key,
+              ) &&
               mediaStore.busyAction === action.key
             "
             type="info"
@@ -43,17 +45,21 @@
             variant="tonal"
           >
             <v-progress-linear indeterminate class="mb-2" />
-            {{ progressText || '正在启动字幕识别' }}
+            {{
+              progressText ||
+              mediaStore.progressText ||
+              (action.key === 'generate-final-video' ? '正在生成成片' : '正在启动字幕识别')
+            }}
           </v-alert>
         </template>
         <v-btn
-          v-if="mediaStore.videoTranslation?.finalVideoPath"
-          class="translation-action"
-          block
-          color="primary"
-          variant="flat"
-          prepend-icon="mdi-play-circle-outline"
-          @click="openFinalVideo"
+        v-if="mediaStore.videoTranslation?.finalVideoPath"
+        class="translation-action"
+        block
+        color="success"
+        variant="flat"
+        prepend-icon="mdi-play-circle-outline"
+        @click="openFinalVideo"
           >打开翻译成片</v-btn
         >
       </div>
@@ -221,14 +227,14 @@ const actions = computed(() =>
         key: 'upload-video',
         label: state.value.sourceVideoPath ? '更换视频' : '上传视频',
         icon: 'mdi-upload',
-        color: 'primary',
+        color: 'success',
         done: false,
       },
       {
         key: 'upload-final-master',
         label: state.value.finalMasterVideoPath ? '更换无字幕成片母版' : '上传无字幕成片母版',
         icon: 'mdi-movie-open-plus-outline',
-        color: 'primary',
+        color: 'success',
         done: Boolean(state.value.finalMasterVideoPath),
       },
       {
@@ -293,6 +299,13 @@ const actions = computed(() =>
         icon: 'mdi-movie-check-outline',
         done: state.value.finalStatus === 'ready',
       },
+      {
+        key: 'generate-final-video',
+        label: '生成成片',
+        icon: 'mdi-movie-check-outline',
+        color: 'success',
+        done: state.value.finalStatus === 'ready',
+      },
     ] as Array<{
       key: VideoTranslationAction
       label: string
@@ -305,10 +318,7 @@ const actions = computed(() =>
       ? [
           'upload-video',
           'upload-final-master',
-          'timestamp-target-dialogue',
-          'separate-source-audio',
-          'mix-background-audio',
-          'burn-subtitles-and-voice',
+          'generate-final-video',
         ].includes(action.key)
       : [
           'upload-video',
