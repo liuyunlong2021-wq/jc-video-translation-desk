@@ -105,13 +105,28 @@ test('opens only the translation action whose dependencies are ready', () => {
       previewPath: 'voice.wav',
       finalScriptId: state.finalScriptId,
       scriptHash: state.scriptHash,
+      route: 'grouped',
+      blocks: [
+        {
+          voiceBlockId: 'voice-block-1',
+          cueIds: ['cue-001', 'cue-002'],
+          audioPath: 'block.wav',
+          audioHash: 'block-hash',
+          durationMs: 2000,
+          prompt: 'prompt',
+          references: [],
+        },
+      ],
       durationMs: 1000,
     },
   ]
   state.dubDialogueTimestampHash = 'existing-timestamp-hash'
   assert.ok(availableVideoTranslationActions(state, [role]).includes('timestamp-target-dialogue'))
   state.separationStatus = 'ready'
-  state.originalVocalRemoved = true
+  state.voiceStatus = 'stale'
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('mix-background-audio'))
+  state.targetVoicePath = 'target-voice.wav'
+  assert.ok(availableVideoTranslationActions(state, [role]).includes('mix-background-audio'))
   state.mixStatus = 'ready'
   assert.ok(availableVideoTranslationActions(state, [role]).includes('burn-subtitles-and-voice'))
 })
@@ -169,6 +184,14 @@ test('invalidates only translation state and preserves source separation where p
   const voiceBound = invalidateVideoTranslation(
     {
       ...state,
+      finalScriptId: 'final-script-1',
+      scriptHash: 'script-hash-1',
+      activeVoiceVersionId: 'grouped-version-1',
+      targetVoicePath: 'target-voice.wav',
+      dubDialogueTimestampPath: 'timestamps.json',
+      dubDialogueTimestampHash: 'timestamp-hash-1',
+      mixedPath: 'mixed.wav',
+      finalVideoPath: 'final.mp4',
       groupedVoicePrompts: { 'dubbing-group-1': '旧分组提示词' },
       seedPromptText: '旧全局提示词',
     },
@@ -176,6 +199,19 @@ test('invalidates only translation state and preserves source separation where p
   )
   assert.equal(voiceBound.groupedVoicePrompts, undefined)
   assert.equal(voiceBound.seedPromptText, undefined)
+  assert.equal(voiceBound.finalScriptId, 'final-script-1')
+  assert.equal(voiceBound.scriptHash, 'script-hash-1')
+  assert.equal(voiceBound.activeVoiceVersionId, 'grouped-version-1')
+  assert.equal(voiceBound.targetVoicePath, 'target-voice.wav')
+  assert.equal(voiceBound.dubDialogueTimestampPath, 'timestamps.json')
+  assert.equal(voiceBound.dubDialogueTimestampHash, 'timestamp-hash-1')
+  assert.equal(voiceBound.arrangementStatus, 'ready')
+  assert.equal(voiceBound.voiceStatus, 'ready')
+  assert.equal(voiceBound.separationStatus, 'ready')
+  assert.equal(voiceBound.mixStatus, 'ready')
+  assert.equal(voiceBound.finalStatus, 'ready')
+  assert.equal(voiceBound.mixedPath, 'mixed.wav')
+  assert.equal(voiceBound.finalVideoPath, 'final.mp4')
 
   const voicePromptChanged = invalidateVideoTranslation(state, 'voice-prompt')
   assert.equal(voicePromptChanged.arrangementStatus, 'stale')
@@ -1121,6 +1157,14 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(finalVersion, /version\.route !== 'grouped'/)
   assert.doesNotMatch(finalVersion, /finalScriptId|scriptHash/)
   assert.match(finalVersion, /versionCueIds\.size === cueIds\.size/)
+  const applyVersion = home.slice(
+    home.indexOf('function applyTranslationVoiceVersion'),
+    home.indexOf('async function loadTranslationVoiceVersions'),
+  )
+  assert.match(
+    applyVersion,
+    /state\.voiceStatus = 'ready'[\s\S]*if \(!changed\) return[\s\S]*state\.targetVoicePath = undefined/,
+  )
   assert.doesNotMatch(render, /重新生成当前组/)
   assert.doesNotMatch(render, /请先在“全局配音”重新生成提示词/)
   assert.match(manage, /activeTranslationVoiceVersion/)

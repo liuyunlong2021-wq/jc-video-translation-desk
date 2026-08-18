@@ -930,6 +930,16 @@ function invalidate(status: ArtifactStatus): ArtifactStatus {
   return status
 }
 
+function hasCompleteGroupedVoiceVersion(state: VideoTranslationState) {
+  const cueIds = new Set(state.cues.map((cue) => cue.cueId))
+  if (!cueIds.size) return false
+  return state.voiceVersions.some((version) => {
+    if (version.route !== 'grouped' || !version.blocks?.length) return false
+    const versionCueIds = new Set(version.blocks.flatMap((block) => block.cueIds))
+    return versionCueIds.size === cueIds.size && [...cueIds].every((cueId) => versionCueIds.has(cueId))
+  })
+}
+
 export function videoTranslationRoleVoiceLanguageMatches(
   role: TranslationRole | undefined,
   language: string,
@@ -997,8 +1007,7 @@ export function availableVideoTranslationActions(
   if (actionable(state.separationStatus)) actions.push('separate-source-audio')
   else if (
     state.separationStatus === 'ready' &&
-    state.dubDialogueTimestampHash &&
-    state.voiceStatus === 'ready'
+    (state.targetVoicePath || hasCompleteGroupedVoiceVersion(state))
   )
     actions.push('mix-background-audio')
   if (state.mixStatus === 'ready') actions.push('burn-subtitles-and-voice')
@@ -1073,11 +1082,7 @@ export function invalidateVideoTranslation(
       cue.translatedText = ''
     })
   }
-  if (
-    ['source-dialogue', 'translation', 'role-binding', 'timing', 'language', 'voice-binding'].includes(
-      change,
-    )
-  ) {
+  if (['source-dialogue', 'translation', 'role-binding', 'timing', 'language'].includes(change)) {
     next.finalScriptId = undefined
     next.scriptHash = undefined
     next.finalScriptMarkdown = undefined
@@ -1086,6 +1091,13 @@ export function invalidateVideoTranslation(
     next.seedPromptText = undefined
     next.seedPromptGeneratedBySkill = undefined
   }
+  if (change === 'voice-binding') {
+    next.seedArrangementPath = undefined
+    next.seedPromptPath = undefined
+    next.seedPromptText = undefined
+    next.seedPromptGeneratedBySkill = undefined
+    next.groupedVoicePrompts = undefined
+  }
   if (
     [
       'source-dialogue',
@@ -1093,7 +1105,6 @@ export function invalidateVideoTranslation(
       'role-binding',
       'timing',
       'language',
-      'voice-binding',
       'voice-prompt',
     ].includes(change)
   )
@@ -1105,7 +1116,6 @@ export function invalidateVideoTranslation(
       'role-binding',
       'timing',
       'language',
-      'voice-binding',
       'voice-prompt',
     ].includes(change)
   )
@@ -1117,7 +1127,6 @@ export function invalidateVideoTranslation(
       'role-binding',
       'timing',
       'language',
-      'voice-binding',
       'voice-prompt',
       'target-voice',
     ].includes(change)
@@ -1133,15 +1142,15 @@ export function invalidateVideoTranslation(
       'role-binding',
       'timing',
       'language',
-      'voice-binding',
       'voice-prompt',
     ].includes(change)
   )
     next.groupedVoicePrompts = undefined
-  if (change !== 'separation') next.mixStatus = invalidate(next.mixStatus)
+  if (change !== 'separation' && change !== 'voice-binding')
+    next.mixStatus = invalidate(next.mixStatus)
   if (change === 'target-voice' || change === 'separation')
     next.mixStatus = invalidate(next.mixStatus)
-  next.finalStatus = invalidate(next.finalStatus)
+  if (change !== 'voice-binding') next.finalStatus = invalidate(next.finalStatus)
   return next
 }
 

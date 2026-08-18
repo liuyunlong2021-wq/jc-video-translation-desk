@@ -100,6 +100,8 @@ test('connects the four audio processing and final video actions', () => {
       new RegExp(`@${event.replace(/[A-Z]/g, (value) => `-${value.toLowerCase()}`)}=`),
     )
   }
+  assert.match(render, /const selectedVoice = mediaStore\.voicePath \|\| mediaStore\.englishVoicePath/)
+  assert.match(home, /const voiceFile =[\s\S]*mediaStore\.voicePath \|\| mediaStore\.englishVoicePath/)
   assert.doesNotMatch(render, /分离原人声和背景声（后续接入）/)
   assert.doesNotMatch(render, /混回背景声、环境声和动作音（后续接入）/)
 })

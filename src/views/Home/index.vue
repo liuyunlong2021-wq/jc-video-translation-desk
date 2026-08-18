@@ -2213,12 +2213,12 @@ function applyTranslationVoiceVersion(
     state.activeVoiceVersionId && state.activeVoiceVersionId !== version.versionId,
   )
   state.activeVoiceVersionId = version.versionId
-  state.targetVoicePath = undefined
-  state.dubDialogueTimestampPath = undefined
-  state.dubDialogueTimestampHash = undefined
   state.voiceStatus = 'ready'
   mediaStore.seedAudioTrackPath = version.previewPath
   if (!changed) return
+  state.targetVoicePath = undefined
+  state.dubDialogueTimestampPath = undefined
+  state.dubDialogueTimestampHash = undefined
   if (state.mixStatus === 'ready') state.mixStatus = 'stale'
   if (state.finalStatus === 'ready') state.finalStatus = 'stale'
   state.mixedPath = undefined
@@ -2947,30 +2947,44 @@ async function separateTranslationAudio() {
 async function timestampTranslationDialogue() {
   await runAction('timestamp-target-dialogue', async () => {
     const state = translationState()
-    const version = state.voiceVersions.find(
-      (item) => item.versionId === state.activeVoiceVersionId,
-    )
-    if (!version || !state.finalScriptId || !state.scriptHash)
-      throw new Error('请先选择与当前最终剧本一致的完整配音版本')
-    const result = await window.electron.cloud.generateVideoTranslationDialogueTimestamps({
-      runId: mediaStore.runId,
-      episodeId: mediaStore.episodeId,
-      targetLanguage: state.targetLanguage,
-      finalScriptId: state.finalScriptId,
-      scriptHash: state.scriptHash,
-      voiceVersionId: version.versionId,
-    })
-    state.dubDialogueTimestampPath = result.path
-    state.dubDialogueTimestampHash = result.hash
-    state.targetVoicePath = result.targetVoicePath
-    state.mixStatus = 'stale'
-    state.finalStatus = 'stale'
+    await ensureTranslationTargetVoice(state, true)
     toast.success('配音对白时间戳已生成')
   })
 }
 
+async function ensureTranslationTargetVoice(
+  state: NonNullable<typeof mediaStore.videoTranslation>,
+  force = false,
+) {
+  if (!force && state.targetVoicePath) return state.targetVoicePath
+  const version = activeTranslationVoiceVersion(state) || latestTranslationFinalVoiceVersion()
+  const finalScriptId = state.finalScriptId || version?.finalScriptId
+  const scriptHash = state.scriptHash || version?.scriptHash
+  if (!version || !finalScriptId || !scriptHash)
+    throw new Error('请先在配音工作台生成完整分组克隆配音')
+  state.activeVoiceVersionId = version.versionId
+  state.finalScriptId = finalScriptId
+  state.scriptHash = scriptHash
+  state.voiceStatus = 'ready'
+  const result = await window.electron.cloud.generateVideoTranslationDialogueTimestamps({
+    runId: mediaStore.runId,
+    episodeId: mediaStore.episodeId,
+    targetLanguage: state.targetLanguage,
+    finalScriptId,
+    scriptHash,
+    voiceVersionId: version.versionId,
+  })
+  state.dubDialogueTimestampPath = result.path
+  state.dubDialogueTimestampHash = result.hash
+  state.targetVoicePath = result.targetVoicePath
+  state.mixStatus = 'stale'
+  state.finalStatus = 'stale'
+  return result.targetVoicePath
+}
+
 async function mixTranslationAudio() {
   await runTranslationStep('mix-background-audio', 'mixStatus', async (state) => {
+    const targetVoicePath = await ensureTranslationTargetVoice(state)
     applyTranslationAudio(
       state,
       await window.electron.cloud.mixBackgroundAudio({
@@ -2978,7 +2992,7 @@ async function mixTranslationAudio() {
         episodeId: mediaStore.episodeId,
         vocalPath: state.vocalPath!,
         instrumentPath: state.instrumentPath!,
-        voiceFile: state.targetVoicePath!,
+        voiceFile: targetVoicePath,
         workflow: 'video-translation',
         targetLanguage: state.targetLanguage,
       }),
@@ -4220,9 +4234,7 @@ async function mixBackgroundAudio() {
       const voiceFile =
         mediaStore.audioProductionRoute === 'seed-full-track' && mediaStore.outputLanguage === 'zh'
           ? mediaStore.vocalPath
-          : mediaStore.outputLanguage === 'zh'
-            ? mediaStore.voicePath
-            : mediaStore.englishVoicePath
+          : mediaStore.voicePath || mediaStore.englishVoicePath
       applyAudioProcessing(
         await window.electron.cloud.mixBackgroundAudio({
           runId: mediaStore.runId,
@@ -4256,8 +4268,7 @@ async function burnVoiceAndSubtitles() {
         ? 'replace-preserve-ambience'
         : 'replace-all'
     mediaStore.audioMode = audioMode
-    const selectedVoice =
-      mediaStore.outputLanguage === 'zh' ? mediaStore.voicePath : mediaStore.englishVoicePath
+    const selectedVoice = mediaStore.voicePath || mediaStore.englishVoicePath
     const finalAudio =
       audioMode === 'replace-preserve-ambience' ? mediaStore.mixedAudioPath : selectedVoice
     mediaStore.finalPath = await window.electron.cloud.composeVideo({

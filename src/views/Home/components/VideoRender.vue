@@ -988,8 +988,7 @@ const dubbingActions = computed<DubbingAction[]>(() => {
   const soundSegments = mediaStore.segments.filter(
     (segment) => segment.soundType && segment.soundType !== 'none',
   )
-  const selectedVoice =
-    mediaStore.outputLanguage === 'zh' ? mediaStore.voicePath : mediaStore.englishVoicePath
+  const selectedVoice = mediaStore.voicePath || mediaStore.englishVoicePath
   const subtitlesReady =
     mediaStore.outputLanguage === 'zh'
       ? soundSegments.every((segment) => segment.dialogueText?.trim())
@@ -1062,9 +1061,8 @@ const dubbingActions = computed<DubbingAction[]>(() => {
       label: '混回背景声、环境声和动作音',
       icon: 'mdi-music-note-plus',
       event: 'mixBackgroundAudio',
-      enabled:
-        mediaStore.originalVocalRemoved && Boolean(selectedVoice) && !mediaStore.mixedAudioPath,
-      title: '请先去除原人声并生成配音',
+      enabled: Boolean(mediaStore.instrumentPath) && Boolean(selectedVoice) && !mediaStore.mixedAudioPath,
+      title: '请先准备好背景轨与配音版本',
       done: Boolean(mediaStore.mixedAudioPath),
     },
     {
