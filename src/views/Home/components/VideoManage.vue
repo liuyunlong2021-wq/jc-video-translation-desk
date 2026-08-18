@@ -112,8 +112,17 @@
               >分组克隆</v-btn
             >
           </v-btn-toggle>
+          <v-switch
+            v-model="advancedSeedVoiceMode"
+            class="seed-advanced-switch"
+            density="compact"
+            hide-details
+            inset
+            color="primary"
+            label="高级模式"
+          />
           <div
-            v-if="mediaStore.seedVoiceTab === 'roles' && seedCharacters.length"
+            v-if="advancedSeedVoiceMode && mediaStore.seedVoiceTab === 'roles' && seedCharacters.length"
             class="seed-batch-toolbar"
           >
             <v-btn size="x-small" variant="tonal" @click="selectAllSeedRoles">全选</v-btn>
@@ -128,7 +137,10 @@
           </div>
         </div>
         <div v-if="mediaStore.seedVoiceTab === 'grouped'" class="grouped-voice-main">
-          <div v-if="translationGroups.length" class="seed-batch-toolbar">
+          <div
+            v-if="advancedSeedVoiceMode && mediaStore.seedVoiceTab === 'grouped' && translationGroups.length"
+            class="seed-batch-toolbar"
+          >
             <v-btn size="x-small" variant="tonal" @click="selectAllTranslationGroups">全选</v-btn>
             <v-btn size="x-small" variant="tonal" @click="selectUnfinishedTranslationGroups"
               >未生成配音</v-btn
@@ -141,7 +153,7 @@
             >
             <small>已选 {{ selectedTranslationGroupIds.length }} / {{ translationGroups.length }}</small>
           </div>
-          <div class="grouped-actions">
+          <div v-if="advancedSeedVoiceMode" class="grouped-actions">
             <strong>
               当前字幕
               {{
@@ -173,7 +185,7 @@
             <table class="grouped-table">
               <thead>
                 <tr>
-                  <th>选择</th>
+                  <th v-if="advancedSeedVoiceMode">选择</th>
                   <th>序号</th>
                   <th>时间轴</th>
                   <th>角色</th>
@@ -191,7 +203,10 @@
                   :class="{ selected: selectedGroupedCueId === cue.cueId }"
                   @click="selectGroupedCue(cue.cueId)"
                 >
-                  <td v-if="isFirstCueInGroup(cue.cueId)" :rowspan="groupForCue(cue.cueId)?.cueIds.length || 1">
+                  <td
+                    v-if="advancedSeedVoiceMode && isFirstCueInGroup(cue.cueId)"
+                    :rowspan="groupForCue(cue.cueId)?.cueIds.length || 1"
+                  >
                     <input
                       type="checkbox"
                       class="seed-role-check"
@@ -260,6 +275,7 @@
                 @click="mediaStore.selectedAssetId = character.id"
               >
                 <input
+                  v-if="advancedSeedVoiceMode"
                   type="checkbox"
                   class="seed-role-check"
                   :checked="selectedSeedRoleIds.includes(character.id)"
@@ -341,7 +357,7 @@
                   />
                   <small v-else class="empty-state">尚未选择参考音。</small>
                 </div>
-                <div class="seed-role-actions">
+                <div v-if="advancedSeedVoiceMode" class="seed-role-actions">
                   <v-btn
                     color="success"
                     variant="tonal"
@@ -834,14 +850,21 @@ type Asset = {
 const props = withDefaults(
   defineProps<{
     translationMode?: boolean
+    advancedSeedVoiceMode?: boolean
     selectedSeedRoleIds?: string[]
     selectedTranslationGroupIds?: string[]
   }>(),
-  { translationMode: false, selectedSeedRoleIds: () => [], selectedTranslationGroupIds: () => [] },
+  {
+    translationMode: false,
+    advancedSeedVoiceMode: false,
+    selectedSeedRoleIds: () => [],
+    selectedTranslationGroupIds: () => [],
+  },
 )
 const { translationMode } = props
 
 const emit = defineEmits<{
+  updateAdvancedSeedVoiceMode: [value: boolean]
   editScript: [value: string]
   markdownSaved: []
   uploadAssetReference: [assetId: string]
@@ -866,6 +889,10 @@ const emit = defineEmits<{
   updateSelectedTranslationGroups: [groupIds: string[]]
 }>()
 const mediaStore = useMediaTaskStore()
+const advancedSeedVoiceMode = computed({
+  get: () => props.advancedSeedVoiceMode,
+  set: (value) => emit('updateAdvancedSeedVoiceMode', Boolean(value)),
+})
 const previewAsset = ref<Asset | null>(null)
 const wikiPath = ref('wiki/分镜/导演总览.md')
 const voiceProfiles = ref<VoiceProfile[]>([])
@@ -1724,6 +1751,9 @@ function openSeedVoice() {
   min-width: 0;
 }
 .seed-voice-tabs {
+  flex: none;
+}
+.seed-advanced-switch {
   flex: none;
 }
 .seed-batch-toolbar {

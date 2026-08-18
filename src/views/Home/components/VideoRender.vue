@@ -51,46 +51,77 @@
       </div>
       <div v-if="mediaStore.workspaceView === 'seed-voice'" class="seed-voice-controls">
         <template v-if="mediaStore.seedVoiceTab === 'roles'">
-          <strong>角色配音</strong>
-          <small v-if="selectedSeedCharacter"
-            >当前角色：{{ selectedSeedCharacter.label }}。在中栏查看和编辑提示词。</small
-          >
-          <small v-else>先在中栏选择一个角色。</small>
+          <div class="seed-voice-section-heading">
+            <div>
+              <strong>角色配音</strong>
+              <small v-if="selectedSeedCharacter"
+                >当前角色：{{ selectedSeedCharacter.label }}。默认自动补齐缺失提示词和参考音。</small
+              >
+              <small v-else>默认会自动处理所有缺失参考音的角色。</small>
+            </div>
+            <v-switch
+              v-model="advancedSeedVoiceMode"
+              density="compact"
+              hide-details
+              inset
+              color="primary"
+              label="高级模式"
+            />
+          </div>
           <v-btn
             color="success"
-            prepend-icon="mdi-text-box-edit-outline"
-            :loading="mediaStore.busyAction === 'generate-seed-role-prompts'"
+            prepend-icon="mdi-account-voice"
+            :loading="
+              mediaStore.busyAction === 'generate-seed-role-prompts' ||
+              mediaStore.busyAction === 'generate-seed-references'
+            "
             :disabled="
               Boolean(mediaStore.busyAction) ||
               !mediaStore.apiConfigured ||
-              !props.selectedSeedRoleIds.length
+              !seedCharacters.length
             "
             :title="!mediaStore.apiConfigured ? '请先在生成设置中配置韭菜盒子 API Key' : undefined"
             block
-            @click="$emit('generateAllSeedRolePrompts', props.selectedSeedRoleIds)"
-            >生成所选角色提示词</v-btn
+            @click="$emit('prepareAllSeedReferences')"
+            >生成角色参考音</v-btn
           >
-          <v-btn
-            color="success"
-            prepend-icon="mdi-waveform"
-            :loading="mediaStore.busyAction === 'generate-seed-references'"
-            :disabled="
-              Boolean(mediaStore.busyAction) ||
-              !mediaStore.apiConfigured ||
-              !props.selectedSeedRoleIds.length ||
-              !selectedSeedRolePromptsReady
-            "
-            :title="
-              !mediaStore.apiConfigured
-                ? '请先在生成设置中配置韭菜盒子 API Key'
-                : !selectedSeedRolePromptsReady
-                  ? '请先生成所选角色提示词'
-                  : undefined
-            "
-            block
-            @click="$emit('generateAllSeedReferences', props.selectedSeedRoleIds)"
-            >按提示词生成所选参考音</v-btn
-          >
+          <template v-if="advancedSeedVoiceMode">
+            <v-btn
+              color="success"
+              prepend-icon="mdi-text-box-edit-outline"
+              :loading="mediaStore.busyAction === 'generate-seed-role-prompts'"
+              :disabled="
+                Boolean(mediaStore.busyAction) ||
+                !mediaStore.apiConfigured ||
+                !props.selectedSeedRoleIds.length
+              "
+              :title="!mediaStore.apiConfigured ? '请先在生成设置中配置韭菜盒子 API Key' : undefined"
+              block
+              @click="$emit('generateAllSeedRolePrompts', props.selectedSeedRoleIds)"
+              >生成所选角色提示词</v-btn
+            >
+            <v-btn
+              color="success"
+              prepend-icon="mdi-waveform"
+              :loading="mediaStore.busyAction === 'generate-seed-references'"
+              :disabled="
+                Boolean(mediaStore.busyAction) ||
+                !mediaStore.apiConfigured ||
+                !props.selectedSeedRoleIds.length ||
+                !selectedSeedRolePromptsReady
+              "
+              :title="
+                !mediaStore.apiConfigured
+                  ? '请先在生成设置中配置韭菜盒子 API Key'
+                  : !selectedSeedRolePromptsReady
+                    ? '请先生成所选角色提示词'
+                    : undefined
+              "
+              block
+              @click="$emit('generateAllSeedReferences', props.selectedSeedRoleIds)"
+              >按提示词生成所选参考音</v-btn
+            >
+          </template>
         </template>
         <template v-else-if="mediaStore.seedVoiceTab === 'global' && !translationMode">
           <strong>全局配音</strong>
@@ -134,12 +165,24 @@
           >
         </template>
         <template v-else>
-          <strong>配音提示词</strong>
-          <small>先生成全局配音提示词，再生成分组配音提示词，然后按选中配音组生成音频。</small>
+          <div class="seed-voice-section-heading">
+            <div>
+              <strong>配音提示词</strong>
+              <small>默认一键串联：全局提示词 → 分组提示词 → 生成配音。</small>
+            </div>
+            <v-switch
+              v-model="advancedSeedVoiceMode"
+              density="compact"
+              hide-details
+              inset
+              color="primary"
+              label="高级模式"
+            />
+          </div>
           <small v-if="translationMode && !allTranslationVoicesConfirmed" class="text-warning">
             {{ missingTranslationVoiceReason }}
           </small>
-          <div class="translation-prompt-panels">
+          <div v-if="advancedSeedVoiceMode" class="translation-prompt-panels">
             <v-textarea
               :model-value="globalPromptDraft"
               rows="5"
@@ -176,6 +219,26 @@
             {{ currentProgressText }}
           </v-alert>
           <div class="seed-voice-bottom-actions">
+            <v-btn
+              color="success"
+              prepend-icon="mdi-waveform"
+              :loading="mediaStore.busyAction === 'generate-grouped-voice'"
+              :disabled="
+                Boolean(mediaStore.busyAction) ||
+                !mediaStore.apiConfigured ||
+                !allTranslationVoicesConfirmed
+              "
+              block
+              @click="
+                $emit(
+                  'generateGroupedSeedAudio',
+                  advancedSeedVoiceMode ? [...props.selectedTranslationGroupIds] : [],
+                )
+              "
+              >生成分组配音</v-btn
+            >
+            <template v-if="advancedSeedVoiceMode">
+              <div class="seed-voice-action-divider" />
             <v-btn
               color="success"
               prepend-icon="mdi-text-box-edit-outline"
@@ -217,6 +280,7 @@
               @click="$emit('generateGroupedSeedAudio', [...props.selectedTranslationGroupIds])"
               >生成配音</v-btn
             >
+            </template>
             <v-btn
               color="success"
               prepend-icon="mdi-subtitles-outline"
@@ -355,12 +419,14 @@ import {
 const props = withDefaults(
   defineProps<{
     translationMode?: boolean
+    advancedSeedVoiceMode?: boolean
     translationFinalReady?: boolean
     selectedSeedRoleIds?: string[]
     selectedTranslationGroupIds?: string[]
   }>(),
   {
     translationMode: false,
+    advancedSeedVoiceMode: false,
     translationFinalReady: false,
     selectedSeedRoleIds: () => [],
     selectedTranslationGroupIds: () => [],
@@ -374,6 +440,8 @@ const emit = defineEmits([
   'confirmProjectDirector',
   'generateAllSeedRolePrompts',
   'generateAllSeedReferences',
+  'prepareAllSeedReferences',
+  'updateAdvancedSeedVoiceMode',
   'arrangeSeedTrack',
   'generateSeedPrompt',
   'generateSeedVoiceScript',
@@ -411,6 +479,10 @@ const emit = defineEmits([
   'exportFinal',
 ])
 const mediaStore = useMediaTaskStore()
+const advancedSeedVoiceMode = computed({
+  get: () => props.advancedSeedVoiceMode,
+  set: (value) => emit('updateAdvancedSeedVoiceMode', Boolean(value)),
+})
 const backendProgressText = ref('')
 const currentProgressText = computed(
   () => backendProgressText.value || mediaStore.progressText,
@@ -1127,6 +1199,20 @@ function runSecondary() {
   display: grid;
   gap: 10px;
   align-content: start;
+}
+.seed-voice-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.seed-voice-section-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.seed-voice-section-heading :deep(.v-switch) {
+  flex: none;
 }
 .seed-voice-controls {
   min-height: 100%;

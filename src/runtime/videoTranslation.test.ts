@@ -1083,18 +1083,31 @@ test('routes translation review through voice workbench before a role-free subti
   )
   for (const label of ['生成所选角色提示词', '按提示词生成所选参考音'])
     assert.match(roleActions, new RegExp(label))
+  assert.match(render, /生成角色参考音/)
+  assert.match(render, /prepareAllSeedReferences/)
+  assert.match(render, /advancedSeedVoiceMode/)
+  assert.match(render, /v-if="advancedSeedVoiceMode"[\s\S]*生成所选角色提示词/)
   assert.match(render, /配音提示词[\s\S]*进入成片工作台/)
   assert.match(manage, /v-if="!translationMode" value="global"[\s\S]*>全局配音<\/v-btn/)
   assert.match(manage, /v-if="translationMode" value="grouped"[\s\S]*>分组克隆<\/v-btn/)
   assert.match(render, /globalPromptDraft/)
   assert.match(render, /selectedGroupedPrompt/)
+  assert.match(render, /高级模式/)
+  assert.match(render, />生成分组配音<\/v-btn/)
+  assert.match(render, /generateGroupedSeedAudio', \[\.\.\.props\.selectedTranslationGroupIds\]/)
+  assert.match(render, /v-if="advancedSeedVoiceMode"[\s\S]*>生成全局配音提示词<\/v-btn/)
   assert.match(render, />生成分组配音提示词<\/v-btn/)
   assert.match(render, />生成配音<\/v-btn/)
-  assert.match(render, /generateGroupedSeedAudio', \[\.\.\.props\.selectedTranslationGroupIds\]/)
+  assert.match(manage, /advancedSeedVoiceMode/)
+  assert.match(manage, /v-if="advancedSeedVoiceMode && mediaStore\.seedVoiceTab === 'roles'/)
+  assert.match(manage, /v-if="advancedSeedVoiceMode && mediaStore\.seedVoiceTab === 'grouped'/)
   assert.match(manage, /未生成配音/)
   assert.match(manage, /生成失败/)
   assert.match(manage, /selectedTranslationGroupIds/)
   assert.match(home, /selectedTranslationGroupIds/)
+  assert.match(home, /prepareAllTranslationSeedReferences[\s\S]*generateAllTranslationSeedRolePrompts\(\[\]\)[\s\S]*generateAllTranslationSeedReferences\(\[\]\)/)
+  assert.match(home, /prepareAllTranslationSeedReferences[\s\S]*confirmTranslationSeedVoiceCore\(role\.translationRoleId\)/)
+  assert.match(render, /advancedSeedVoiceMode[\s\S]*props\.selectedTranslationGroupIds[\s\S]*: \[\]/)
   assert.doesNotMatch(render, /重新生成当前组/)
   assert.doesNotMatch(render, /请先在“全局配音”重新生成提示词/)
   assert.match(manage, /activeTranslationVoiceVersion/)
@@ -1114,9 +1127,8 @@ test('routes translation review through voice workbench before a role-free subti
   )
   assert.match(
     groupedBatch,
-    /const globalPrompt = \(mediaStore\.seedAudioGlobalPrompt \|\| state\.seedPromptText \|\| ''\)\.trim\(\)[\s\S]*请先生成全局配音提示词[\s\S]*const globalPlan = await currentTranslationSeedPlan\(\)[\s\S]*请先生成分组配音稿[\s\S]*planVideoTranslationGroupedDialogueBlocks\([\s\S]*writeVideoTranslationGroupedPlan[\s\S]*generateVideoTranslationGroupedVoice/,
+    /generateAndSaveTranslationGlobalPrompt\(state\)[\s\S]*generateTranslationGroupedPrompts\([\s\S]*state,[\s\S]*globalPlan,[\s\S]*globalPrompt,[\s\S]*state\.groupedVoicePrompts \|\| \{\},[\s\S]*\)[\s\S]*writeVideoTranslationGroupedPlan[\s\S]*generateVideoTranslationGroupedVoice/,
   )
-  assert.doesNotMatch(groupedBatch, /generateAndSaveTranslationGlobalPrompt\(state\)/)
   assert.match(groupedBatch, /runTranslationStep\('generate-grouped-voice', 'voiceStatus'/)
   const groupedDraft = home.slice(
     home.indexOf('async function generateTranslationGroupedPromptDraft'),

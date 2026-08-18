@@ -253,8 +253,10 @@
         <template v-if="isTranslationVoiceWorkspace">
           <VideoManage
             translation-mode
+            :advanced-seed-voice-mode="advancedSeedVoiceMode"
             :selected-seed-role-ids="selectedSeedRoleIds"
             :selected-translation-group-ids="selectedTranslationGroupIds"
+            @update-advanced-seed-voice-mode="advancedSeedVoiceMode = $event"
             @upload-seed-reference="uploadTranslationSeedReference"
             @generate-seed-role-prompt="generateTranslationSeedRolePrompt"
             @generate-seed-reference="generateTranslationSeedReference"
@@ -269,9 +271,12 @@
           <div class="inspector-column min-w-0 min-h-0 open">
             <VideoRender
               translation-mode
+              :advanced-seed-voice-mode="advancedSeedVoiceMode"
               :translation-final-ready="translationFinalWorkspaceReady"
               :selected-seed-role-ids="selectedSeedRoleIds"
               :selected-translation-group-ids="selectedTranslationGroupIds"
+              @update-advanced-seed-voice-mode="advancedSeedVoiceMode = $event"
+              @prepare-all-seed-references="prepareAllTranslationSeedReferences"
               @generate-all-seed-role-prompts="generateAllTranslationSeedRolePrompts"
               @generate-all-seed-references="generateAllTranslationSeedReferences"
               @generate-global-seed-prompt="arrangeTranslationVoice"
@@ -318,7 +323,9 @@
       </template>
       <template v-else>
         <VideoManage
+          :advanced-seed-voice-mode="advancedSeedVoiceMode"
           :selected-seed-role-ids="selectedSeedRoleIds"
+          @update-advanced-seed-voice-mode="advancedSeedVoiceMode = $event"
           @edit-script="editScript"
           @markdown-saved="reloadStoryboardMarkdown"
           @upload-asset-reference="uploadAssetReference"
@@ -349,11 +356,14 @@
           :class="{ open: isDubbingWorkspace ? dubbingRightOpen : inspectorOpen }"
         >
           <VideoRender
+            :advanced-seed-voice-mode="advancedSeedVoiceMode"
             :selected-seed-role-ids="selectedSeedRoleIds"
+            @update-advanced-seed-voice-mode="advancedSeedVoiceMode = $event"
             @generate-script="generateScript"
             @approve-script="approveScript"
             @generate-project-director="generateProjectDirector"
             @confirm-project-director="confirmProjectDirector"
+            @prepare-all-seed-references="prepareAllSeedReferences"
             @generate-all-seed-role-prompts="generateAllSeedRolePrompts"
             @generate-all-seed-references="generateAllSeedReferences"
             @arrange-seed-track="arrangeSeedTrack"
@@ -488,6 +498,7 @@ const { t } = useTranslation()
 const isMac = window.electron.platform === 'darwin'
 const inspectorOpen = ref(false)
 const dubbingRightOpen = ref(true)
+const advancedSeedVoiceMode = ref(false)
 const taskDrawerOpen = ref(false)
 const textGenerateRef = ref<InstanceType<typeof TextGenerate> | null>(null)
 const translationWorkspaceRef = ref<InstanceType<typeof VideoTranslationWorkspace> | null>(null)
@@ -1278,6 +1289,11 @@ async function generateAllSeedReferences(selectedIds: string[] = []) {
       missing.length ? `已生成并绑定 ${missing.length} 个角色参考音` : '所有角色参考音均已绑定',
     )
   })
+}
+
+async function prepareAllSeedReferences() {
+  await generateAllSeedRolePrompts([])
+  await generateAllSeedReferences([])
 }
 
 async function generateSeedReference(speakerId: string) {
@@ -2396,23 +2412,27 @@ async function registerTranslationSeedReference(
 
 async function confirmTranslationSeedVoice(speakerId: string) {
   await runAction('confirm-seed-voice', async () => {
-    const role = translationRole(speakerId)
-    const identity = mediaStore.seedAudioRolePrompts[speakerId]?.trim()
-    if (!identity) throw new Error(`请先确认 ${role.displayName} 的角色声音身份`)
-    if (!role.voiceProfileId) throw new Error(`请先为 ${role.displayName} 选择参考音`)
-    const confirmedRole = JSON.parse(
-      JSON.stringify({
-        ...role,
-        voiceIdentityText: identity,
-        voiceLanguage: translationVoiceLanguage(),
-        voiceConfirmedAt: new Date().toISOString(),
-      }),
-    )
-    await window.electron.cloud.bindVideoTranslationVoice(mediaStore.runId, confirmedRole)
-    Object.assign(role, confirmedRole)
-    invalidateTranslationSeedPrompt()
-    toast.success(`${role.displayName} 的角色声音已确认`)
+    await confirmTranslationSeedVoiceCore(speakerId)
+    toast.success(`${translationRole(speakerId).displayName} 的角色声音已确认`)
   })
+}
+
+async function confirmTranslationSeedVoiceCore(speakerId: string) {
+  const role = translationRole(speakerId)
+  const identity = mediaStore.seedAudioRolePrompts[speakerId]?.trim()
+  if (!identity) throw new Error(`请先确认 ${role.displayName} 的角色声音身份`)
+  if (!role.voiceProfileId) throw new Error(`请先为 ${role.displayName} 选择参考音`)
+  const confirmedRole = JSON.parse(
+    JSON.stringify({
+      ...role,
+      voiceIdentityText: identity,
+      voiceLanguage: translationVoiceLanguage(),
+      voiceConfirmedAt: new Date().toISOString(),
+    }),
+  )
+  await window.electron.cloud.bindVideoTranslationVoice(mediaStore.runId, confirmedRole)
+  Object.assign(role, confirmedRole)
+  invalidateTranslationSeedPrompt()
 }
 
 async function unconfirmTranslationSeedVoice(speakerId: string) {
@@ -2472,6 +2492,27 @@ async function generateAllTranslationSeedReferences(selectedIds: string[] = []) 
       )
     toast.success(targets.length ? `已生成并绑定 ${targets.length} 个参考音` : '角色参考音已齐全')
   })
+}
+
+async function prepareAllTranslationSeedReferences() {
+  await generateAllTranslationSeedRolePrompts([])
+  await generateAllTranslationSeedReferences([])
+  const language = translationVoiceLanguage()
+  const targets = speakingTranslationRoles().filter((role) =>
+    Boolean(
+      role.voiceProfileId &&
+        videoTranslationRoleVoiceLanguageMatches(role, language) &&
+        mediaStore.seedAudioRolePrompts[role.translationRoleId]?.trim(),
+    ),
+  )
+  const result = await runBatchByLimit(targets, 1, (role) =>
+    confirmTranslationSeedVoiceCore(role.translationRoleId),
+  )
+  if (result.failures.length)
+    throw new Error(
+      `已自动确认 ${result.successCount} 个角色声音，${result.failures.length} 个失败：${result.failures[0]}`,
+    )
+  toast.success(targets.length ? `已生成并确认 ${targets.length} 个角色参考音` : '角色参考音已齐全')
 }
 
 async function generateTranslationSeedReference(speakerId: string) {
@@ -2818,22 +2859,37 @@ async function generateTranslationVoice() {
 async function generateTranslationGroupedVoice(regenerateBlockIds: string[] = []) {
   await runTranslationStep('generate-grouped-voice', 'voiceStatus', async (state) => {
     const targetBlockIds = [...regenerateBlockIds]
-    const globalPrompt = (mediaStore.seedAudioGlobalPrompt || state.seedPromptText || '').trim()
-    if (!globalPrompt) throw new Error('请先生成全局配音提示词')
-    const globalPlan = await currentTranslationSeedPlan()
-    const groupIds = videoTranslationDubbingGroups(state.cues).map((group) => group.groupId)
-    const prompts = state.groupedVoicePrompts || {}
-    const missingGroupId = groupIds.find((groupId) => !prompts[groupId]?.trim())
-    if (missingGroupId) throw new Error('请先生成分组配音稿')
-    const plan = planVideoTranslationGroupedDialogueBlocks(
+    let globalPrompt = (mediaStore.seedAudioGlobalPrompt || state.seedPromptText || '').trim()
+    let globalPlan = await currentTranslationSeedPlan()
+    if (!globalPrompt) {
+      mediaStore.progressText = '正在生成全局配音提示词'
+      const generated = await generateAndSaveTranslationGlobalPrompt(state)
+      globalPlan = generated.plan
+      globalPrompt = generated.prompt
+    } else {
+      const saved = await window.electron.cloud.writeVideoTranslationSeedPlan(
+        mediaStore.runId,
+        mediaStore.episodeId,
+        state.targetLanguage,
+        globalPlan.arrangement,
+        globalPrompt,
+      )
+      state.seedArrangementPath = saved.arrangementPath
+      state.seedPromptPath = saved.promptPath
+      state.seedPromptText = globalPrompt
+      state.seedPromptGeneratedBySkill = true
+      state.arrangementStatus = 'ready'
+      mediaStore.seedAudioArrangementPath = saved.arrangementPath
+      mediaStore.seedAudioGlobalPrompt = globalPrompt
+    }
+    mediaStore.progressText = '正在生成分组配音提示词'
+    const plan = await generateTranslationGroupedPrompts(
+      state,
+      globalPlan,
       globalPrompt,
-      globalPlan.arrangement,
-      state.cues,
-      mediaStore.videoTranslationRoles,
-      globalPlan.arrangement.blocks.flatMap((block) => block.references),
-      prompts,
+      state.groupedVoicePrompts || {},
     )
-    mediaStore.progressText = '正在按已确认分组配音稿生成音频'
+    mediaStore.progressText = '正在按分组配音提示词生成音频'
     await window.electron.cloud.writeVideoTranslationGroupedPlan(
       mediaStore.runId,
       mediaStore.episodeId,
