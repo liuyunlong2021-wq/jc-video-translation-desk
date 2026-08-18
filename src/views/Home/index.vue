@@ -474,7 +474,6 @@ import {
   planVideoTranslationGroupedDialogueBlocks,
   scriptCharacterOptions,
   videoTranslationRoleVoiceLanguageMatches,
-  videoTranslationRoleVoiceReady,
   videoTranslationDubbingGroups,
   validateVideoTranslationDialoguePrompt,
   validateVideoTranslationGroupedPrompt,
@@ -526,32 +525,15 @@ const isTranslationSubtitleWorkspace = computed(
 const translationReviewReady = computed(() => mediaStore.videoTranslation?.reviewStatus === 'ready')
 const translationFinalWorkspaceReady = computed(() => {
   const state = mediaStore.videoTranslation
-  const version = state?.voiceVersions.find((item) => item.versionId === state.activeVoiceVersionId)
-  const roleById = new Map(
-    mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role]),
-  )
   const cueIds = new Set(state?.cues.map((cue) => cue.cueId) || [])
+  const version = latestTranslationFinalVoiceVersion()
   const versionCueIds = new Set(version?.blocks?.flatMap((block) => block.cueIds) || [])
-  const referencesReady = version?.blocks?.every((block) =>
-    block.references.every((reference) => {
-      const role = roleById.get(reference.translationRoleId)
-      return (
-        role?.voiceProfileId === reference.voiceProfileId &&
-        videoTranslationRoleVoiceReady(role, state?.targetLanguage || '')
-      )
-    }),
-  )
   return Boolean(
-    state?.finalScriptId &&
-      state.scriptHash &&
       version &&
       version.route === 'grouped' &&
-      version.finalScriptId === state.finalScriptId &&
-      version.scriptHash === state.scriptHash &&
       version.blocks?.length &&
       versionCueIds.size === cueIds.size &&
-      [...cueIds].every((cueId) => versionCueIds.has(cueId)) &&
-      referencesReady,
+      [...cueIds].every((cueId) => versionCueIds.has(cueId)),
   )
 })
 const seedRoleIds = computed(() => {
@@ -2182,7 +2164,10 @@ async function openTranslationVoiceWorkspace() {
 function openTranslationSubtitleWorkspace() {
   const state = translationState()
   if (!translationFinalWorkspaceReady.value) throw new Error('请先选择完整的人工试听配音版本')
-  mediaStore.seedAudioTrackPath = activeTranslationVoiceVersion(state)?.previewPath || ''
+  const version = latestTranslationFinalVoiceVersion() || activeTranslationVoiceVersion(state)
+  if (version && version.versionId !== state.activeVoiceVersionId)
+    applyTranslationVoiceVersion(state, version)
+  mediaStore.seedAudioTrackPath = version?.previewPath || ''
   mediaStore.selectView('dubbing')
 }
 
@@ -2203,6 +2188,21 @@ function selectTranslationWorkspace(view: WorkspaceView) {
 
 function activeTranslationVoiceVersion(state: NonNullable<typeof mediaStore.videoTranslation>) {
   return state.voiceVersions.find((version) => version.versionId === state.activeVoiceVersionId)
+}
+
+function latestTranslationFinalVoiceVersion() {
+  const state = mediaStore.videoTranslation
+  if (!state) return undefined
+  const cueIds = new Set(state.cues.map((cue) => cue.cueId))
+  return [...state.voiceVersions].reverse().find((version) => {
+    if (version.route !== 'grouped') return false
+    const versionCueIds = new Set(version.blocks?.flatMap((block) => block.cueIds) || [])
+    return Boolean(
+      version.blocks?.length &&
+        versionCueIds.size === cueIds.size &&
+        [...cueIds].every((cueId) => versionCueIds.has(cueId)),
+    )
+  })
 }
 
 function applyTranslationVoiceVersion(

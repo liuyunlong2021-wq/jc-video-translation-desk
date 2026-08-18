@@ -1108,11 +1108,23 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(home, /prepareAllTranslationSeedReferences[\s\S]*generateAllTranslationSeedRolePrompts\(\[\]\)[\s\S]*generateAllTranslationSeedReferences\(\[\]\)/)
   assert.match(home, /prepareAllTranslationSeedReferences[\s\S]*confirmTranslationSeedVoiceCore\(role\.translationRoleId\)/)
   assert.match(render, /advancedSeedVoiceMode[\s\S]*props\.selectedTranslationGroupIds[\s\S]*: \[\]/)
+  const finalReady = home.slice(
+    home.indexOf('const translationFinalWorkspaceReady = computed'),
+    home.indexOf('const seedRoleIds = computed'),
+  )
+  assert.match(finalReady, /latestTranslationFinalVoiceVersion\(\)/)
+  assert.doesNotMatch(finalReady, /videoTranslationRoleVoiceReady|referencesReady|voiceProfileId|finalScriptId|scriptHash/)
+  const finalVersion = home.slice(
+    home.indexOf('function latestTranslationFinalVoiceVersion'),
+    home.indexOf('function applyTranslationVoiceVersion'),
+  )
+  assert.match(finalVersion, /version\.route !== 'grouped'/)
+  assert.doesNotMatch(finalVersion, /finalScriptId|scriptHash/)
+  assert.match(finalVersion, /versionCueIds\.size === cueIds\.size/)
   assert.doesNotMatch(render, /重新生成当前组/)
   assert.doesNotMatch(render, /请先在“全局配音”重新生成提示词/)
   assert.match(manage, /activeTranslationVoiceVersion/)
   assert.match(home, /selectTranslationVoiceVersion/)
-  assert.match(home, /version\.finalScriptId/)
   assert.match(manage, /const previewSecond = \(cue\.startMs \+ cue\.endMs\) \/ 2000/)
   assert.match(home, /buildVideoTranslationSeedRolePrompt/)
   assert.match(home, /outputName: `voice-\$\{speakerId\}-\$\{Date\.now\(\)\}`/)
