@@ -653,6 +653,9 @@ test('grouped dubbing keeps successful groups and places complete audio without 
     voiceProfileId: 'voice-1',
     label: role.displayName,
   }
+  const referencePath = path.join(projectRoot, reference.referenceAudioPath)
+  await fs.promises.mkdir(path.dirname(referencePath), { recursive: true })
+  await fs.promises.writeFile(referencePath, Buffer.from('reference-audio-v1'))
   const blocks = [
     {
       blockId: 'group-1',
@@ -688,20 +691,15 @@ test('grouped dubbing keeps successful groups and places complete audio without 
   const prompt = [
     '## group-1',
     '',
-    '这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。',
+    '这是一段1.5秒的专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。',
     '',
-    '角色一是成熟男性，饰演者为@音频1。',
-    '',
-    '角色一（自然问候）：“Hello”',
-    '角色一（热情欢迎）：“Welcome”',
+    '先是自然问候：“Hello” 最后热情欢迎：“Welcome” 整段一气呵成，不逐句重新起音。',
     '',
     '## single-cue-3',
     '',
-    '这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。',
+    '这是一段1秒的专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。',
     '',
-    '角色一是成熟男性，饰演者为@音频1。',
-    '',
-    '角色一（平静告别）：“Goodbye”',
+    '平静告别：“Goodbye” 整段一气呵成，不逐句重新起音。',
   ].join('\n')
   await translation.writeVideoTranslationGroupedPlan(
     projectId,
@@ -843,13 +841,18 @@ test('grouped dubbing keeps successful groups and places complete audio without 
   await translation.generateVideoTranslationGroupedVoice(projectId, groupedEpisode, 'en')
   assert.equal(seedCalls, promptChangedSeedBefore + 1)
 
+  await fs.promises.writeFile(referencePath, Buffer.from('reference-audio-v2'))
+  const referenceChangedSeedBefore = seedCalls
+  await translation.generateVideoTranslationGroupedVoice(projectId, groupedEpisode, 'en')
+  assert.equal(seedCalls, referenceChangedSeedBefore + 2)
+
   const regenerated = await translation.generateVideoTranslationGroupedVoice(
     projectId,
     groupedEpisode,
     'en',
     ['group-1'],
   )
-  assert.equal(seedCalls, seedBefore + 4)
+  assert.equal(seedCalls, seedBefore + 6)
   assert.equal(regenerated.blocks?.length, 2)
 
   seedWaitForAbort = true

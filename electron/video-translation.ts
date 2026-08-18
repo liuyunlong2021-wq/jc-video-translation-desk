@@ -13,6 +13,7 @@ import {
   mediaDuration,
   removeSharedVideoTranslationRole,
   relativeRunAsset,
+  assertRunAsset,
 } from './media-workspace.ts'
 import type {
   TranslationRole,
@@ -172,6 +173,12 @@ async function reusableOutput(filePath: string, task?: PendingCloudTask) {
   } catch {
     return false
   }
+}
+
+function resolveReferenceAudioPath(runId: string, referenceAudioPath: string) {
+  return path.isAbsolute(referenceAudioPath)
+    ? path.resolve(referenceAudioPath)
+    : assertRunAsset(runId, referenceAudioPath)
 }
 
 function validateArrangementHeader(
@@ -1056,248 +1063,285 @@ export async function generateVideoTranslationGroupedVoice(
       promptMarkdown,
       arrangement.blocks.map((block) => block.blockId),
     )
-  const force = new Set(regenerateBlockIds)
-  for (const blockId of force) safeId(blockId, '配音组 ID')
-  if (
-    force.size &&
-    [...force].some((blockId) => !arrangement.blocks.some((block) => block.blockId === blockId))
-  )
-    throw new Error('要重新生成的配音组不存在')
-  const draftBase = path.join(
-    getRunDir(runId),
-    'episodes',
-    episodeId,
-    'video-translate',
-    language,
-    '分组克隆草稿',
-    scriptHash,
-  )
-  await fs.promises.mkdir(draftBase, { recursive: true })
-  const blockFingerprint = (block: VideoTranslationDialogueBlock) =>
-    createHash('sha256')
-      .update(
-        JSON.stringify({
-          targetLanguage: language,
-          scriptHash: arrangement.scriptHash,
-          blockId: block.blockId,
-          cueIds: block.cueIds,
-          prompt: prompts.get(block.blockId) || '',
-          references: block.references.map((reference) => ({
-            speakerId: reference.speakerId,
-            voiceProfileId: reference.voiceProfileId,
-            referenceAudioPath: reference.referenceAudioPath,
-          })),
-        }),
-      )
-      .digest('hex')
-      .slice(0, 12)
-  const taskId = (block: VideoTranslationDialogueBlock) =>
-    `${episodeId}:dubbing:${scriptHash.slice(0, 12)}:${block.blockId}:${blockFingerprint(block)}`
-  const existingById = new Map((await readPending(runId)).map((task) => [task.id, task]))
-  const pending: VideoTranslationDialogueBlock[] = []
-  for (const block of arrangement.blocks) {
-    if (force.size) {
-      if (force.has(block.blockId)) pending.push(block)
-      continue
-    }
-    if (!(await reusableOutput(path.join(draftBase, `${block.blockId}.wav`), existingById.get(taskId(block)))))
-      pending.push(block)
-  }
-  for (const block of pending) {
-    safeId(block.blockId, '配音组 ID')
-    const index = arrangement.blocks.indexOf(block)
-    const now = new Date().toISOString()
-    const target = path.join(draftBase, `${block.blockId}.wav`)
-    const label = block.references[0]?.label?.split('·')[0]?.trim() || block.speakerIds[0]
-    const task: PendingCloudTask = {
-      id: taskId(block),
-      kind: 'dubbing',
-      index: index + 1,
-      targetId: block.blockId,
-      targetLabel: `分组 ${String(index + 1).padStart(2, '0')} · ${label}`,
-      status: 'queued',
-      outputPath: relativeRunAsset(runId, target),
-      createdAt: now,
-      updatedAt: now,
-    }
-    await putPending(runId, task)
-  }
-  const failures: string[] = []
-  let completed = arrangement.blocks.length - pending.length
-  let failed = 0
-  let cursor = 0
-  if (pending.length)
-    reportProgress(
-      `正在生成分组音频 ${completed}/${arrangement.blocks.length}（3 个并发）`,
+    const force = new Set(regenerateBlockIds)
+    for (const blockId of force) safeId(blockId, '配音组 ID')
+    if (
+      force.size &&
+      [...force].some((blockId) => !arrangement.blocks.some((block) => block.blockId === blockId))
     )
-  await Promise.all(
-    Array.from({ length: Math.min(3, pending.length) }, async () => {
-      while (cursor < pending.length) {
-        if (abortSignal?.aborted) return
-        const block = pending[cursor++]
-        const id = taskId(block)
-        const prompt = prompts.get(block.blockId)
-        const target = path.join(draftBase, `${block.blockId}.wav`)
-        try {
-          if (!prompt) throw new Error(`${block.blockId} 缺少分组克隆提示词`)
-          if (block.references.some((reference) => !reference.voiceProfileId))
-            throw new Error(`${block.blockId} 缺少已确认 voiceProfileId`)
-          validateVideoTranslationGroupedPrompt(prompt, block)
-          await withTaskAbort(
-            runId,
-            id,
-            async (signal) => {
-              await updateTask(runId, id, (task) => ({
-                ...task,
-                status: 'generating',
-                startedAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                error: undefined,
-              }))
-              reportProgress(
-                `正在生成分组音频 ${completed}/${arrangement.blocks.length}（当前：第 ${arrangement.blocks.indexOf(block) + 1} 组）`,
-              )
-              const generated = await generateSeedAudio({
-                runId,
-                episodeId,
-                workflow: 'video-translation',
-                targetLanguage: language,
-                mode: 'dialogue-performance',
-                durationMs: Math.max(
-                  1_000,
-                  block.lines.at(-1)!.expectedEndMs - block.lines[0].expectedStartMs,
-                ),
-                prompt,
-                language,
-                references: block.references,
-                outputName: `grouped-${scriptHash.slice(0, 12)}-${block.blockId}-${blockFingerprint(block)}`,
-                abortSignal: signal,
-              })
-              await atomicCopy(
-                assertVideoTranslationAsset(runId, episodeId, generated.path),
-                target,
-              )
-              const output = await fileStatHash(target)
-              await updateTask(runId, id, (task) => ({
-                ...task,
-                status: 'success',
-                outputPath: relativeRunAsset(runId, target),
-                ...output,
-                updatedAt: new Date().toISOString(),
-                finishedAt: new Date().toISOString(),
-                error: undefined,
-              }))
-              completed += 1
-              reportProgress(
-                `分组音频已完成 ${completed}/${arrangement.blocks.length}${failed ? `，失败 ${failed} 个` : ''}`,
-              )
-            },
-            abortSignal,
-          )
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          failures.push(`${block.blockId}：${message}`)
-          failed += 1
-          reportProgress(
-            `分组音频已完成 ${completed}/${arrangement.blocks.length}，失败 ${failed} 个`,
-          )
-          const task = (await readPending(runId)).find((item) => item.id === id)
-          if (task?.status !== 'stopped')
-            await updateTask(runId, id, (current) => ({
-              ...current,
-              status: abortSignal?.aborted ? 'stopped' : 'failed',
-              updatedAt: new Date().toISOString(),
-              error: abortSignal?.aborted ? '已停止' : message,
-            }))
-        }
+      throw new Error('要重新生成的配音组不存在')
+    const draftBase = path.join(
+      getRunDir(runId),
+      'episodes',
+      episodeId,
+      'video-translate',
+      language,
+      '分组克隆草稿',
+      scriptHash,
+    )
+    await fs.promises.mkdir(draftBase, { recursive: true })
+    const referenceFingerprints = new Map<string, string>()
+    await Promise.all(
+      arrangement.blocks.flatMap((block) =>
+        block.references.map(async (reference) => {
+          const key = `${reference.speakerId}:${path.resolve(reference.referenceAudioPath)}`
+          if (referenceFingerprints.has(key)) return
+          const fingerprint = createHash('sha256')
+            .update(await fs.promises.readFile(resolveReferenceAudioPath(runId, reference.referenceAudioPath)))
+            .digest('hex')
+            .slice(0, 16)
+          referenceFingerprints.set(key, fingerprint)
+        }),
+      ),
+    )
+    const blockFingerprint = (block: VideoTranslationDialogueBlock) =>
+      createHash('sha256')
+        .update(
+          JSON.stringify({
+            targetLanguage: language,
+            scriptHash: arrangement.scriptHash,
+            blockId: block.blockId,
+            cueIds: block.cueIds,
+            prompt: prompts.get(block.blockId) || '',
+            references: block.references.map((reference) => ({
+              speakerId: reference.speakerId,
+              voiceProfileId: reference.voiceProfileId,
+              referenceAudioPath: reference.referenceAudioPath,
+              referenceAudioFingerprint:
+                referenceFingerprints.get(
+                  `${reference.speakerId}:${path.resolve(reference.referenceAudioPath)}`,
+                ) || '',
+            })),
+          }),
+        )
+        .digest('hex')
+        .slice(0, 12)
+    const taskId = (block: VideoTranslationDialogueBlock) =>
+      `${episodeId}:dubbing:${scriptHash.slice(0, 12)}:${block.blockId}:${blockFingerprint(block)}`
+    const existingById = new Map((await readPending(runId)).map((task) => [task.id, task]))
+    const pending: VideoTranslationDialogueBlock[] = []
+    for (const block of arrangement.blocks) {
+      const reusable = await reusableOutput(
+        path.join(draftBase, `${block.blockId}.wav`),
+        existingById.get(taskId(block)),
+      )
+      if (force.has(block.blockId) || !reusable)
+        pending.push(block)
+    }
+    for (const block of pending) {
+      safeId(block.blockId, '配音组 ID')
+      const index = arrangement.blocks.indexOf(block)
+      const now = new Date().toISOString()
+      const target = path.join(draftBase, `${block.blockId}.wav`)
+      const label = block.references[0]?.label?.split('·')[0]?.trim() || block.speakerIds[0]
+      const task: PendingCloudTask = {
+        id: taskId(block),
+        kind: 'dubbing',
+        index: index + 1,
+        targetId: block.blockId,
+        targetLabel: `分组 ${String(index + 1).padStart(2, '0')} · ${label}`,
+        status: 'queued',
+        outputPath: relativeRunAsset(runId, target),
+        createdAt: now,
+        updatedAt: now,
       }
-    }),
-  )
-  if (abortSignal?.aborted) throw new Error('任务已停止')
-  if (failures.length) throw new Error(`有 ${failures.length} 个配音组生成失败`)
-  const currentTasks = new Map((await readPending(runId)).map((task) => [task.id, task]))
-  if (
-    (
+      await putPending(runId, task)
+    }
+    const failures: string[] = []
+    let completed = arrangement.blocks.length - pending.length
+    let failed = 0
+    let cursor = 0
+    if (pending.length)
+      reportProgress(`正在生成分组音频 ${completed}/${arrangement.blocks.length}（排队生成）`)
+    await Promise.all(
+      Array.from({ length: Math.min(1, pending.length) }, async () => {
+        while (cursor < pending.length) {
+          if (abortSignal?.aborted) return
+          const block = pending[cursor++]
+          const id = taskId(block)
+          const prompt = prompts.get(block.blockId)
+          const target = path.join(draftBase, `${block.blockId}.wav`)
+          try {
+            if (!prompt) throw new Error(`${block.blockId} 缺少分组克隆提示词`)
+            if (block.references.some((reference) => !reference.voiceProfileId))
+              throw new Error(`${block.blockId} 缺少已确认 voiceProfileId`)
+            validateVideoTranslationGroupedPrompt(prompt, block)
+            await withTaskAbort(
+              runId,
+              id,
+              async (signal) => {
+                await updateTask(runId, id, (task) => ({
+                  ...task,
+                  status: 'generating',
+                  startedAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                  error: undefined,
+                }))
+                reportProgress(
+                  `正在生成分组音频 ${completed}/${arrangement.blocks.length}（当前：第 ${arrangement.blocks.indexOf(block) + 1} 组）`,
+                )
+                const generated = await generateSeedAudio({
+                  runId,
+                  episodeId,
+                  workflow: 'video-translation',
+                  targetLanguage: language,
+                  mode: 'dialogue-performance',
+                  durationMs: Math.max(
+                    1_000,
+                    block.lines.at(-1)!.expectedEndMs - block.lines[0].expectedStartMs,
+                  ),
+                  prompt,
+                  language,
+                  references: block.references,
+                  outputName: `grouped-${scriptHash.slice(0, 12)}-${block.blockId}-${blockFingerprint(block)}`,
+                  abortSignal: signal,
+                })
+                await atomicCopy(
+                  assertVideoTranslationAsset(runId, episodeId, generated.path),
+                  target,
+                )
+                const output = await fileStatHash(target)
+                await updateTask(runId, id, (task) => ({
+                  ...task,
+                  status: 'success',
+                  outputPath: relativeRunAsset(runId, target),
+                  ...output,
+                  updatedAt: new Date().toISOString(),
+                  finishedAt: new Date().toISOString(),
+                  error: undefined,
+                }))
+                completed += 1
+                reportProgress(
+                  `分组音频已完成 ${completed}/${arrangement.blocks.length}${failed ? `，失败 ${failed} 个` : ''}`,
+                )
+              },
+              abortSignal,
+            )
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            failures.push(`${block.blockId}：${message}`)
+            failed += 1
+            reportProgress(`分组音频已完成 ${completed}/${arrangement.blocks.length}，失败 ${failed} 个`)
+            const task = (await readPending(runId)).find((item) => item.id === id)
+            if (task?.status !== 'stopped')
+              await updateTask(runId, id, (current) => ({
+                ...current,
+                status: abortSignal?.aborted ? 'stopped' : 'failed',
+                updatedAt: new Date().toISOString(),
+                error: abortSignal?.aborted ? '已停止' : message,
+              }))
+          }
+        }
+      }),
+    )
+    if (abortSignal?.aborted) {
+      const stoppedAt = new Date().toISOString()
       await Promise.all(
-        arrangement.blocks.map((block) =>
-          reusableOutput(path.join(draftBase, `${block.blockId}.wav`), currentTasks.get(taskId(block))),
+        pending.map((block) =>
+          updateTask(runId, taskId(block), (task) =>
+            ['queued', 'generating', 'downloading'].includes(task.status || '')
+              ? {
+                  ...task,
+                  status: 'stopped',
+                  updatedAt: stoppedAt,
+                  error: '已停止',
+                }
+              : task,
+          ),
         ),
       )
-    ).some((value) => !value)
-  )
-    throw new Error('仍有配音组尚未生成完成')
-  const versionId = `grouped-${Date.now()}-${randomUUID().slice(0, 8)}`
-  const mediaBase = path.join(
-    getRunDir(runId),
-    'episodes',
-    episodeId,
-    'video-translate',
-    language,
-    '全局配音版本',
-    versionId,
-  )
-  await fs.promises.mkdir(mediaBase, { recursive: true })
-  const blocks: NonNullable<VideoTranslationVoiceVersion['blocks']> = []
-  for (const block of arrangement.blocks) {
-    const source = path.join(draftBase, `${block.blockId}.wav`)
-    const target = path.join(mediaBase, `${block.blockId}.wav`)
-    await atomicCopy(source, target)
-    const durationMs = Math.round((await mediaDuration(target)) * 1000)
-    const targetDurationMs = block.lines.at(-1)!.expectedEndMs - block.lines[0].expectedStartMs
-    blocks.push({
-      voiceBlockId: block.blockId,
-      cueIds: [...block.cueIds],
-      audioPath: relativeRunAsset(runId, target),
-      audioHash: await fileHash(target),
-      durationMs,
-      overrunMs: Math.max(0, durationMs - targetDurationMs),
-      prompt: prompts.get(block.blockId)!,
-      references: block.references.map((reference) => ({
-        translationRoleId: reference.speakerId,
-        voiceProfileId: reference.voiceProfileId!,
-        referenceIndex: 1,
-      })),
-    })
-  }
-  const preview = path.join(mediaBase, '时间轴试听.wav')
-  const inputs = blocks.map((block) =>
-    assertVideoTranslationAsset(runId, episodeId, block.audioPath),
-  )
-  await executeFFmpeg([
-    ...inputs.flatMap((input) => ['-i', input]),
-    '-filter_complex',
-    `${inputs
-      .map(
-        (_, index) =>
-          `[${index}:a]adelay=${arrangement.blocks[index].lines[0].expectedStartMs}|${arrangement.blocks[index].lines[0].expectedStartMs}[a${index}]`,
-      )
-      .join(
-        ';',
-      )};${inputs.map((_, index) => `[a${index}]`).join('')}amix=inputs=${inputs.length}:duration=longest:dropout_transition=0:normalize=0[out]`,
-    '-map',
-    '[out]',
-    '-ar',
-    '48000',
-    '-ac',
-    '2',
-    '-c:a',
-    'pcm_s16le',
-    '-y',
-    preview,
-  ])
-  const version: VideoTranslationVoiceVersion = {
-    versionId,
-    createdAt: new Date().toISOString(),
-    previewPath: relativeRunAsset(runId, preview),
-    finalScriptId: arrangement.finalScriptId,
-    scriptHash: arrangement.scriptHash,
-    route: 'grouped',
-    blocks,
-    durationMs: Math.round((await mediaDuration(preview)) * 1000),
-    model: 'seed-audio-1.0',
-  }
-  await saveVideoTranslationVoiceVersion(runId, wikiBase, version)
-  return version
+      throw new Error('任务已停止')
+    }
+    if (failures.length) throw new Error(`有 ${failures.length} 个配音组生成失败`)
+    const currentTasks = new Map((await readPending(runId)).map((task) => [task.id, task]))
+    if (
+      (
+        await Promise.all(
+          arrangement.blocks.map((block) =>
+            reusableOutput(
+              path.join(draftBase, `${block.blockId}.wav`),
+              currentTasks.get(taskId(block)),
+            ),
+          ),
+        )
+      ).some((value) => !value)
+    )
+      throw new Error('仍有配音组尚未生成完成')
+    const versionId = `grouped-${Date.now()}-${randomUUID().slice(0, 8)}`
+    const mediaBase = path.join(
+      getRunDir(runId),
+      'episodes',
+      episodeId,
+      'video-translate',
+      language,
+      '全局配音版本',
+      versionId,
+    )
+    await fs.promises.mkdir(mediaBase, { recursive: true })
+    const blocks: NonNullable<VideoTranslationVoiceVersion['blocks']> = []
+    for (const block of arrangement.blocks) {
+      const source = path.join(draftBase, `${block.blockId}.wav`)
+      const target = path.join(mediaBase, `${block.blockId}.wav`)
+      await atomicCopy(source, target)
+      const durationMs = Math.round((await mediaDuration(target)) * 1000)
+      const targetDurationMs = block.lines.at(-1)!.expectedEndMs - block.lines[0].expectedStartMs
+      blocks.push({
+        voiceBlockId: block.blockId,
+        cueIds: [...block.cueIds],
+        audioPath: relativeRunAsset(runId, target),
+        audioHash: await fileHash(target),
+        durationMs,
+        overrunMs: Math.max(0, durationMs - targetDurationMs),
+        prompt: prompts.get(block.blockId)!,
+        references: block.references.map((reference) => ({
+          translationRoleId: reference.speakerId,
+          voiceProfileId: reference.voiceProfileId!,
+          referenceIndex: 1,
+        })),
+      })
+    }
+    const preview = path.join(mediaBase, '时间轴试听.wav')
+    const inputs = blocks.map((block) =>
+      assertVideoTranslationAsset(runId, episodeId, block.audioPath),
+    )
+    await executeFFmpeg(
+      [
+        ...inputs.flatMap((input) => ['-i', input]),
+        '-filter_complex',
+        `${inputs
+          .map(
+            (_, index) =>
+              `[${index}:a]adelay=${arrangement.blocks[index].lines[0].expectedStartMs}|${arrangement.blocks[index].lines[0].expectedStartMs}[a${index}]`,
+          )
+          .join(
+            ';',
+          )};${inputs.map((_, index) => `[a${index}]`).join('')}amix=inputs=${inputs.length}:duration=longest:dropout_transition=0:normalize=0[out]`,
+        '-map',
+        '[out]',
+        '-ar',
+        '48000',
+        '-ac',
+        '2',
+        '-c:a',
+        'pcm_s16le',
+        '-y',
+        preview,
+      ],
+      { abortSignal },
+    )
+    const version: VideoTranslationVoiceVersion = {
+      versionId,
+      createdAt: new Date().toISOString(),
+      previewPath: relativeRunAsset(runId, preview),
+      finalScriptId: arrangement.finalScriptId,
+      scriptHash: arrangement.scriptHash,
+      route: 'grouped',
+      blocks,
+      durationMs: Math.round((await mediaDuration(preview)) * 1000),
+      model: 'seed-audio-1.0',
+    }
+    await saveVideoTranslationVoiceVersion(runId, wikiBase, version)
+    return version
   } finally {
     groupedVoiceRuns.delete(runKey)
   }

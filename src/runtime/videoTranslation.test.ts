@@ -602,7 +602,7 @@ test('changing dubbing groups preserves the confirmed subtitle and global voice 
   assert.equal(next.groupedVoicePrompts, undefined)
 })
 
-test('derives strict three-part grouped prompts without a global prompt', () => {
+test('derives continuous grouped prompts without role definition lines', () => {
   const cues = [
     {
       cueId: 'cue-001',
@@ -655,7 +655,7 @@ test('derives strict three-part grouped prompts without a global prompt', () => 
   assert.equal(plan.arrangement.blocks.length, 1)
   assert.equal(
     plan.prompts['dubbing-group-1'],
-    `这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。\n\n林默是成熟男性，低沉清晰，饰演者为@音频1。\n\n林默（温和开口）：“Hello”\n林默（平静告别）：“Goodbye”`,
+    `这是一段2.4秒的专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。\n\n先是温和开口：“Hello” 最后平静告别：“Goodbye” 整段一气呵成，不逐句重新起音。`,
   )
   assert.throws(
     () =>
@@ -674,7 +674,7 @@ test('derives strict three-part grouped prompts without a global prompt', () => 
   )
 })
 
-test('grouped cloning accepts two-line Seed role prompts as voice identity', () => {
+test('grouped cloning uses only prompt and bound reference audio', () => {
   const waiterRole = {
     ...role,
     translationRoleId: 'visual-person-3',
@@ -722,7 +722,7 @@ test('grouped cloning accepts two-line Seed role prompts as voice identity', () 
   )
   assert.equal(
     plan.prompts['single-cue-014'],
-    `这是一段一个专业的配音表演艺术家在顶级录音棚内的配音片段。\n\n画面人物 3是酒吧服务员 是越南中年男性，浑厚，略微沙哑，响亮，谦逊，饰演者为@音频1。\n\n画面人物 3（礼貌询问）：“Xin chào, quý khách có yêu cầu gì ạ?”`,
+    `这是一段2.5秒的专业的配音表演艺术家在顶级录音棚内的配音片段，饰演者为@音频1。\n\n礼貌询问：“Xin chào, quý khách có yêu cầu gì ạ?” 整段一气呵成，不逐句重新起音。`,
   )
 })
 
@@ -891,11 +891,11 @@ test('uses voiceProfileId as the only reference voice identity', () => {
     source,
     /finalScript:[\s\S]*translatedText: cue\.translatedText[\s\S]*currentCueIds:[\s\S]*references/,
   )
-  const skillInput = source.slice(
-    source.indexOf('const skillInput = {'),
-    source.indexOf("let prompt = ''", source.indexOf('const skillInput = {')),
+  const studioPromptInput = source.slice(
+    source.indexOf('const studioPromptInput = {'),
+    source.indexOf("let prompt = ''", source.indexOf('const studioPromptInput = {')),
   )
-  assert.doesNotMatch(skillInput, /sourceText|finalScriptMarkdown/)
+  assert.doesNotMatch(studioPromptInput, /sourceText|finalScriptMarkdown/)
   const skill = fs.readFileSync(
     new URL('../../skills/jc-doubao-seed-audio/SKILL.md', import.meta.url),
     'utf8',
@@ -908,10 +908,10 @@ test('uses voiceProfileId as the only reference voice identity', () => {
   assert.match(skill, /参考音文件由产品在正式声音请求中直接传入/)
   assert.match(studioSkill, /专业的配音表演艺术家在顶级录音棚内的配音片段/)
   assert.match(studioSkill, /角色定义结束后再空一行/)
-  assert.match(studioSkill, /正式译文必须逐字保留/)
+  assert.match(studioSkill, /每条 `currentCueIds` 必须对应一行对白/)
   assert.match(studioSkill, /输入不包含源语言人工确认稿/)
   assert.match(studioSkill, /globalVoicePrompt/)
-  assert.match(studioSkill, /不输出时间戳、时长、`cueId`、角色 ID、声音 ID/)
+  assert.match(studioSkill, /不输出时间戳、`cueId`、角色 ID、声音 ID/)
   assert.match(studioSkill, /最终回复只能是可直接提交给 Seed Audio 的提示词正文/)
 })
 
@@ -930,7 +930,14 @@ test('routes translation review through voice workbench before a role-free subti
   assert.match(home, /VideoTranslationWorkspace/)
   assert.match(home, /VideoTranslationInspector/)
   assert.match(home, /jc-doubao-seed-audio/)
-  assert.match(home, /generateTranslationSeedPrompt[\s\S]*runSkill\([\s\S]*'jc-luyinpeng'/)
+  const globalPrompt = home.slice(
+    home.indexOf('async function generateTranslationSeedPrompt'),
+    home.indexOf('async function generateTranslationGroupedPrompts'),
+  )
+  assert.match(globalPrompt, /generateVideoTranslationStudioPrompt/)
+  assert.doesNotMatch(globalPrompt, /runSkill\([\s\S]*'jc-luyinpeng'/)
+  assert.match(cloud, /VIDEO_TRANSLATION_STUDIO_PROMPT[\s\S]*完整 SRT[\s\S]*正式译文必须逐字保留/)
+  assert.match(cloud, /generateVideoTranslationStudioPrompt[\s\S]*videoTranslationCuesToPromptSrt/)
   assert.match(home, /voiceDesignPrompt/)
   assert.match(
     home,
@@ -1076,10 +1083,18 @@ test('routes translation review through voice workbench before a role-free subti
   )
   for (const label of ['生成所选角色提示词', '按提示词生成所选参考音'])
     assert.match(roleActions, new RegExp(label))
-  assert.match(render, /分组克隆[\s\S]*进入成片工作台/)
+  assert.match(render, /配音提示词[\s\S]*进入成片工作台/)
   assert.match(manage, /v-if="!translationMode" value="global"[\s\S]*>全局配音<\/v-btn/)
   assert.match(manage, /v-if="translationMode" value="grouped"[\s\S]*>分组克隆<\/v-btn/)
-  assert.match(render, />批量生成全部分组配音<\/v-btn/)
+  assert.match(render, /globalPromptDraft/)
+  assert.match(render, /selectedGroupedPrompt/)
+  assert.match(render, />生成分组配音提示词<\/v-btn/)
+  assert.match(render, />生成配音<\/v-btn/)
+  assert.match(render, /generateGroupedSeedAudio', \[\.\.\.props\.selectedTranslationGroupIds\]/)
+  assert.match(manage, /未生成配音/)
+  assert.match(manage, /生成失败/)
+  assert.match(manage, /selectedTranslationGroupIds/)
+  assert.match(home, /selectedTranslationGroupIds/)
   assert.doesNotMatch(render, /重新生成当前组/)
   assert.doesNotMatch(render, /请先在“全局配音”重新生成提示词/)
   assert.match(manage, /activeTranslationVoiceVersion/)
@@ -1099,13 +1114,26 @@ test('routes translation review through voice workbench before a role-free subti
   )
   assert.match(
     groupedBatch,
-    /generateAndSaveTranslationGlobalPrompt\(state\)[\s\S]*const globalPlan = generated\.plan[\s\S]*const globalPrompt = generated\.prompt[\s\S]*existingPrompts[\s\S]*generateTranslationGroupedPrompts\([\s\S]*existingPrompts[\s\S]*writeVideoTranslationGroupedPlan[\s\S]*generateVideoTranslationGroupedVoice/,
+    /const globalPrompt = \(mediaStore\.seedAudioGlobalPrompt \|\| state\.seedPromptText \|\| ''\)\.trim\(\)[\s\S]*请先生成全局配音提示词[\s\S]*const globalPlan = await currentTranslationSeedPlan\(\)[\s\S]*请先生成分组配音稿[\s\S]*planVideoTranslationGroupedDialogueBlocks\([\s\S]*writeVideoTranslationGroupedPlan[\s\S]*generateVideoTranslationGroupedVoice/,
   )
-  assert.match(home, /globalVoicePrompt: globalPrompt/)
+  assert.doesNotMatch(groupedBatch, /generateAndSaveTranslationGlobalPrompt\(state\)/)
+  assert.match(groupedBatch, /runTranslationStep\('generate-grouped-voice', 'voiceStatus'/)
+  const groupedDraft = home.slice(
+    home.indexOf('async function generateTranslationGroupedPromptDraft'),
+    home.indexOf('async function generateTranslationVoice'),
+  )
+  assert.match(
+    groupedDraft,
+    /writeVideoTranslationSeedPlan[\s\S]*generateTranslationGroupedPrompts\(state, globalPlan, globalPrompt, \{\}\)[\s\S]*writeVideoTranslationGroupedPlan/,
+  )
+  const groupedPromptHelper = home.slice(
+    home.indexOf('async function generateTranslationGroupedPrompts'),
+    home.indexOf('async function arrangeTranslationVoice'),
+  )
+  assert.doesNotMatch(groupedPromptHelper, /runSkill\(|globalVoicePrompt: globalPrompt/)
+  assert.match(groupedPromptHelper, /planVideoTranslationGroupedDialogueBlocks/)
   assert.match(home, /Math\.min\(3, plan\.arrangement\.blocks\.length\)/)
-  assert.match(home, /Math\.min\(3, targets\.length\)/)
   assert.match(home, /mediaStore\.progressText = `正在生成全局声音基底/)
-  assert.match(home, /mediaStore\.progressText = `分组提示词已完成/)
   assert.match(render, /currentProgressText/)
 })
 

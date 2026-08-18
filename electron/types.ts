@@ -363,6 +363,35 @@ export interface TranslateVideoSubtitlesParams {
   }>
 }
 
+export interface GenerateVideoTranslationStudioPromptParams {
+  runId: string
+  episodeId: string
+  textModel: TextModel
+  finalScript: {
+    finalScriptId: string
+    scriptHash: string
+    targetLanguage: string
+    cues: Array<{
+      cueId: string
+      translationRoleId?: string
+      roleName?: string
+      startMs: number
+      endMs: number
+      performanceDirection?: string
+      translatedText: string
+    }>
+  }
+  currentCueIds: string[]
+  references: Array<{
+    translationRoleId: string
+    roleName: string
+    voiceProfileId?: string
+    voiceIdentityText: string
+    referenceIndex: number
+  }>
+  correction?: string
+}
+
 export interface IdentifyVideoTranslationSpeakersParams {
   runId: string
   episodeId: string

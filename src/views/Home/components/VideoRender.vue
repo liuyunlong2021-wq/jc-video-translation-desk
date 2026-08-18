@@ -134,24 +134,34 @@
           >
         </template>
         <template v-else>
-          <strong>分组克隆</strong>
-          <small>先生成全局声音基底，再生成每组提示词并批量克隆音频。</small>
+          <strong>配音提示词</strong>
+          <small>先生成全局配音提示词，再生成分组配音提示词，然后按选中配音组生成音频。</small>
           <small v-if="translationMode && !allTranslationVoicesConfirmed" class="text-warning">
             {{ missingTranslationVoiceReason }}
           </small>
-          <v-btn
-            color="success"
-            prepend-icon="mdi-waveform"
-            :loading="mediaStore.busyAction === 'generate-grouped-voice'"
-            :disabled="
-              Boolean(mediaStore.busyAction) ||
-              !mediaStore.apiConfigured ||
-              !allTranslationVoicesConfirmed
-            "
-            block
-            @click="$emit('generateGroupedSeedAudio')"
-            >批量生成全部分组配音</v-btn
-          >
+          <div class="translation-prompt-panels">
+            <v-textarea
+              :model-value="globalPromptDraft"
+              rows="5"
+              no-resize
+              hide-details
+              variant="outlined"
+              label="全局配音提示词"
+              placeholder="先生成或粘贴全局配音提示词。"
+              @update:model-value="emit('editSeedGlobalPrompt', String($event || ''))"
+            />
+            <v-textarea
+              :model-value="selectedGroupedPrompt"
+              rows="7"
+              no-resize
+              hide-details
+              variant="outlined"
+              :label="groupedPromptTitle"
+              :placeholder="translationPromptPlaceholder"
+              :disabled="!groupedPromptReady"
+              @update:model-value="emitGroupedPromptUpdate(String($event || ''))"
+            />
+          </div>
           <v-alert
             v-if="
               translationMode &&
@@ -165,27 +175,58 @@
             <v-progress-linear indeterminate class="mb-2" />
             {{ currentProgressText }}
           </v-alert>
-          <v-btn
-            color="success"
-            prepend-icon="mdi-subtitles-outline"
-            :disabled="Boolean(mediaStore.busyAction) || !props.translationFinalReady"
-            :title="!props.translationFinalReady ? '请先生成完整的分组克隆版本' : undefined"
-            block
-            @click="$emit('openTranslationSubtitles')"
-            >进入成片工作台</v-btn
-          >
-          <v-textarea
-            v-if="selectedTranslationGroup"
-            :model-value="selectedGroupedPrompt"
-            rows="4"
-            no-resize
-            hide-details
-            variant="outlined"
-            :label="`组${String(selectedTranslationGroupIndex + 1).padStart(2, '0')} 三段式提示词`"
-            @update:model-value="
-              emit('editGroupedPrompt', selectedTranslationGroup.groupId, String($event || ''))
-            "
-          />
+          <div class="seed-voice-bottom-actions">
+            <v-btn
+              color="success"
+              prepend-icon="mdi-text-box-edit-outline"
+              :loading="mediaStore.busyAction === 'arrange-doubao-voice'"
+              :disabled="
+                Boolean(mediaStore.busyAction) ||
+                !mediaStore.apiConfigured ||
+                !allTranslationVoicesConfirmed
+              "
+              block
+              @click="$emit('generateGlobalSeedPrompt')"
+              >生成全局配音提示词</v-btn
+            >
+            <v-btn
+              color="primary"
+              prepend-icon="mdi-text-box-edit-outline"
+              :loading="mediaStore.busyAction === 'generate-grouped-prompt-draft'"
+              :disabled="
+                Boolean(mediaStore.busyAction) ||
+                !mediaStore.apiConfigured ||
+                !allTranslationVoicesConfirmed
+              "
+              block
+              @click="$emit('generateGroupedSeedPrompt')"
+              >生成分组配音提示词</v-btn
+            >
+            <div class="seed-voice-action-divider" />
+            <v-btn
+              color="success"
+              prepend-icon="mdi-waveform"
+              :loading="mediaStore.busyAction === 'generate-grouped-voice'"
+              :disabled="
+                Boolean(mediaStore.busyAction) ||
+                !mediaStore.apiConfigured ||
+                !allTranslationVoicesConfirmed ||
+                !groupedPromptReady
+              "
+              block
+              @click="$emit('generateGroupedSeedAudio', [...props.selectedTranslationGroupIds])"
+              >生成配音</v-btn
+            >
+            <v-btn
+              color="success"
+              prepend-icon="mdi-subtitles-outline"
+              :disabled="Boolean(mediaStore.busyAction) || !props.translationFinalReady"
+              :title="!props.translationFinalReady ? '请先生成完整的配音版本' : undefined"
+              block
+              @click="$emit('openTranslationSubtitles')"
+              >进入成片工作台</v-btn
+            >
+          </div>
         </template>
       </div>
       <div v-else-if="mediaStore.workflowStep === 'voice'" class="voice-controls">
@@ -316,8 +357,14 @@ const props = withDefaults(
     translationMode?: boolean
     translationFinalReady?: boolean
     selectedSeedRoleIds?: string[]
+    selectedTranslationGroupIds?: string[]
   }>(),
-  { translationMode: false, translationFinalReady: false, selectedSeedRoleIds: () => [] },
+  {
+    translationMode: false,
+    translationFinalReady: false,
+    selectedSeedRoleIds: () => [],
+    selectedTranslationGroupIds: () => [],
+  },
 )
 const { translationMode } = props
 const emit = defineEmits([
@@ -334,8 +381,10 @@ const emit = defineEmits([
   'generateSeedTrack',
   'generateGlobalSeedPrompt',
   'generateGlobalSeedAudio',
+  'generateGroupedSeedPrompt',
   'generateGroupedSeedAudio',
   'editGroupedPrompt',
+  'editSeedGlobalPrompt',
   'openTranslationSubtitles',
   'editScriptMode',
   'generateShotPlan',
@@ -407,12 +456,48 @@ const selectedTranslationGroup = computed(() =>
     ? undefined
     : translationGroups.value[selectedTranslationGroupIndex.value],
 )
-const selectedGroupedPrompt = computed(
+const promptDisplayGroup = computed(
   () =>
-    (selectedTranslationGroup.value &&
-      mediaStore.videoTranslation?.groupedVoicePrompts?.[selectedTranslationGroup.value.groupId]) ||
-    '',
+    selectedTranslationGroup.value ||
+    translationGroups.value.find((group) =>
+      Boolean(mediaStore.videoTranslation?.groupedVoicePrompts?.[group.groupId]?.trim()),
+    ) ||
+    translationGroups.value[0],
 )
+const groupedPromptReady = computed(
+  () =>
+    translationGroups.value.length > 0 &&
+    translationGroups.value.every((group) =>
+      Boolean(mediaStore.videoTranslation?.groupedVoicePrompts?.[group.groupId]?.trim()),
+    ),
+)
+const globalPromptDraft = computed(
+  () => mediaStore.seedAudioGlobalPrompt || mediaStore.videoTranslation?.seedPromptText || '',
+)
+const selectedGroupedPrompt = computed(() =>
+  groupedPromptReady.value && promptDisplayGroup.value
+    ? mediaStore.videoTranslation?.groupedVoicePrompts?.[promptDisplayGroup.value.groupId] || ''
+    : '',
+)
+function translationGroupLabel(groupId: string) {
+  const index = translationGroups.value.findIndex((group) => group.groupId === groupId)
+  return index < 0 ? groupId : `组 ${index + 1}`
+}
+const groupedPromptTitle = computed(() =>
+  groupedPromptReady.value && promptDisplayGroup.value
+    ? `${translationGroupLabel(promptDisplayGroup.value.groupId)} 分组配音稿`
+    : '全局配音提示词',
+)
+const translationPromptPlaceholder = computed(() =>
+  groupedPromptReady.value
+    ? '这里显示当前分组配音稿，可先试听确认后再进入成片工作台。'
+    : '生成分组配音提示词后，这里会按当前选中的配音组显示。',
+)
+function emitGroupedPromptUpdate(prompt: string) {
+  if (promptDisplayGroup.value) {
+    emit('editGroupedPrompt', promptDisplayGroup.value.groupId, prompt)
+  }
+}
 const selectedSeedRolePromptsReady = computed(
   () =>
     props.selectedSeedRoleIds.length > 0 &&
@@ -1042,6 +1127,36 @@ function runSecondary() {
   display: grid;
   gap: 10px;
   align-content: start;
+}
+.seed-voice-controls {
+  min-height: 100%;
+}
+.seed-voice-controls:has(.translation-prompt-panels) {
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  align-content: stretch;
+}
+.translation-prompt-panels {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(150px, 0.85fr) minmax(210px, 1.15fr);
+  gap: 12px;
+}
+.translation-prompt-panels .v-input {
+  min-height: 0;
+}
+.translation-prompt-panels :deep(textarea) {
+  line-height: 1.7;
+}
+.seed-voice-bottom-actions {
+  align-self: end;
+  display: grid;
+  gap: 10px;
+  padding-top: 6px;
+}
+.seed-voice-action-divider {
+  height: 1px;
+  margin: 2px 0;
+  background: rgba(0, 0, 0, 0.12);
 }
 .seed-voice-controls .v-btn {
   min-height: 42px;

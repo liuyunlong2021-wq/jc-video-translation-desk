@@ -19,6 +19,7 @@ import type {
   CalibrateVideoTranslationSubtitlesParams,
   ExtractVideoTranslationScriptCharactersParams,
   ExtractVideoTranslationScriptCharactersResult,
+  GenerateVideoTranslationStudioPromptParams,
   GenerateVideoTranslationDialogueTimestampsParams,
   VideoTranslationContextSource,
   VideoTranslationSpeakerDraft,
@@ -103,6 +104,41 @@ const VIDEO_TRANSLATION_SCRIPT_CHARACTER_PROMPT = `# 剧本角色提取
 - 合并同一角色的不同称呼；无法确定是同一人时分开输出。
 - 不输出人物关系图、剧情总结、解释、Markdown 或代码块。
 - 最多输出 80 个角色。`
+
+const VIDEO_TRANSLATION_STUDIO_PROMPT = `# 录音棚配音导演
+
+你是 jc-video-translation-desk 配音工作台的录音棚声音导演。你的任务是通读完整的目标语言时间戳剧本（等价于完整 SRT），理解整集剧情、人物关系、场景进展、动作因果、情绪变化、潜台词、对白衔接和情绪推进，再把当前需要输出的对白写成可以直接提交给 Seed Audio 的专业录音棚配音提示词。
+
+你不是翻译、编剧、字幕校对、声音后期或 API 助手。正式译文已经人工确认，不能改变台词事实。完整剧本只负责提供全局剧情和表演上下文；currentCueIds 只限定本次必须输出的对白范围。不要创建第二份剧情梗概、项目总监稿或分段声音设计稿。
+
+工作规则：
+1. 先通读完整 SRT，再按 currentCueIds 从最终剧本提取对白；保持对白数量、角色、目标语言译文和顺序完全不变。translatedText 是唯一正式发音文本。
+2. references 只包含当前配音块实际发言的角色。严格按 referenceIndex 建立角色、声音身份和 @音频N 的一一对应关系；同一角色始终使用同一个参考音，不因情绪变化换音。
+3. 每个角色只写一行自然、完整、可执行的声音定义，保留输入中已有的年龄、性别、身份或职业、口音、音高、声线、音色质感、吐字和气息特征；不得凭空增加输入中不存在的人设。
+4. 为每句对白写具体、可执行的声音表演说明。结合完整剧情、本句 performanceDirection 和前后对白，承接角色此前的情绪、身体状态、对方的动作、语气和潜台词。可以补充音量、语速、重音、停顿、呼吸、气声、咬字和距离感，但不要机械堆砌全部维度。
+5. 输入不完整或角色与参考音映射矛盾时，直接指出唯一阻塞原因；不要猜测角色、参考音或正式台词。
+
+输出必须严格遵守以下结构，只返回最终提示词正文：
+
+这是一段{时长}秒的一个、两个或三个专业的配音表演艺术家在顶级录音棚内的配音片段。
+
+角色1是完整的声音身份，饰演者为@音频1。
+角色2是完整的声音身份，饰演者为@音频2。
+角色3是完整的声音身份，饰演者为@音频3。
+
+角色名（具体声音表演）：“最终译文”
+角色名（承接前文的具体声音表演）：“最终译文”
+
+强制标准：
+- 首句根据实际角色数量使用“一个”“两个”或“三个”，不得添加其他总设定。
+- 首句后空一行；每个角色按 referenceIndex 定义一次；角色定义结束后再空一行。
+- 每条 currentCueIds 对应一行对白，逐句之间不留空行。
+- 每句固定使用 角色名（表演说明）：“最终译文”，引号内只能出现最终译文。
+- 正式译文必须逐字保留，不能增加、遗漏、重复、合并、拆分或改写。
+- 表演说明必须具体、前后承接，并服务于演员发声；动作提示只能写在括号内，不能进入引号。
+- 不输出时间戳、时长、cueId、角色 ID、声音 ID、标题、Markdown 代码块、分析、解释、建议或结尾说明。
+- 不输出音乐、环境声、动作音效、API 参数或生成步骤。
+- 最终回复只能是可直接提交给 Seed Audio 的提示词正文。`
 
 type DubbingAlignmentCue = { cueId: string; translatedText: string }
 type DubbingAlignmentAsrCue = {
@@ -289,6 +325,8 @@ function friendlyError(error: unknown): Error {
   if (/system cpu overloaded|cpu.*threshold/i.test(message))
     return new Error('云端当前繁忙，本次内容尚未生成，请稍后重试。')
   if (axios.isCancel(error)) return new Error('任务已停止；云端任务可能仍会继续并产生费用')
+  if (/^aborted$/i.test(message))
+    return new Error('云端连接被中断，本次内容尚未生成，请重试。')
   if (!(error instanceof AxiosError))
     return error instanceof Error ? error : new Error(String(error))
   if (error.response?.status === 401 || error.response?.status === 403)
@@ -697,6 +735,105 @@ export async function translateVideoSubtitles(params: TranslateVideoSubtitlesPar
       return result
     }
     throw new Error(reason || '视频字幕翻译失败')
+  })
+}
+
+function formatPromptSrtTime(ms: number) {
+  const safe = Math.max(0, Math.round(ms))
+  const hours = Math.floor(safe / 3_600_000)
+  const minutes = Math.floor((safe % 3_600_000) / 60_000)
+  const seconds = Math.floor((safe % 60_000) / 1000)
+  const millis = safe % 1000
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(millis).padStart(3, '0')}`
+}
+
+function videoTranslationCuesToPromptSrt(
+  cues: GenerateVideoTranslationStudioPromptParams['finalScript']['cues'],
+) {
+  return cues
+    .map((cue, index) =>
+      [
+        String(index + 1),
+        `${formatPromptSrtTime(cue.startMs)} --> ${formatPromptSrtTime(cue.endMs)}`,
+        `${cue.roleName || cue.translationRoleId || '未知角色'}：${cue.translatedText}`,
+      ].join('\n'),
+    )
+    .join('\n\n')
+}
+
+export async function generateVideoTranslationStudioPrompt(
+  params: GenerateVideoTranslationStudioPromptParams,
+) {
+  if (
+    !params?.runId ||
+    !params.episodeId?.trim() ||
+    !TEXT_MODELS.includes(params.textModel) ||
+    !params.finalScript?.finalScriptId?.trim() ||
+    !params.finalScript.scriptHash?.trim() ||
+    !params.finalScript.targetLanguage?.trim() ||
+    !params.finalScript.cues?.length ||
+    !params.currentCueIds?.length ||
+    !params.references?.length
+  )
+    throw new Error('全局配音提示词参数无效')
+  const cueIds = new Set(params.finalScript.cues.map((cue) => cue.cueId))
+  if (params.currentCueIds.some((cueId) => !cueIds.has(cueId)))
+    throw new Error('当前配音块不在最终剧本中')
+  for (const reference of params.references) {
+    if (
+      !reference.translationRoleId?.trim() ||
+      !reference.roleName?.trim() ||
+      !reference.voiceIdentityText?.trim() ||
+      !Number.isFinite(reference.referenceIndex)
+    )
+      throw new Error('角色参考音信息不完整')
+  }
+  const currentCueIdSet = new Set(params.currentCueIds)
+  const currentCues = params.finalScript.cues
+    .filter((cue) => currentCueIdSet.has(cue.cueId))
+    .map((cue) => ({
+      cueId: cue.cueId,
+      translationRoleId: cue.translationRoleId,
+      roleName: cue.roleName,
+      startMs: cue.startMs,
+      endMs: cue.endMs,
+      performanceDirection: cue.performanceDirection,
+      translatedText: cue.translatedText,
+    }))
+  const durationMs = currentCues.length
+    ? Math.max(...currentCues.map((cue) => cue.endMs)) -
+      Math.min(...currentCues.map((cue) => cue.startMs))
+    : 0
+  const durationSeconds = (durationMs / 1000).toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
+  const input = {
+    finalScript: {
+      finalScriptId: params.finalScript.finalScriptId,
+      scriptHash: params.finalScript.scriptHash,
+      targetLanguage: params.finalScript.targetLanguage,
+    },
+    finalSrt: videoTranslationCuesToPromptSrt(params.finalScript.cues),
+    currentCueIds: params.currentCueIds,
+    currentCues,
+    durationMs,
+    durationSeconds,
+    references: params.references,
+    ...(params.correction?.trim() ? { correction: params.correction.trim() } : {}),
+  }
+  return withRunAbort(params.runId, async (signal) => {
+    const output = await generateMarkdownResponse(
+      VIDEO_TRANSLATION_STUDIO_PROMPT,
+      [
+        {
+          type: 'text',
+        text: `请根据以下输入生成最终 Seed Audio 提示词正文。完整 SRT 必须作为全局剧情上下文使用，currentCueIds/currentCues 只限定本次输出范围。首句必须带上时长 ${durationSeconds} 秒。\n\n${JSON.stringify(input)}`,
+        },
+      ],
+      params.textModel,
+      signal,
+      8_000,
+      VIDEO_TRANSLATION_REQUEST_TIMEOUT_MS,
+    )
+    return { text_prompt: output.trim() }
   })
 }
 
@@ -2179,9 +2316,23 @@ async function mutatePending(
     await ensureRunDir(runId)
     const filePath = runJsonPath(runId)
     const tempPath = `${filePath}.tmp`
+    const data = await fs.promises
+      .readFile(filePath, 'utf8')
+      .then((value) => JSON.parse(value))
+      .catch((error: any) => {
+        if (error?.code === 'ENOENT') return {}
+        throw error
+      })
     await fs.promises.writeFile(
       tempPath,
-      JSON.stringify({ tasks: change(await readPending(runId)) }, null, 2),
+      JSON.stringify(
+        {
+          ...(data && typeof data === 'object' ? data : {}),
+          tasks: change(await readPending(runId)),
+        },
+        null,
+        2,
+      ),
     )
     await fs.promises.rename(tempPath, filePath)
   })
@@ -2390,7 +2541,23 @@ export async function withRunAbort<T>(runId: string, action: (signal: AbortSigna
 export async function cancelRun(runId: string) {
   const controllers = runControllers.get(runId)
   controllers?.forEach((controller) => controller.abort())
-  await mutatePending(runId, (tasks) => tasks.filter((task) => task.kind !== 'voice'))
+  const stoppedAt = new Date().toISOString()
+  await mutatePending(runId, (tasks) =>
+    tasks
+      .filter((task) => task.kind !== 'voice')
+      .map((task) =>
+        task.kind === 'dubbing' &&
+        ['queued', 'generating', 'downloading'].includes(task.status || '')
+          ? {
+              ...task,
+              status: 'stopped',
+              resumeFrom: undefined,
+              error: '已停止',
+              updatedAt: stoppedAt,
+            }
+          : task,
+      ),
+  )
   return controllers?.size || 0
 }
 

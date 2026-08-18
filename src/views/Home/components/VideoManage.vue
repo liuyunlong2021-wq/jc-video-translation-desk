@@ -128,6 +128,19 @@
           </div>
         </div>
         <div v-if="mediaStore.seedVoiceTab === 'grouped'" class="grouped-voice-main">
+          <div v-if="translationGroups.length" class="seed-batch-toolbar">
+            <v-btn size="x-small" variant="tonal" @click="selectAllTranslationGroups">全选</v-btn>
+            <v-btn size="x-small" variant="tonal" @click="selectUnfinishedTranslationGroups"
+              >未生成配音</v-btn
+            >
+            <v-btn size="x-small" variant="tonal" @click="selectFailedTranslationGroups"
+              >生成失败</v-btn
+            >
+            <v-btn size="x-small" variant="text" @click="emitSelectedTranslationGroups([])"
+              >清空</v-btn
+            >
+            <small>已选 {{ selectedTranslationGroupIds.length }} / {{ translationGroups.length }}</small>
+          </div>
           <div class="grouped-actions">
             <strong>
               当前字幕
@@ -160,6 +173,7 @@
             <table class="grouped-table">
               <thead>
                 <tr>
+                  <th>选择</th>
                   <th>序号</th>
                   <th>时间轴</th>
                   <th>角色</th>
@@ -177,6 +191,16 @@
                   :class="{ selected: selectedGroupedCueId === cue.cueId }"
                   @click="selectGroupedCue(cue.cueId)"
                 >
+                  <td v-if="isFirstCueInGroup(cue.cueId)" :rowspan="groupForCue(cue.cueId)?.cueIds.length || 1">
+                    <input
+                      type="checkbox"
+                      class="seed-role-check"
+                      :checked="selectedTranslationGroupIds.includes(groupForCue(cue.cueId)?.groupId || '')"
+                      :aria-label="`选择组${groupNumberForCue(cue.cueId)}`"
+                      @click.stop
+                      @change.stop="toggleTranslationGroupSelection(groupForCue(cue.cueId)?.groupId || '')"
+                    />
+                  </td>
                   <td>
                     <strong>#{{ String(index + 1).padStart(2, '0') }}</strong>
                   </td>
@@ -808,8 +832,12 @@ type Asset = {
 }
 
 const props = withDefaults(
-  defineProps<{ translationMode?: boolean; selectedSeedRoleIds?: string[] }>(),
-  { translationMode: false, selectedSeedRoleIds: () => [] },
+  defineProps<{
+    translationMode?: boolean
+    selectedSeedRoleIds?: string[]
+    selectedTranslationGroupIds?: string[]
+  }>(),
+  { translationMode: false, selectedSeedRoleIds: () => [], selectedTranslationGroupIds: () => [] },
 )
 const { translationMode } = props
 
@@ -835,6 +863,7 @@ const emit = defineEmits<{
   selectTranslationVoiceVersion: [versionId: string]
   generateShotPlan: []
   updateSelectedSeedRoles: [roleIds: string[]]
+  updateSelectedTranslationGroups: [groupIds: string[]]
 }>()
 const mediaStore = useMediaTaskStore()
 const previewAsset = ref<Asset | null>(null)
@@ -864,6 +893,7 @@ const seedListAriaLabel = computed(() => {
   return '全局配音列表'
 })
 const selectedSeedRoleIds = computed(() => props.selectedSeedRoleIds || [])
+const selectedTranslationGroupIds = computed(() => props.selectedTranslationGroupIds || [])
 function emitSelectedSeedRoles(roleIds: string[]) {
   const valid = new Set(seedCharacters.value.map((character) => character.id))
   emit('updateSelectedSeedRoles', [...new Set(roleIds)].filter((id) => valid.has(id)))
@@ -931,6 +961,34 @@ function selectMissingSeedReferences() {
     seedCharacters.value
       .filter((character) => seedReferenceMissing(character.id))
       .map((character) => character.id),
+  )
+}
+function emitSelectedTranslationGroups(groupIds: string[]) {
+  const valid = new Set(translationGroups.value.map((group) => group.groupId))
+  emit('updateSelectedTranslationGroups', [...new Set(groupIds)].filter((id) => valid.has(id)))
+}
+function toggleTranslationGroupSelection(groupId: string) {
+  if (!groupId) return
+  const next = selectedTranslationGroupIds.value.includes(groupId)
+    ? selectedTranslationGroupIds.value.filter((item) => item !== groupId)
+    : [...selectedTranslationGroupIds.value, groupId]
+  emitSelectedTranslationGroups(next)
+}
+function selectAllTranslationGroups() {
+  emitSelectedTranslationGroups(translationGroups.value.map((group) => group.groupId))
+}
+function selectUnfinishedTranslationGroups() {
+  emitSelectedTranslationGroups(
+    translationGroups.value
+      .filter((group) => groupStatus(group.groupId) !== '已完成')
+      .map((group) => group.groupId),
+  )
+}
+function selectFailedTranslationGroups() {
+  emitSelectedTranslationGroups(
+    translationGroups.value
+      .filter((group) => ['生成失败', '已停止'].includes(groupStatus(group.groupId)))
+      .map((group) => group.groupId),
   )
 }
 function translationRolePreview(id: string) {
@@ -1281,6 +1339,14 @@ const translationGroups = computed(() =>
   mediaStore.videoTranslation
     ? videoTranslationDubbingGroups(mediaStore.videoTranslation.cues)
     : [],
+)
+watch(
+  () => translationGroups.value.map((group) => group.groupId).join(','),
+  () => {
+    const valid = new Set(translationGroups.value.map((group) => group.groupId))
+    emitSelectedTranslationGroups(selectedTranslationGroupIds.value.filter((id) => valid.has(id)))
+  },
+  { immediate: true },
 )
 const selectedGroupedCueIndex = computed(
   () =>

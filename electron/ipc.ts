@@ -39,6 +39,7 @@ import {
   calibrateVideoTranslationSubtitles,
   calibrateVideoTranslationFrames,
   extractVideoTranslationScriptCharacters,
+  generateVideoTranslationStudioPrompt,
   generateVideoTranslationDialogueTimestamps,
   withRunAbort,
 } from './cloud'
@@ -376,6 +377,9 @@ export default function initIPC() {
     ),
   )
   ipcMain.handle('video-translation-translate', (_event, params) => translateVideoSubtitles(params))
+  ipcMain.handle('video-translation-studio-prompt', (_event, params) =>
+    generateVideoTranslationStudioPrompt(params),
+  )
   ipcMain.handle(
     'video-translation-confirm',
     (

@@ -254,6 +254,7 @@
           <VideoManage
             translation-mode
             :selected-seed-role-ids="selectedSeedRoleIds"
+            :selected-translation-group-ids="selectedTranslationGroupIds"
             @upload-seed-reference="uploadTranslationSeedReference"
             @generate-seed-role-prompt="generateTranslationSeedRolePrompt"
             @generate-seed-reference="generateTranslationSeedReference"
@@ -262,6 +263,7 @@
             @edit-seed-role-prompt="editTranslationSeedRolePrompt"
             @edit-seed-global-prompt="editTranslationSeedGlobalPrompt"
             @update-selected-seed-roles="selectedSeedRoleIds = $event"
+            @update-selected-translation-groups="selectedTranslationGroupIds = $event"
             @select-translation-voice-version="selectTranslationVoiceVersion"
           />
           <div class="inspector-column min-w-0 min-h-0 open">
@@ -269,12 +271,15 @@
               translation-mode
               :translation-final-ready="translationFinalWorkspaceReady"
               :selected-seed-role-ids="selectedSeedRoleIds"
+              :selected-translation-group-ids="selectedTranslationGroupIds"
               @generate-all-seed-role-prompts="generateAllTranslationSeedRolePrompts"
               @generate-all-seed-references="generateAllTranslationSeedReferences"
               @generate-global-seed-prompt="arrangeTranslationVoice"
               @generate-global-seed-audio="generateTranslationVoice"
+              @generate-grouped-seed-prompt="generateTranslationGroupedPromptDraft"
               @generate-grouped-seed-audio="generateTranslationGroupedVoice"
               @edit-grouped-prompt="editTranslationGroupedPrompt"
+              @edit-seed-global-prompt="editTranslationSeedGlobalPrompt"
               @open-translation-subtitles="openTranslationSubtitleWorkspace"
               @request-revision="requestRevision"
               @cancel="cancelWorkflow"
@@ -490,6 +495,7 @@ const selectedTranslationCueId = ref('')
 const translationPlayheadMs = ref(0)
 const translationTextCursor = ref({ cueId: '', offset: 0 })
 const selectedSeedRoleIds = ref<string[]>([])
+const selectedTranslationGroupIds = ref<string[]>([])
 const projects = ref<ProjectManifest[]>([])
 const projectSwitching = ref(false)
 const renameOpen = ref(false)
@@ -2530,14 +2536,23 @@ async function currentTranslationSeedPlan() {
 }
 
 function invalidateTranslationGroupedVoice(state: NonNullable<typeof mediaStore.videoTranslation>) {
-  const active = activeTranslationVoiceVersion(state)
   state.groupedVoicePrompts = undefined
+  invalidateActiveTranslationGroupedVoice(state)
+}
+
+function invalidateActiveTranslationGroupedVoice(
+  state: NonNullable<typeof mediaStore.videoTranslation>,
+) {
+  const active = activeTranslationVoiceVersion(state)
   if (active?.route !== 'grouped') return
   state.activeVoiceVersionId = undefined
   state.targetVoicePath = undefined
   state.dubDialogueTimestampPath = undefined
   state.dubDialogueTimestampHash = undefined
   state.voiceStatus = 'stale'
+  state.mixedPath = undefined
+  state.finalVideoPath = undefined
+  mediaStore.seedAudioTrackPath = ''
   if (state.mixStatus === 'ready') state.mixStatus = 'stale'
   if (state.finalStatus === 'ready') state.finalStatus = 'stale'
 }
@@ -2545,14 +2560,7 @@ function invalidateTranslationGroupedVoice(state: NonNullable<typeof mediaStore.
 function editTranslationGroupedPrompt(groupId: string, prompt: string) {
   const state = translationState()
   state.groupedVoicePrompts = { ...(state.groupedVoicePrompts || {}), [groupId]: prompt }
-  const active = activeTranslationVoiceVersion(state)
-  if (active?.route !== 'grouped') return
-  state.activeVoiceVersionId = undefined
-  state.targetVoicePath = undefined
-  state.dubDialogueTimestampPath = undefined
-  state.dubDialogueTimestampHash = undefined
-  if (state.mixStatus === 'ready') state.mixStatus = 'stale'
-  if (state.finalStatus === 'ready') state.finalStatus = 'stale'
+  invalidateActiveTranslationGroupedVoice(state)
 }
 
 async function saveTranslationSeedGlobalPrompt(prompt: string) {
@@ -2608,7 +2616,9 @@ async function generateTranslationSeedPrompt(
     mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role]),
   )
   const sections = new Array<string>(plan.arrangement.blocks.length)
-  if (!state.finalScriptId || !state.scriptHash) throw new Error('最终时间戳剧本尚未冻结')
+  const finalScriptId = state.finalScriptId
+  const scriptHash = state.scriptHash
+  if (!finalScriptId || !scriptHash) throw new Error('最终时间戳剧本尚未冻结')
   let completed = 0
   const failures: string[] = []
   let cursor = 0
@@ -2626,13 +2636,13 @@ async function generateTranslationSeedPrompt(
         roleById.get(reference.speakerId)?.voiceIdentityText ||
           reference.voiceDesignPrompt ||
           '',
-      ),
+      ) || '',
       referenceIndex: index + 1,
     }))
-    const skillInput = {
+    const studioPromptInput = {
       finalScript: {
-        finalScriptId: state.finalScriptId,
-        scriptHash: state.scriptHash,
+        finalScriptId,
+        scriptHash,
         targetLanguage: state.targetLanguage,
         cues: state.cues.map((cue) => ({
           cueId: cue.cueId,
@@ -2650,17 +2660,15 @@ async function generateTranslationSeedPrompt(
     let prompt = ''
     let correction = ''
     for (let attempt = 0; attempt < 2; attempt++) {
-      const result = await window.electron.cloud.runSkill(
-        'jc-luyinpeng',
-        JSON.stringify({
-          ...skillInput,
-          ...(correction
-            ? { correction: `上次输出未通过产品校验：${correction}。请只重写合格的最终提示词。` }
-            : {}),
-        }),
-        mediaStore.runId,
-        mediaStore.textModel,
-      )
+      const result = await window.electron.cloud.generateVideoTranslationStudioPrompt({
+        runId: mediaStore.runId,
+        episodeId: mediaStore.episodeId,
+        textModel: mediaStore.textModel,
+        ...studioPromptInput,
+        ...(correction
+          ? { correction: `上次输出未通过产品校验：${correction}。请只重写合格的最终提示词。` }
+          : {}),
+      })
       prompt = String(result?.text_prompt || '').trim()
       try {
         if (!prompt) throw new Error(`${block.blockId} 的全局配音提示词为空`)
@@ -2704,9 +2712,6 @@ async function generateTranslationGroupedPrompts(
   globalPrompt: string,
   existingPrompts: Record<string, string> = {},
 ) {
-  const roleById = new Map(
-    mediaStore.videoTranslationRoles.map((role) => [role.translationRoleId, role]),
-  )
   const base = planVideoTranslationGroupedDialogueBlocks(
     globalPrompt,
     globalPlan.arrangement,
@@ -2727,94 +2732,7 @@ async function generateTranslationGroupedPrompts(
       prunedInvalidPrompt = true
     }
   }
-  if (prunedInvalidPrompt) state.groupedVoicePrompts = { ...prompts }
-  const targets = base.arrangement.blocks.filter((block) => !prompts[block.blockId]?.trim())
-  let completed = base.arrangement.blocks.length - targets.length
-  const failures: string[] = []
-  if (targets.length)
-    mediaStore.progressText = `正在生成分组提示词 ${completed}/${base.arrangement.blocks.length}（3 个并发）`
-  let cursor = 0
-  const generateBlockPrompt = async (block: (typeof base.arrangement.blocks)[number]) => {
-    const references = block.references.map((reference, index) => ({
-      translationRoleId: reference.speakerId,
-      roleName:
-        reference.label || roleById.get(reference.speakerId)?.displayName || reference.speakerId,
-      voiceProfileId: reference.voiceProfileId,
-      voiceIdentityText: compactVideoTranslationVoiceIdentity(
-        roleById.get(reference.speakerId)?.voiceIdentityText ||
-          reference.voiceDesignPrompt ||
-          '',
-      ),
-      referenceIndex: index + 1,
-    }))
-    const skillInput = {
-      finalScript: {
-        finalScriptId: state.finalScriptId,
-        scriptHash: state.scriptHash,
-        targetLanguage: state.targetLanguage,
-        cues: state.cues.map((cue) => ({
-          cueId: cue.cueId,
-          translationRoleId: cue.translationRoleId,
-          roleName: roleById.get(cue.translationRoleId || '')?.displayName || '',
-          startMs: cue.startMs,
-          endMs: cue.endMs,
-          performanceDirection: cue.performanceDirection || '',
-          translatedText: cue.translatedText,
-        })),
-      },
-      currentCueIds: block.cueIds,
-      references,
-      globalVoicePrompt: globalPrompt,
-    }
-    let prompt = ''
-    let correction = ''
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const result = await window.electron.cloud.runSkill(
-        'jc-luyinpeng',
-        JSON.stringify({
-          ...skillInput,
-          ...(correction
-            ? { correction: `上次输出未通过产品校验：${correction}。请基于全局配音提示词，只重写当前分组的合格最终提示词。` }
-            : {}),
-        }),
-        mediaStore.runId,
-        mediaStore.textModel,
-      )
-      prompt = String(result?.text_prompt || '').trim()
-      try {
-        if (!prompt) throw new Error(`${block.blockId} 的分组克隆提示词为空`)
-        validateVideoTranslationGroupedPrompt(prompt, block)
-        correction = ''
-        break
-      } catch (error) {
-        correction = error instanceof Error ? error.message : String(error)
-      }
-    }
-    if (correction) throw new Error(correction)
-    prompts[block.blockId] = prompt
-    state.groupedVoicePrompts = { ...(state.groupedVoicePrompts || {}), [block.blockId]: prompt }
-    completed += 1
-    mediaStore.progressText = `分组提示词已完成 ${completed}/${base.arrangement.blocks.length}`
-  }
-  await Promise.all(
-    Array.from({ length: Math.min(3, targets.length) }, async () => {
-      while (cursor < targets.length) {
-        const block = targets[cursor++]
-        try {
-          await generateBlockPrompt(block)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          failures.push(`${block.blockId}：${message}`)
-          mediaStore.progressText = `分组提示词已完成 ${completed}/${base.arrangement.blocks.length}，失败 ${failures.length} 个`
-        }
-      }
-    }),
-  )
-  if (failures.length)
-    throw new Error(
-      `已生成 ${completed}/${base.arrangement.blocks.length} 个分组提示词，失败 ${failures.length} 个：${failures[0]}`,
-    )
-  return planVideoTranslationGroupedDialogueBlocks(
+  const plan = planVideoTranslationGroupedDialogueBlocks(
     globalPrompt,
     globalPlan.arrangement,
     state.cues,
@@ -2822,12 +2740,50 @@ async function generateTranslationGroupedPrompts(
     globalPlan.arrangement.blocks.flatMap((block) => block.references),
     prompts,
   )
+  if (prunedInvalidPrompt) mediaStore.progressText = '部分旧分组稿不符合新契约，已自动重建'
+  return plan
 }
 
 async function arrangeTranslationVoice() {
   await runTranslationStep('arrange-doubao-voice', 'arrangementStatus', async (state) => {
     const { plan } = await generateAndSaveTranslationGlobalPrompt(state)
     toast.success(`全局配音提示词已生成，共 ${plan.arrangement.blocks.length} 段`)
+  })
+}
+
+async function generateTranslationGroupedPromptDraft() {
+  await runAction('generate-grouped-prompt-draft', async () => {
+    const state = translationState()
+    const globalPrompt = (mediaStore.seedAudioGlobalPrompt || state.seedPromptText || '').trim()
+    if (!globalPrompt) throw new Error('请先生成全局配音提示词')
+    const globalPlan = await currentTranslationSeedPlan()
+    const saved = await window.electron.cloud.writeVideoTranslationSeedPlan(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      state.targetLanguage,
+      globalPlan.arrangement,
+      globalPrompt,
+    )
+    state.seedArrangementPath = saved.arrangementPath
+    state.seedPromptPath = saved.promptPath
+    state.seedPromptText = globalPrompt
+    state.seedPromptGeneratedBySkill = true
+    state.arrangementStatus = 'ready'
+    mediaStore.seedAudioArrangementPath = saved.arrangementPath
+    mediaStore.seedAudioGlobalPrompt = globalPrompt
+
+    const plan = await generateTranslationGroupedPrompts(state, globalPlan, globalPrompt, {})
+    await window.electron.cloud.writeVideoTranslationGroupedPlan(
+      mediaStore.runId,
+      mediaStore.episodeId,
+      state.targetLanguage,
+      plan.arrangement,
+      plan.promptMarkdown,
+    )
+    state.groupedVoicePrompts = plan.prompts
+    invalidateActiveTranslationGroupedVoice(state)
+    mediaStore.selectedAssetId = plan.arrangement.blocks[0]?.blockId || mediaStore.selectedAssetId
+    toast.success(`分组配音稿已生成，共 ${plan.arrangement.blocks.length} 组`)
   })
 }
 
@@ -2860,27 +2816,24 @@ async function generateTranslationVoice() {
 }
 
 async function generateTranslationGroupedVoice(regenerateBlockIds: string[] = []) {
-  await runAction('generate-grouped-voice', async () => {
-    const state = translationState()
-    const generated = await generateAndSaveTranslationGlobalPrompt(state)
-    const globalPlan = generated.plan
-    const globalPrompt = generated.prompt
+  await runTranslationStep('generate-grouped-voice', 'voiceStatus', async (state) => {
+    const targetBlockIds = [...regenerateBlockIds]
+    const globalPrompt = (mediaStore.seedAudioGlobalPrompt || state.seedPromptText || '').trim()
+    if (!globalPrompt) throw new Error('请先生成全局配音提示词')
+    const globalPlan = await currentTranslationSeedPlan()
     const groupIds = videoTranslationDubbingGroups(state.cues).map((group) => group.groupId)
-    const existingPrompts = state.groupedVoicePrompts || {}
-    const plan = await generateTranslationGroupedPrompts(
-      state,
-      globalPlan,
+    const prompts = state.groupedVoicePrompts || {}
+    const missingGroupId = groupIds.find((groupId) => !prompts[groupId]?.trim())
+    if (missingGroupId) throw new Error('请先生成分组配音稿')
+    const plan = planVideoTranslationGroupedDialogueBlocks(
       globalPrompt,
-      existingPrompts,
+      globalPlan.arrangement,
+      state.cues,
+      mediaStore.videoTranslationRoles,
+      globalPlan.arrangement.blocks.flatMap((block) => block.references),
+      prompts,
     )
-    state.groupedVoicePrompts = plan.prompts
-    const reusedAllPrompts = groupIds.every(
-      (groupId) =>
-        existingPrompts[groupId]?.trim() && existingPrompts[groupId] === plan.prompts[groupId],
-    )
-    mediaStore.progressText = reusedAllPrompts
-      ? '分组提示词已存在，正在检查并补生成缺失音频'
-      : '分组提示词已完成，正在启动分组音频生成'
+    mediaStore.progressText = '正在按已确认分组配音稿生成音频'
     await window.electron.cloud.writeVideoTranslationGroupedPlan(
       mediaStore.runId,
       mediaStore.episodeId,
@@ -2888,12 +2841,13 @@ async function generateTranslationGroupedVoice(regenerateBlockIds: string[] = []
       plan.arrangement,
       plan.promptMarkdown,
     )
+    state.groupedVoicePrompts = plan.prompts
     try {
       const version = await window.electron.cloud.generateVideoTranslationGroupedVoice(
         mediaStore.runId,
         mediaStore.episodeId,
         state.targetLanguage,
-        regenerateBlockIds,
+        targetBlockIds,
       )
       state.voiceVersions = [
         ...state.voiceVersions.filter((item) => item.versionId !== version.versionId),

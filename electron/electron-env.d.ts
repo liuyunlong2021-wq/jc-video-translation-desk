@@ -196,6 +196,9 @@ interface Window {
       ) => Promise<{
         subtitles: Array<{ cueId: string; text: string }>
       }>
+      generateVideoTranslationStudioPrompt: (
+        params: import('./types').GenerateVideoTranslationStudioPromptParams,
+      ) => Promise<{ text_prompt: string }>
       confirmVideoTranslation: (
         runId: string,
         episodeId: string,

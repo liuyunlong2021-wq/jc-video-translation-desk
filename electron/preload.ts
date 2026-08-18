@@ -155,6 +155,9 @@ contextBridge.exposeInMainWorld('electron', {
     },
     translateVideoSubtitles: (params: import('./types').TranslateVideoSubtitlesParams) =>
       ipcRenderer.invoke('video-translation-translate', params),
+    generateVideoTranslationStudioPrompt: (
+      params: import('./types').GenerateVideoTranslationStudioPromptParams,
+    ) => ipcRenderer.invoke('video-translation-studio-prompt', params),
     confirmVideoTranslation: (
       runId: string,
       episodeId: string,
